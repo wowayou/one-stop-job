@@ -144,6 +144,7 @@ link_count = conn.execute("SELECT COUNT(*) FROM job_source_links").fetchone()[0]
 canonical_key = conn.execute("SELECT canonical_key FROM jobs WHERE id = 1").fetchone()[0]
 profile_columns = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)").fetchall()}
 prep_columns = {row[1] for row in conn.execute("PRAGMA table_info(interview_prep)").fetchall()}
+table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
 work_experience = conn.execute("SELECT work_experience FROM user_profile WHERE id = 1").fetchone()[0]
 core_pitch, tailored_resume = conn.execute(
     "SELECT core_pitch, tailored_resume FROM interview_prep WHERE id = 1"
@@ -155,6 +156,8 @@ if "work_experience" not in profile_columns or not work_experience:
     raise SystemExit("profile migration smoke failed")
 if not {"core_pitch", "tailored_resume"} <= prep_columns or core_pitch is None or tailored_resume is None:
     raise SystemExit("prep migration smoke failed")
+if not {"chat_threads", "chat_messages", "analysis_runs"} <= table_names:
+    raise SystemExit("decision chat migration smoke failed")
 PY
 
 section "Quality Gate Passed"

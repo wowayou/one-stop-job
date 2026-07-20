@@ -175,6 +175,49 @@ class UserProfile(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utc_now)
 
 
+class ChatThread(SQLModel, table=True):
+    """A local decision conversation, optionally anchored to one job."""
+
+    __tablename__ = "chat_threads"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    kind: str = Field(default="general", index=True)
+    job_id: Optional[int] = Field(default=None, foreign_key="jobs.id", index=True)
+    title: str
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    updated_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class ChatMessage(SQLModel, table=True):
+    """One persisted user or assistant message in a decision conversation."""
+
+    __tablename__ = "chat_messages"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    thread_id: int = Field(foreign_key="chat_threads.id", index=True)
+    role: str = Field(index=True)
+    content: str = Field(sa_column=Column(Text))
+    metadata_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
+class AnalysisRun(SQLModel, table=True):
+    """Trace record for the rule pass and optional model pass behind a reply."""
+
+    __tablename__ = "analysis_runs"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    thread_id: int = Field(foreign_key="chat_threads.id", index=True)
+    user_message_id: int = Field(foreign_key="chat_messages.id", index=True)
+    assistant_message_id: Optional[int] = Field(default=None, foreign_key="chat_messages.id", index=True)
+    rules_version: str = Field(default="local-profile")
+    provider: str = Field(default="rules")
+    model: Optional[str] = None
+    status: str = Field(default="rules_only", index=True)
+    result_json: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+
+
 class FollowUpTask(SQLModel, table=True):
     __tablename__ = "follow_up_tasks"
 

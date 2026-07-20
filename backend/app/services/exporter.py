@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi.encoders import jsonable_encoder
 
-from ..models import ApplicationEvent, Company, Draft, FitScore, FollowUpTask, InterviewLog, InterviewPrep, Job, ResearchItem, SourceRun, UserProfile
+from ..models import AnalysisRun, ApplicationEvent, ChatMessage, ChatThread, Company, Draft, FitScore, FollowUpTask, InterviewLog, InterviewPrep, Job, ResearchItem, SourceRun, UserProfile
 
 
 def export_jobs_csv(jobs: list[dict]) -> str:
@@ -54,6 +54,9 @@ def build_archive_payload(
     interviews: list[InterviewLog],
     runs: list[SourceRun],
     events: list[ApplicationEvent],
+    chat_threads: list[ChatThread],
+    chat_messages: list[ChatMessage],
+    analysis_runs: list[AnalysisRun],
 ) -> dict[str, Any]:
     return jsonable_encoder(
         {
@@ -68,6 +71,9 @@ def build_archive_payload(
             "interview_logs": interviews,
             "source_runs": runs,
             "application_events": events,
+            "chat_threads": chat_threads,
+            "chat_messages": chat_messages,
+            "analysis_runs": analysis_runs,
         }
     )
 

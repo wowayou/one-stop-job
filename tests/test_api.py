@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import importlib
 import sqlite3
 from datetime import timedelta
@@ -55,6 +56,141 @@ def test_context_status_endpoint_is_read_only_and_hides_absolute_path(monkeypatc
             assert "card_count" not in payload
             assert "decision_rules_updated" not in payload
             assert str(context_root) not in response.text
+
+    asyncio.run(scenario())
+
+
+def test_decision_chat_persists_job_thread_and_falls_back_to_rules(monkeypatch, tmp_path):
+    context_root = tmp_path / "personal-context"
+    _write_context_fixture(context_root)
+    monkeypatch.setenv("JOB_ONE_STOP_CONTEXT_REPO_PATH", str(context_root))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "decision-chat.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            profile = await client.put(
+                "/api/profile",
+                json={
+                    "target_titles": "SEO运营",
+                    "target_cities": "示例市",
+                    "salary_min_k": 8,
+                    "dealbreakers": "单休",
+                },
+            )
+            assert profile.status_code == 200, profile.text
+            job = (
+                await client.post(
+                    "/api/jobs",
+                    json={
+                        "title": "SEO运营",
+                        "company_name": "示例科技",
+                        "salary_text": "4-5K",
+                        "city": "示例市",
+                        "description": "负责官网 SEO，单休",
+                    },
+                )
+            ).json()
+
+            created = await client.post("/api/chat/threads", json={"kind": "job", "job_id": job["id"]})
+            assert created.status_code == 200, created.text
+            thread = created.json()
+            reused = await client.post("/api/chat/threads", json={"kind": "job", "job_id": job["id"]})
+            assert reused.json()["id"] == thread["id"]
+            assert reused.json()["reused"] is True
+
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "这个岗位值得继续聊吗？"},
+            )
+            assert reply.status_code == 200, reply.text
+            payload = reply.json()
+            assert payload["ai_used"] is False
+            assert payload["analysis"]["priority"] == "D"
+            assert payload["analysis"]["next_action"] == "放弃"
+            assert any(item["status"] == "fail" for item in payload["analysis"]["rule_checks"])
+            assert payload["analysis_run"]["rules_version"] == "2026-07-19"
+
+            detail = await client.get(f"/api/chat/threads/{thread['id']}")
+            assert detail.status_code == 200, detail.text
+            assert [item["role"] for item in detail.json()["messages"]] == ["user", "assistant"]
+            listed = await client.get("/api/chat/threads")
+            assert listed.json()[0]["message_count"] == 2
+
+    asyncio.run(scenario())
+
+
+def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_failure(monkeypatch, tmp_path):
+    context_root = tmp_path / "personal-context"
+    _write_context_fixture(context_root)
+    monkeypatch.setenv("JOB_ONE_STOP_CONTEXT_REPO_PATH", str(context_root))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    app = _fresh_app(monkeypatch, tmp_path, "decision-chat-ai.sqlite3")
+
+    import backend.app.main as main
+
+    def fake_analysis(**_kwargs):
+        return {
+            "summary": "模型结合上下文给出的简短判断。",
+            "priority": "A",
+            "direction": "核心优先",
+            "next_action": "继续沟通",
+            "action_text": "先确认唯一关键条件。",
+            "reply_draft": "你好，方便补充一下岗位的核心目标吗？",
+        }
+
+    monkeypatch.setattr(main, "analyze_decision_chat_llm", fake_analysis)
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "我拿不准下一步应该先确认什么。"},
+            )
+            assert reply.status_code == 200, reply.text
+            payload = reply.json()
+            assert payload["ai_used"] is True
+            assert payload["analysis"]["summary"] == "模型结合上下文给出的简短判断。"
+            assert payload["analysis_run"]["status"] == "completed"
+            assert payload["assistant_message"]["metadata_json"]["ai_used"] is True
+
+    asyncio.run(scenario())
+
+
+def test_decision_chat_stores_supported_screenshot_locally(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "decision-chat-image.sqlite3")
+    image_data_url = "data:image/png;base64,iVBORw0KGgo="
+
+    import backend.app.main as main
+    from dataclasses import replace
+
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "请分析截图", "image_data_url": image_data_url, "image_name": "jd.png"},
+            )
+            assert reply.status_code == 200, reply.text
+            payload = reply.json()
+            attachment = payload["user_message"]["metadata_json"]["attachment"]
+            assert "data_url" not in attachment
+            assert attachment["name"] == "jd.png"
+            stored = await client.get(f"/api/chat/attachments/{attachment['id']}")
+            assert stored.status_code == 200
+            assert stored.content == base64.b64decode(image_data_url.split(",", 1)[1])
+            image_check = next(item for item in payload["analysis"]["rule_checks"] if item["code"] == "image_evidence")
+            assert image_check["status"] == "unknown"
+
+            unsupported = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "bad", "image_data_url": "data:image/svg+xml;base64,PHN2Zz4="},
+            )
+            assert unsupported.status_code == 422
 
     asyncio.run(scenario())
 
@@ -161,6 +297,7 @@ def test_init_db_auto_migrates_profile_experience_fields(monkeypatch, tmp_path):
     db.init_db()
 
     conn = sqlite3.connect(db_path)
+    table_names = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     profile_columns = {row[1] for row in conn.execute("PRAGMA table_info(user_profile)").fetchall()}
     prep_columns = {row[1] for row in conn.execute("PRAGMA table_info(interview_prep)").fetchall()}
     work_experience = conn.execute("SELECT work_experience FROM user_profile WHERE id = 1").fetchone()[0]
@@ -172,6 +309,7 @@ def test_init_db_auto_migrates_profile_experience_fields(monkeypatch, tmp_path):
     assert "work_experience" in profile_columns
     assert "core_pitch" in prep_columns
     assert "tailored_resume" in prep_columns
+    assert {"chat_threads", "chat_messages", "analysis_runs"} <= table_names
     assert work_experience
     assert core_pitch == ""
     assert tailored_resume == ""
@@ -1228,9 +1366,10 @@ def test_export_endpoints_cover_core_artifacts(monkeypatch, tmp_path):
             archive_export = await client.get("/api/exports/archive?format=json")
             assert archive_export.status_code == 200, archive_export.text
             payload = archive_export.json()
-            assert payload["schema_version"] == "0005_application_events"
+            assert payload["schema_version"] == "0006_decision_chat"
             assert payload["jobs"][0]["company_name"] == "示例市远航科技"
             assert "application_events" in payload
+            assert "chat_threads" in payload
 
     asyncio.run(scenario())
 

@@ -15,6 +15,7 @@ import {
   Globe,
   Inbox,
   Info,
+  ImagePlus,
   Loader2,
   MessageSquareText,
   NotebookPen,
@@ -34,19 +35,19 @@ import {
   X
 } from "lucide-react";
 import { FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
-import { api, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
+import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour, { TourStep } from "./Tour";
-import type { AiStatus, AppConfig, ApplicationEvent, Company, Draft, FitScore, FollowUpTask, FunnelAnalytics, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
+import type { AiStatus, AppConfig, ApplicationEvent, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
 
 // 聚光灯引导步骤：只指向首屏稳定存在的元素，避免切视图编排，保持简单稳健。
 const TOUR_STEPS: TourStep[] = [
   {
     title: "欢迎使用 job-one-stop",
-    body: "这是本地优先的个人求职助手：发现岗位、沉淀公司调研、按画像评分、生成面试准备。数据只存本机，不自动投递、不自动发消息。下面用 30 秒带你认识主要区域。"
+    body: "这是本地优先的个人求职助手：先在决策聊天里丢材料，再管理岗位、公司调研、跟进和面试准备。数据只存本机，不自动投递、不自动发消息。下面用 30 秒带你认识主要区域。"
   },
-  { target: "nav", title: "主导航", body: "按岗位池、公司调研、面试准备、待办的顺序推进，最后在系统配置里调整个人画像、来源和评分权重。" },
+  { target: "nav", title: "主导航", body: "拿不准时先用决策聊天；明确要推进后，再到岗位池、公司调研、面试准备和待办完成闭环。" },
   { target: "metrics", title: "概览与漏斗", body: "顶部一条统计带:岗位总数、高潜、待调研、最高分、草稿,以及已投/面试/Offer/待跟进漏斗。点数字会跳到对应视图。" },
   { target: "collect", title: "采集与导入", body: "这一排按钮负责补充真实岗位：运行 BOSS 采集、抓 beBee、导入 CSV/XLSX。返回 0 岗位时先看通知里的跳过原因。" },
   { target: "wechat", title: "公众号 / 元宝导入", body: "粘贴元宝回答或 mp.weixin 链接，系统会抓正文并拆出多个岗位；被风控的文章可改为手动粘正文。" },
@@ -56,6 +57,7 @@ const TOUR_STEPS: TourStep[] = [
 ];
 
 const navItems = [
+  { id: "chat", label: "决策聊天", icon: MessageSquareText },
   { id: "jobs", label: "岗位池", icon: BriefcaseBusiness },
   { id: "companies", label: "公司调研", icon: Building2 },
   { id: "prep", label: "面试准备", icon: FileQuestion },
@@ -173,6 +175,7 @@ function interviewLogToMarkdown(log: InterviewLog, job?: Job | null) {
 const PAGE_SIZE = 10;
 const JOB_PAGE_SIZE = 20;
 const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v1";
+const ACTIVE_CHAT_THREAD_KEY = "job-one-stop.active-chat-thread.v1";
 const GLOBAL_BUSY_KEYS = ["source-boss", "source-bebee", "upload", "wechat", "sprint", "manual", "profile", "export"] as const;
 
 type ManualJob = {
@@ -328,7 +331,7 @@ function aiStatusLabel(status: AiStatus | null) {
 }
 
 function App() {
-  const [activeNav, setActiveNav] = useState<(typeof navItems)[number]["id"]>("jobs");
+  const [activeNav, setActiveNav] = useState<(typeof navItems)[number]["id"]>("chat");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { busy, runBusy } = useBusyState();
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -1002,7 +1005,7 @@ function App() {
         <header className="topbar">
           <div>
             <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
-            <p>岗位发现、公司证据、匹配评分、准备材料都留在本机。</p>
+            <p>{activeNav === "chat" ? "把拿不准的材料丢进来：规则先判，AI 可选，会话只存本机。" : "岗位发现、公司证据、匹配评分、准备材料都留在本机。"}</p>
           </div>
           <div className="toolbar-actions">
             <button data-tour="guide" className="icon-button" title="打开使用引导" onClick={() => setTourOpen(true)}>
@@ -1053,7 +1056,7 @@ function App() {
 
         {notice && <NoticeBanner notice={notice} onClose={() => setNotice(null)} />}
 
-        {activeNav !== "config" && (
+        {activeNav !== "config" && activeNav !== "chat" && (
           <StatBar
             metrics={metrics}
             funnel={funnel}
@@ -1065,6 +1068,7 @@ function App() {
         )}
 
         <section className="workspace-content">
+          {activeNav === "chat" && <ChatView jobs={jobs} onOpenJob={openJob} />}
           {activeNav === "jobs" && (
             <JobsView
               jobs={filteredJobs}
@@ -1339,7 +1343,7 @@ function UsageGuideModal({ onClose, onStartTour }: { onClose: () => void; onStar
         <div className="modal-head">
           <div>
             <h2 id="usage-guide-title">使用指南</h2>
-            <p className="muted">按“岗位池、调研、评分、准备、待办”推进，每天用冲刺包收口。</p>
+            <p className="muted">先用决策聊天判断，再按“岗位池、调研、准备、待办”推进，每天用冲刺包收口。</p>
           </div>
           <button type="button" className="icon-button" onClick={onClose} title="关闭">
             <X size={18} />
@@ -1615,6 +1619,295 @@ function PaginationControls({
       <button className="small-action" onClick={() => onPage(Math.min(pageCount, page + 1))} disabled={page >= pageCount}>
         下一页
       </button>
+    </div>
+  );
+}
+
+function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => void | Promise<void> }) {
+  const [threads, setThreads] = useState<ChatThread[]>([]);
+  const [activeThreadId, setActiveThreadId] = useState<number | null>(() => {
+    try {
+      const stored = window.localStorage.getItem(ACTIVE_CHAT_THREAD_KEY);
+      return stored ? Number(stored) || null : null;
+    } catch {
+      return null;
+    }
+  });
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [draft, setDraft] = useState("");
+  const [imageDataUrl, setImageDataUrl] = useState("");
+  const [imageName, setImageName] = useState("");
+  const [jobId, setJobId] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState("");
+  const messageEndRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+
+  const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
+  const activeJob = activeThread?.job_id ? jobs.find((job) => job.id === activeThread.job_id) ?? null : null;
+
+  async function loadThreads(preferredId?: number | null) {
+    const loaded = await api<ChatThread[]>("/api/chat/threads");
+    setThreads(loaded);
+    const candidate = preferredId ?? activeThreadId;
+    const nextId = candidate && loaded.some((thread) => thread.id === candidate) ? candidate : loaded[0]?.id ?? null;
+    setActiveThreadId(nextId);
+    return nextId;
+  }
+
+  async function loadMessages(threadId: number) {
+    const detail = await api<ChatThreadDetail>(`/api/chat/threads/${threadId}`);
+    setMessages(detail.messages);
+    setThreads((items) => items.map((item) => (item.id === detail.thread.id ? detail.thread : item)));
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    loadThreads()
+      .then((threadId) => (threadId && !cancelled ? loadMessages(threadId) : undefined))
+      .catch((err) => !cancelled && setError(errorMessage(err, "聊天记录加载失败")))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!activeThreadId || loading) return;
+    try {
+      window.localStorage.setItem(ACTIVE_CHAT_THREAD_KEY, String(activeThreadId));
+    } catch {
+      // Local storage is optional; SQLite remains the source of truth.
+    }
+    setError("");
+    loadMessages(activeThreadId).catch((err) => setError(errorMessage(err, "聊天记录加载失败")));
+  }, [activeThreadId]);
+
+  useEffect(() => {
+    messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, sending]);
+
+  async function createThread(kind: "general" | "job") {
+    setError("");
+    if (kind === "job" && !jobId) {
+      setError("请先选择一个岗位。");
+      return;
+    }
+    try {
+      const thread = await api<ChatThread>("/api/chat/threads", {
+        method: "POST",
+        ...jsonBody({ kind, job_id: kind === "job" ? Number(jobId) : null })
+      });
+      await loadThreads(thread.id);
+      setActiveThreadId(thread.id);
+      await loadMessages(thread.id);
+      if (kind === "job") setJobId("");
+    } catch (err) {
+      setError(errorMessage(err, "创建聊天失败"));
+    }
+  }
+
+  async function sendMessage(event?: FormEvent) {
+    event?.preventDefault();
+    const content = draft.trim() || (imageDataUrl ? "请分析这张截图。" : "");
+    if (!activeThreadId || !content || sending) return;
+    setSending(true);
+    setError("");
+    setDraft("");
+    try {
+      const reply = await api<ChatReply>(`/api/chat/threads/${activeThreadId}/messages`, {
+        method: "POST",
+        ...jsonBody({ content, image_data_url: imageDataUrl || null, image_name: imageName || null })
+      });
+      setMessages((items) => [...items, reply.user_message, reply.assistant_message]);
+      setImageDataUrl("");
+      setImageName("");
+      await loadThreads(activeThreadId);
+    } catch (err) {
+      setDraft(content);
+      setError(errorMessage(err, "分析失败；消息可能已保存在本机，可刷新查看"));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function chooseImage(file?: File) {
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setError("截图只支持 PNG、JPEG 或 WebP。")
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      setError("截图不能超过 4 MB。")
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      setImageDataUrl(typeof reader.result === "string" ? reader.result : "");
+      setImageName(file.name);
+      setError("");
+    };
+    reader.onerror = () => setError("截图读取失败，请重试。");
+    reader.readAsDataURL(file);
+  }
+
+  return (
+    <section className="chat-shell" aria-label="决策聊天">
+      <aside className="chat-sidebar">
+        <div className="chat-sidebar-head">
+          <div><strong>对话</strong><small>刷新页面后仍会保留</small></div>
+          <button className="small-action" type="button" onClick={() => createThread("general")}><Plus size={15} /> 新对话</button>
+        </div>
+        <div className="chat-job-create">
+          <select value={jobId} onChange={(event) => setJobId(event.target.value)} aria-label="选择岗位创建聊天">
+            <option value="">选择岗位专属聊天…</option>
+            {jobs.map((job) => <option key={job.id} value={job.id}>{job.company_name} · {job.title}</option>)}
+          </select>
+          <button className="small-action" type="button" onClick={() => createThread("job")} disabled={!jobId}>创建 / 打开</button>
+        </div>
+        <div className="chat-thread-list">
+          {threads.map((thread) => (
+            <button type="button" key={thread.id} className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)}>
+              <span>{thread.kind === "job" ? "岗位" : "通用"}</span>
+              <strong>{thread.title}</strong>
+              <small>{thread.last_message || "还没有消息"}</small>
+            </button>
+          ))}
+          {!loading && !threads.length && <p className="muted chat-empty-copy">先创建一个通用聊天，或者给某个岗位开专属聊天。</p>}
+        </div>
+      </aside>
+
+      <div className="chat-main">
+        {activeThread ? (
+          <>
+            <header className="chat-head">
+              <div>
+                <div className="chat-title-line"><span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : "通用聊天"}</span><h2>{activeThread.title}</h2></div>
+                <p>先走本地规则，再由已配置的 AI 结合个人上下文细化；不会自动写看板或发消息。</p>
+              </div>
+              {activeJob && <button className="small-action" type="button" onClick={() => onOpenJob(activeJob)}>查看岗位</button>}
+            </header>
+
+            <div className="chat-messages" aria-live="polite">
+              {!messages.length && !loading && (
+                <div className="chat-welcome">
+                  <MessageSquareText size={28} />
+                  <h3>把你拿不准的事情直接丢进来</h3>
+                  <p>可以粘贴 JD、招聘方回复、网页链接旁的正文，或描述你现在的约束。信息不足时，助手会明确告诉你还缺什么。</p>
+                  <div className="chat-prompts">
+                    {["这个岗位值不值得聊？我最应该先确认什么？", "招聘方这样回复，我现在怎么回？", "这件事有价值到需要沉淀吗？"].map((prompt) => (
+                      <button type="button" className="small-action" key={prompt} onClick={() => setDraft(prompt)}>{prompt}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {messages.map((message) => (
+                <article key={message.id} className={`chat-message ${message.role}`}>
+                  <div className="chat-message-label">{message.role === "user" ? "你" : "助手"}</div>
+                  <div className="chat-bubble">
+                    <p>{message.content}</p>
+                    {message.metadata_json?.attachment?.kind === "image" && (
+                      <img className="chat-attachment" src={apiUrl(`/api/chat/attachments/${message.metadata_json.attachment.id}`)} alt={message.metadata_json.attachment.name || "聊天截图"} />
+                    )}
+                    {message.role === "assistant" && message.metadata_json?.analysis && (
+                      <DecisionAnalysisCard analysis={message.metadata_json.analysis} aiUsed={Boolean(message.metadata_json.ai_used)} />
+                    )}
+                  </div>
+                </article>
+              ))}
+              {sending && (
+                <article className="chat-message assistant">
+                  <div className="chat-message-label">助手</div>
+                  <div className="chat-bubble chat-thinking"><Loader2 className="spin" size={17} /> 正在先检查规则，再组织建议…</div>
+                </article>
+              )}
+              <div ref={messageEndRef} />
+            </div>
+
+            <form className="chat-composer" onSubmit={sendMessage}>
+              {error && <div className="chat-error"><AlertCircle size={15} />{error}</div>}
+              {imageDataUrl && (
+                <div className="chat-attachment-preview">
+                  <img src={imageDataUrl} alt={imageName || "待发送截图"} />
+                  <span>{imageName}</span>
+                  <button type="button" className="icon-button" title="移除截图" onClick={() => { setImageDataUrl(""); setImageName(""); }}><X size={15} /></button>
+                </div>
+              )}
+              <textarea
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendMessage();
+                  }
+                }}
+                rows={3}
+                maxLength={12000}
+                placeholder="粘贴材料或描述问题。Enter 发送，Shift + Enter 换行。"
+                disabled={sending}
+              />
+              <div className="chat-composer-foot">
+                <div className="chat-attachment-control">
+                  <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { chooseImage(event.target.files?.[0]); event.target.value = ""; }} />
+                  <button className="small-action" type="button" onClick={() => imageInputRef.current?.click()} disabled={sending}><ImagePlus size={15} />截图</button>
+                  <small>启用 AI 时，本次材料及选定的个人上下文会发送给你配置的模型服务商。</small>
+                </div>
+                <button className="primary-action" disabled={(!draft.trim() && !imageDataUrl) || sending}>
+                  {sending ? <Loader2 className="spin" size={17} /> : <Send size={17} />}{sending ? "分析中" : "发送"}
+                </button>
+              </div>
+            </form>
+          </>
+        ) : (
+          <div className="chat-welcome standalone">
+            <MessageSquareText size={30} />
+            <h3>先创建一条对话</h3>
+            <p>通用聊天适合随手判断；岗位聊天会自动带上岗位库里的事实。</p>
+            <button className="primary-action" type="button" onClick={() => createThread("general")}><Plus size={17} />新建通用聊天</button>
+            {error && <div className="chat-error"><AlertCircle size={15} />{error}</div>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function DecisionAnalysisCard({ analysis, aiUsed }: { analysis: DecisionAnalysis; aiUsed: boolean }) {
+  const checks = analysis.rule_checks ?? [];
+  return (
+    <div className="decision-card">
+      <div className="decision-head">
+        <span className={`priority priority-${analysis.priority === "待确认" ? "unknown" : analysis.priority.toLowerCase()}`}>{analysis.priority}</span>
+        <strong>{analysis.direction}</strong>
+        <small>{aiUsed ? "规则 + AI" : "仅规则"}</small>
+      </div>
+      <div className="decision-next"><span>唯一下一步 · {analysis.next_action}</span><strong>{analysis.action_text}</strong></div>
+      {!!checks.length && (
+        <div className="decision-checks">
+          {checks.map((check) => (
+            <div className={`decision-check ${check.status}`} key={check.code} title={check.detail}>
+              <span>{check.status === "pass" ? "✓" : check.status === "fail" ? "×" : "?"}</span>
+              <div><strong>{check.label}</strong><small>{check.detail}</small></div>
+            </div>
+          ))}
+        </div>
+      )}
+      {(analysis.reasons?.length > 0 || analysis.risks?.length > 0 || analysis.uncertainties?.length > 0) && (
+        <div className="decision-columns">
+          <div><span>判断依据</span><ul>{analysis.reasons?.map((item) => <li key={item}>{item}</li>)}</ul></div>
+          <div><span>风险 / 待确认</span><ul>{[...(analysis.risks ?? []), ...(analysis.uncertainties ?? [])].map((item) => <li key={item}>{item}</li>)}</ul></div>
+        </div>
+      )}
+      {analysis.reply_draft && (
+        <div className="decision-draft">
+          <span>可发送草稿</span><p>{analysis.reply_draft}</p>
+          <button className="small-action" type="button" onClick={() => void copyToClipboard(analysis.reply_draft)}><Copy size={14} />复制</button>
+        </div>
+      )}
+      <p className="decision-boundary">{analysis.pipeline_recommendation?.reason || "当前为只读建议，不会自动执行。"}</p>
     </div>
   );
 }

@@ -220,6 +220,22 @@ with httpx.Client(base_url=BASE_URL, timeout=10) as client:
     ).json()
     assert profile["salary_min_k"] == 7
 
+    chat_thread = assert_ok(
+        client.post("/api/chat/threads", json={"kind": "job", "job_id": first["id"]}),
+        "create job chat",
+    ).json()
+    chat_reply = assert_ok(
+        client.post(
+            f"/api/chat/threads/{chat_thread['id']}/messages",
+            json={"content": "这个岗位值得继续推进吗？"},
+        ),
+        "create chat message",
+    ).json()
+    assert chat_reply["ai_used"] is False
+    assert chat_reply["analysis"]["priority"] in {"A", "B", "C", "D", "待确认"}
+    chat_detail = assert_ok(client.get(f"/api/chat/threads/{chat_thread['id']}"), "restore chat thread").json()
+    assert [message["role"] for message in chat_detail["messages"]] == ["user", "assistant"]
+
     score = assert_ok(client.post(f"/api/jobs/{first['id']}/score"), "create score").json()
     assert score["total"] > 0
 

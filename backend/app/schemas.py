@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import binascii
 from datetime import date, datetime
 from typing import Optional
 
@@ -167,6 +169,44 @@ class ProfileUpdate(SQLModel):
         "commute_preferences",
         mode="before",
     )(lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value)
+
+
+class ChatThreadCreate(SQLModel):
+    kind: str = "general"
+    job_id: Optional[int] = None
+    title: Optional[str] = None
+
+    _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job"}))
+    _normalize_title = field_validator("title", mode="before")(
+        lambda cls, value: validate_optional_text("title", value) if isinstance(value, str) or value is None else value
+    )
+
+
+class ChatMessageCreate(SQLModel):
+    content: str = Field(max_length=12000)
+    image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)
+    image_name: Optional[str] = Field(default=None, max_length=180)
+
+    _validate_content = field_validator("content")(lambda cls, value: validate_required_text("content", value))
+    _normalize_image_name = field_validator("image_name", mode="before")(
+        lambda cls, value: validate_optional_text("image_name", value) if isinstance(value, str) or value is None else value
+    )
+
+    @field_validator("image_data_url")
+    @classmethod
+    def validate_image_data_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        allowed = ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+        if not value.startswith(allowed):
+            raise ValueError("image_data_url must be a PNG, JPEG, or WebP data URL")
+        try:
+            decoded = base64.b64decode(value.split(",", 1)[1], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("image_data_url contains invalid base64 data") from exc
+        if not decoded:
+            raise ValueError("image_data_url cannot be empty")
+        return value
 
 
 class DraftCreate(SQLModel):

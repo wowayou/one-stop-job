@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import math
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -19,14 +21,18 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session, select
+from starlette.concurrency import run_in_threadpool
 
 from .config import ConfigError, get_config_path, get_settings, load_yaml_config, save_yaml_config
 from .db import engine, get_session, init_db
 from .models import (
+    AnalysisRun,
     ApplicationEvent,
+    ChatMessage,
+    ChatThread,
     Company,
     Draft,
     FitScore,
@@ -43,6 +49,8 @@ from .models import (
 from .schemas import (
     AppConfigUpdate,
     ApplicationEventCreate,
+    ChatMessageCreate,
+    ChatThreadCreate,
     CompanyUpdate,
     DraftCreate,
     FollowUpTaskCreate,
@@ -56,10 +64,11 @@ from .schemas import (
     ResearchItemCreate,
     WeChatCollectRequest,
 )
-from .services.ai import is_ai_available, tailor_interview_prep_llm
+from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, tailor_interview_prep_llm
 from .services.analytics import build_funnel_payload
 from .services.companies import company_list_payload
-from .services.context_repository import ContextRepository
+from .services.context_repository import ContextRepository, ContextRepositoryError
+from .services.decision_chat import assistant_content, build_rule_analysis, mark_image_processed, merge_model_analysis
 from .services.collectors import TabularFileCollector, WeChatPasteCollector
 from .services.exporter import (
     build_archive_payload,
@@ -593,6 +602,10 @@ def _delete_jobs_with_related(session: Session, job_ids: list[int]) -> int:
     unique_ids = list(dict.fromkeys(job_ids))
     if not unique_ids:
         return 0
+    for thread in session.exec(select(ChatThread).where(ChatThread.job_id.in_(unique_ids))).all():
+        thread.job_id = None
+        thread.updated_at = utc_now()
+        session.add(thread)
     for model in (JobSourceLink, FitScore, InterviewPrep, Draft, FollowUpTask, InterviewLog, ApplicationEvent):
         for item in session.exec(select(model).where(model.job_id.in_(unique_ids))).all():
             session.delete(item)
@@ -889,6 +902,230 @@ async def health() -> dict:
 async def context_status() -> dict:
     """检查外部个人操作仓库的只读集成状态，不返回绝对路径或正文。"""
     return ContextRepository(settings.context_repo_path).status()
+
+
+def _chat_thread_payload(session: Session, thread: ChatThread) -> dict:
+    message_count = session.exec(select(func.count(ChatMessage.id)).where(ChatMessage.thread_id == thread.id)).one()
+    last_message = session.exec(
+        select(ChatMessage.content).where(ChatMessage.thread_id == thread.id).order_by(ChatMessage.created_at.desc())
+    ).first()
+    job = session.get(Job, thread.job_id) if thread.job_id else None
+    return {
+        **jsonable_encoder(thread),
+        "message_count": message_count,
+        "last_message": last_message[:160] if last_message else None,
+        "job": (
+            {
+                "id": job.id,
+                "title": job.title,
+                "company_name": job.company_name,
+                "salary_text": job.salary_text,
+                "city": job.city,
+                "area": job.area,
+            }
+            if job
+            else None
+        ),
+    }
+
+
+def _decision_context() -> tuple[str, str, bool]:
+    repository = ContextRepository(settings.context_repo_path)
+    parts: list[str] = []
+    rules_version = "local-profile"
+    rules_loaded = False
+    for key in ("decision_rules", "profile", "board"):
+        try:
+            document = repository.read_document(key)
+        except ContextRepositoryError:
+            continue
+        if key == "decision_rules" and document.updated:
+            rules_version = document.updated
+        if key == "decision_rules":
+            rules_loaded = True
+        parts.append(f"[{key}]\n{document.content}")
+    return "\n\n".join(parts)[:32000], rules_version, rules_loaded
+
+
+def _save_chat_image(data_url: str, original_name: str | None) -> dict:
+    header, encoded = data_url.split(",", 1)
+    mime_type = header.removeprefix("data:").removesuffix(";base64")
+    extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime_type]
+    attachment_id = f"{uuid.uuid4().hex}.{extension}"
+    attachment_dir = settings.data_dir / "chat_attachments"
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    path = attachment_dir / attachment_id
+    path.write_bytes(base64.b64decode(encoded, validate=True))
+    return {
+        "kind": "image",
+        "id": attachment_id,
+        "name": (original_name or "截图")[:180],
+        "mime_type": mime_type,
+        "size_bytes": path.stat().st_size,
+    }
+
+
+def _chat_attachment_path(attachment_id: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{32}\.(?:png|jpg|webp)", attachment_id):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    path = (settings.data_dir / "chat_attachments" / attachment_id).resolve()
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    return path
+
+
+@app.get("/api/chat/threads")
+async def list_chat_threads(session: SessionDep) -> list[dict]:
+    threads = session.exec(select(ChatThread).order_by(ChatThread.updated_at.desc())).all()
+    return [_chat_thread_payload(session, thread) for thread in threads]
+
+
+@app.get("/api/chat/attachments/{attachment_id}")
+async def get_chat_attachment(attachment_id: str) -> FileResponse:
+    path = _chat_attachment_path(attachment_id)
+    media_type = {".png": "image/png", ".jpg": "image/jpeg", ".webp": "image/webp"}[path.suffix.lower()]
+    return FileResponse(path, media_type=media_type, filename=None)
+
+
+@app.post("/api/chat/threads")
+async def create_chat_thread(payload: ChatThreadCreate, session: SessionDep) -> dict:
+    job = session.get(Job, payload.job_id) if payload.job_id else None
+    if payload.kind == "job" and job is None:
+        raise HTTPException(status_code=400, detail="岗位聊天必须关联一个存在的岗位")
+    if payload.kind == "general" and payload.job_id is not None:
+        raise HTTPException(status_code=400, detail="通用聊天不能关联岗位")
+
+    if job is not None:
+        existing = session.exec(
+            select(ChatThread).where(ChatThread.kind == "job", ChatThread.job_id == job.id)
+        ).first()
+        if existing:
+            return {**_chat_thread_payload(session, existing), "reused": True}
+
+    title = payload.title or (f"{job.company_name} · {job.title}" if job else "新对话")
+    thread = ChatThread(kind=payload.kind, job_id=job.id if job else None, title=title[:120])
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+    return {**_chat_thread_payload(session, thread), "reused": False}
+
+
+@app.get("/api/chat/threads/{thread_id}")
+async def get_chat_thread(thread_id: int, session: SessionDep) -> dict:
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    messages = session.exec(
+        select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
+    ).all()
+    return {"thread": _chat_thread_payload(session, thread), "messages": messages}
+
+
+@app.post("/api/chat/threads/{thread_id}/messages")
+async def create_chat_message(thread_id: int, payload: ChatMessageCreate, session: SessionDep) -> dict:
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    job = session.get(Job, thread.job_id) if thread.job_id else None
+    profile = _get_profile(session)
+
+    attachment = _save_chat_image(payload.image_data_url, payload.image_name) if payload.image_data_url else None
+    user_message = ChatMessage(
+        thread_id=thread_id,
+        role="user",
+        content=payload.content,
+        metadata_json={"attachment": attachment} if attachment else {},
+    )
+    session.add(user_message)
+    thread.updated_at = utc_now()
+    if thread.title == "新对话":
+        thread.title = payload.content.replace("\n", " ")[:32]
+    session.add(thread)
+    session.commit()
+    session.refresh(user_message)
+
+    context_text, rules_version, context_available = _decision_context()
+    rule_analysis = build_rule_analysis(
+        message=payload.content,
+        profile=profile,
+        job=job,
+        thread_kind=thread.kind,
+        context_available=context_available,
+        image_attached=bool(payload.image_data_url),
+        policy_context=context_text,
+    )
+    history = session.exec(
+        select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
+    ).all()
+    conversation = [{"role": item.role, "content": item.content[:4000]} for item in history[-12:]]
+    job_context = (
+        {
+            "title": job.title,
+            "company_name": job.company_name,
+            "salary": job.salary_text,
+            "location": " · ".join(filter(None, [job.city, job.area])),
+            "skills": job.skills,
+            "description": job.description,
+            "recruiter_message": job.recruiter,
+        }
+        if job
+        else {}
+    )
+
+    ai_cfg = settings.config.get("ai", {})
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
+    model_analysis = None
+    if ai_enabled:
+        model_analysis = await run_in_threadpool(
+            analyze_decision_chat_llm,
+            context=context_text,
+            conversation=conversation,
+            job_context=job_context,
+            rule_analysis=rule_analysis,
+            image_data_url=payload.image_data_url,
+        )
+    ai_used = model_analysis is not None
+    analysis = merge_model_analysis(rule_analysis, model_analysis)
+    if ai_used and payload.image_data_url:
+        mark_image_processed(analysis)
+    run_status = "completed" if ai_used else ("fallback" if ai_enabled else "rules_only")
+    provider = str(ai_cfg.get("provider") or "openai_compatible") if ai_enabled else "rules"
+
+    assistant_message = ChatMessage(
+        thread_id=thread_id,
+        role="assistant",
+        content=assistant_content(analysis, ai_used=ai_used),
+        metadata_json={"analysis": analysis, "ai_used": ai_used, "run_status": run_status},
+    )
+    session.add(assistant_message)
+    session.commit()
+    session.refresh(assistant_message)
+    analysis_run = AnalysisRun(
+        thread_id=thread_id,
+        user_message_id=user_message.id or 0,
+        assistant_message_id=assistant_message.id,
+        rules_version=rules_version,
+        provider=provider,
+        model=configured_model() if ai_enabled else None,
+        status=run_status,
+        result_json=analysis,
+    )
+    session.add(analysis_run)
+    session.commit()
+    session.refresh(analysis_run)
+    session.refresh(thread)
+    session.refresh(user_message)
+    session.refresh(assistant_message)
+
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+        "analysis_run": analysis_run,
+        "analysis": analysis,
+        "ai_used": ai_used,
+    }
 
 
 @app.get("/api/ready")
@@ -1370,10 +1607,13 @@ async def export_data(
             interviews=session.exec(select(InterviewLog).order_by(InterviewLog.created_at.desc())).all(),
             runs=session.exec(select(SourceRun).order_by(SourceRun.started_at.desc())).all(),
             events=_application_events(session),
+            chat_threads=session.exec(select(ChatThread).order_by(ChatThread.updated_at.desc())).all(),
+            chat_messages=session.exec(select(ChatMessage).order_by(ChatMessage.created_at.asc())).all(),
+            analysis_runs=session.exec(select(AnalysisRun).order_by(AnalysisRun.created_at.asc())).all(),
         )
         return _download_response(
             f"archive-{generated_at}.json",
-            export_archive_json(schema_version="0005_application_events", generated_at=utc_now().isoformat(), payload=archive),
+            export_archive_json(schema_version="0006_decision_chat", generated_at=utc_now().isoformat(), payload=archive),
             "application/json; charset=utf-8",
         )
 

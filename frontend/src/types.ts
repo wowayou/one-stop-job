@@ -122,6 +122,82 @@ export type AiStatus = {
   base_url_configured: boolean;
 };
 
+export type DecisionRuleCheck = {
+  code: string;
+  label: string;
+  status: "pass" | "warn" | "fail" | "unknown";
+  detail: string;
+};
+
+export type DecisionAnalysis = {
+  summary: string;
+  confirmed_facts: { text: string; source: string }[];
+  uncertainties: string[];
+  direction: string;
+  priority: "A" | "B" | "C" | "D" | "待确认";
+  reasons: string[];
+  risks: string[];
+  hard_conditions: string[];
+  next_action: string;
+  action_text: string;
+  reply_draft: string;
+  pipeline_recommendation: { should_add: boolean; reason: string };
+  rule_checks: DecisionRuleCheck[];
+};
+
+export type ChatThread = {
+  id: number;
+  kind: "general" | "job";
+  job_id?: number | null;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+  last_message?: string | null;
+  reused?: boolean;
+  job?: {
+    id: number;
+    title: string;
+    company_name: string;
+    salary_text?: string | null;
+    city?: string | null;
+    area?: string | null;
+  } | null;
+};
+
+export type ChatMessage = {
+  id: number;
+  thread_id: number;
+  role: "user" | "assistant";
+  content: string;
+  metadata_json?: {
+    analysis?: DecisionAnalysis;
+    ai_used?: boolean;
+    run_status?: "completed" | "fallback" | "rules_only";
+    attachment?: {
+      kind: "image";
+      id: string;
+      name: string;
+      mime_type: string;
+      size_bytes: number;
+    };
+  };
+  created_at: string;
+};
+
+export type ChatThreadDetail = {
+  thread: ChatThread;
+  messages: ChatMessage[];
+};
+
+export type ChatReply = {
+  thread: ChatThread;
+  user_message: ChatMessage;
+  assistant_message: ChatMessage;
+  analysis: DecisionAnalysis;
+  ai_used: boolean;
+};
+
 export type AppConfig = {
   path: string;
   config: Record<string, unknown>;
