@@ -1,0 +1,226 @@
+# one-stop-job
+
+本地优先的个人求职助手：自动发现岗位、沉淀公司调研、按个人画像评分排序、生成面试准备材料。
+
+> 隐私边界：公开仓库只包含程序、空白默认画像和合成测试数据。真实 `.env`、SQLite、个人上下文仓库、聊天记录、岗位卡和截图不得提交。详见 [PRIVACY.md](PRIVACY.md)。
+
+## ✨ 核心功能
+
+- **岗位池管理**：多来源采集（BOSS/智联/公众号/beBee/CSV）、跨来源去重、状态流转
+- **公司调研**：沉淀官网、招聘页、小红书、脉脉、看准等证据
+- **智能评分**：按岗位匹配、薪资、成长性、稳定性、口碑等维度输出 100 分解释
+- **面试准备**：生成 JD 摘要、技能差距、优势话术、STAR 素材、反问问题；配置 AI 后按 JD + 个人画像定制打招呼语、简历重排与反问（不配 AI 回退模板）
+- **跟进任务 & 提醒**：把投递、沟通、调研动作沉淀为本地任务；fit/面试中久无进展的岗位自动标记「需跟进」
+
+## 🚀 快速开始
+
+**推荐使用本地开发模式（启动仅需 5-10 秒）：**
+
+```bash
+# 1. 安装依赖（首次约 2-3 分钟）
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cd frontend && npm install && cd ..
+cp .env.template .env
+
+# 2. 启动后端（终端1）
+.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
+
+# 3. 启动前端（终端2）
+cd frontend && npm run dev
+```
+
+**访问：** `http://127.0.0.1:5173`
+
+**详细说明（包括 Windows/Docker 方式）：** 见 [QUICKSTART.md](QUICKSTART.md)
+
+## 📖 主要文档
+
+| 文档 | 说明 |
+|------|------|
+| [QUICKSTART.md](QUICKSTART.md) | **快速开始指南**（本地/Docker/Windows/Linux） |
+| [CLAUDE.md](CLAUDE.md) | **项目架构标准**（AI 与人类共同遵守） |
+| [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
+| [docs/operations.md](docs/operations.md) | Docker 部署、数据备份、运行排障 |
+
+<details>
+<summary>开发者文档</summary>
+
+- [docs/data-flow.md](docs/data-flow.md) - 数据流架构
+- [docs/testing-system.md](docs/testing-system.md) - 测试体系
+- [docs/handoff.md](docs/handoff.md) - 项目交接清单
+
+</details>
+
+## 🎯 核心设计原则
+
+1. **本地优先**：单用户、SQLite、无账号体系、数据不出本机
+2. **不自动化对外动作**：不自动投递、不自动发消息、联系方式仅本地留存
+3. **来源解耦**：统一数据管线，新增来源不影响评分/面试准备逻辑
+4. **AI 可选**：公众号抽取、面试准备可接 AI，但核心评分由规则引擎保证
+5. **合规抓取**：仅公开内容、低频、人工触发、不破解验证码、不二次分发
+
+## 🔌 数据来源
+
+| 来源 | 触发方式 | 说明 |
+|------|---------|------|
+| **BOSS 直聘** | 宿主机脚本 | 需安装 OpenCLI，Windows 双击 `tools\host_collect_boss.bat` |
+| **智联招聘** | 宿主机脚本 | 需安装 OpenCLI，默认禁用，配置后启用 |
+| **公众号** | 粘贴导入 | 粘贴元宝回答或 mp.weixin 链接，自动拆分多岗位 |
+| **beBee** | 配置采集 | 解析页面 JobPosting JSON-LD 或 Next.js payload |
+| **CSV/Excel** | 文件上传 | 支持自定义字段映射 |
+| **手动录入** | 表单填写 | 单条岗位快速录入 |
+
+## ⚙️ 配置说明
+
+### 基础配置
+
+编辑 `config.yaml`：
+
+```yaml
+opencli:
+  boss_cmd:
+    - "opencli"
+    - "boss"
+    - "search"
+    - "示例岗位" # 使用前仅在本机替换
+    - "--city"
+    - "示例市"
+    - "--salary"
+    - "8-20k"
+    - "--limit"
+    - "200"
+    - "--format"
+    - "csv"
+
+general:
+  data_dir: "./data/job_one_stop"
+
+scoring:
+  weights:
+    role_match: 25
+    salary_city: 15
+    growth: 15
+    stability: 15
+    reputation: 10
+    commute_rest: 10
+    interview_roi: 10
+
+followup:
+  stale_days: 5   # fit/面试中超过该天数无活动 → 标记「需跟进」
+```
+
+### 个人操作仓库（Phase 0，只读）
+
+如需让应用读取独立维护的个人画像、求职规则、岗位看板和岗位卡，在 `.env` 配置当前运行环境可识别的绝对路径：
+
+```bash
+# Windows
+JOB_ONE_STOP_CONTEXT_REPO_PATH=D:\path\to\personal-context
+
+# WSL（与 Windows 示例二选一）
+# JOB_ONE_STOP_CONTEXT_REPO_PATH=/mnt/d/path/to/personal-context
+```
+
+启动后访问 `GET /api/context/status` 检查只读连接。接口只返回白名单文件是否可用，不返回绝对路径、文件数量、更新时间或 Markdown 正文。Phase 0 不提供任何外部仓库写入能力。
+
+### AI 配置（可选）
+
+用于公众号岗位抽取和面试准备：
+
+1. 编辑 `.env`：
+
+   ```bash
+   OPENAI_API_KEY=sk-xxx
+   OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
+   ```
+
+2. 在 `config.yaml` 启用：
+
+   ```yaml
+   ai:
+     enabled: true
+   ```
+
+启用后，「面试准备」会按岗位 JD 和个人画像定制打招呼语、简历强调点和反问问题；岗位抽屉里可用「AI 定制」勾选临时在 AI / 模板间切换。
+
+不配置 AI 不影响主流程：公众号回退到纯正则解析，面试准备回退到模板生成。
+
+## 🧪 测试与质量
+
+```bash
+# 完整质量门禁（提交前必跑）
+scripts/quality_gate.sh
+
+# 或 Windows 双击
+run_quality_check.bat
+
+# 单独运行后端测试
+.venv/bin/python -m pytest -q
+
+# 部署前自检
+scripts/deploy_check.sh
+```
+
+## 🔧 常见问题
+
+**Q: Docker 构建太慢或 `Read timed out`？**
+
+A: 推荐使用本地开发模式（5-10 秒启动）。如需 Docker，在 `.env` 配置镜像源。详见 [docs/docker-optimization.md](docs/docker-optimization.md)。
+
+**Q: `No module named uvicorn` 或 `.venv/bin/activate` 不存在？**
+
+A: 不要用系统 Python 启动后端，也不要 `source .venv/bin/python`。直接运行 `.venv/bin/python -m uvicorn ...`。如果 `.venv` 缺少 `bin/activate`，执行 `python3 -m venv --clear .venv && .venv/bin/python -m pip install -r requirements.txt` 重建虚拟环境。
+
+**Q: database is locked？**
+
+A: 不要同时运行本地开发和 Docker。选择一种方式运行。
+
+**Q: BOSS 采集失败？**
+
+A: 确保宿主机已安装 OpenCLI 且浏览器登录态有效。见 [QUICKSTART.md](QUICKSTART.md)。
+
+**Q: 公众号抓取被拦截？**
+
+A: 被风控时会跳过并记录原因，可用「手动粘正文」方式导入。
+
+更多问题见 [QUICKSTART.md](QUICKSTART.md) 和 [docs/operations.md](docs/operations.md)。
+
+## 📊 求职冲刺流程
+
+1. **配置个人画像**：在「匹配评分」页填写目标岗位、技能、工作经历
+2. **导入岗位**：通过 BOSS/公众号/CSV 等方式收集岗位
+3. **生成冲刺包**：点顶栏「生成今日求职冲刺包」，系统自动补评分、筛 Top 岗位、生成面试准备
+4. **执行行动**：复制 Markdown 清单，调研 Top 5，决定投递/拒绝/归档
+5. **跟进收口**：冲刺包与「跟进任务」页会列出「需跟进」岗位（fit/面试中超 `stale_days` 天无进展），及时联系或更新状态
+
+详细执行节奏见 [docs/12-hour-sprint-playbook.md](docs/12-hour-sprint-playbook.md)。
+
+## 🎨 技术栈
+
+- **后端**：FastAPI + SQLModel + SQLite + Alembic
+- **前端**：React + Vite + TypeScript
+- **AI**：OpenAI 兼容协议（可选）
+- **采集**：httpx + BeautifulSoup + OpenCLI（宿主机）
+- **部署**：Docker Compose（可选）
+
+## 🤝 贡献指南
+
+1. 阅读 [CLAUDE.md](CLAUDE.md) 了解架构红线
+2. 新增功能前先跑 `scripts/quality_gate.sh`
+3. 测试不得联网，使用 fixtures
+4. 提交前确保质量门禁全绿
+
+## 📄 许可
+
+MIT
+
+## 🔗 相关资源
+
+- [OpenCLI](https://github.com/KeJunMao/openreader) - 多平台招聘信息采集工具
+- [腾讯元宝](https://yuanbao.tencent.com/) - 公众号语料搜索
+- [beBee](https://bebee.com/) - 国际招聘平台
+
+---
+
+**注意**：本项目仅供个人本地使用，不自动投递、不自动发消息。抓取遵循合规原则：仅公开内容、低频、人工触发、不二次分发。

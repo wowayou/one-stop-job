@@ -1,0 +1,139 @@
+# =============================================
+# one-stop-job 本地 Web 助手配置
+# 敏感信息只放 .env，不写入本文件。
+# =============================================
+
+# ==================== OpenCLI 配置 ====================
+# Docker 模式下，主服务不直接调用 OpenCLI。
+# BOSS / 智联建议在宿主机运行 tools/host_collect_*.bat 或 tools/host_collect_opencli.sh，
+# 生成 CSV 后自动导入到 http://127.0.0.1:8000/api/jobs/import。
+opencli:
+  # 这里只保存无个人信息的平台命令模板，不保存个人机器路径或真实求职画像。
+  # 使用前请把“示例岗位 / 示例市 / 8-20k”替换成自己的配置，并只保存在本机。
+  # 宿主机脚本默认从 PATH 查找 opencli；找不到时可临时传 --opencli <path>。
+  boss_cmd:
+    - "opencli"
+    - "boss"
+    - "search"
+    - "示例岗位"
+    - "--city"
+    - "示例市"
+    - "--salary"
+    - "8-20k"
+    # - "--rest"
+    # - "双休"
+    - "--limit"
+    - "200"
+    - "--format"
+    - "csv" # 关键修改：必须改为 csv，不能是 xlsx
+
+  # liepin_cmd:
+  #   - "opencli"
+  #   - "liepin"
+  #   - "search"
+  #   - "--keyword"
+  #   - "示例岗位"
+  #   - "--city"
+  #   - "示例市 OR 另一示例市"
+  #   - "--salary"
+  #   - "9000"
+  #   - "--rest"
+  #   - "双休"
+  #   - "--limit"
+  #   - "20"
+  #   - "--format"
+  #   - "csv"
+
+# ==================== 扩展采集来源配置 ====================
+# 新平台优先走配置化来源：kind=opencli_csv 代表宿主机调用 OpenCLI 并解析 CSV 输出。
+# enabled=false 的模板不会运行，只作为配置入口。
+job_sources:
+  zhilian:
+    enabled: false
+    label: "智联招聘"
+    kind: "opencli_csv"
+    command:
+      - "opencli"
+      - "zhilian"
+      - "search"
+      - "示例岗位"
+      - "--city"
+      - "示例市"
+      - "--salary"
+      - "8-20k"
+      - "--limit"
+      - "100"
+      - "--format"
+      - "csv"
+
+# ==================== 通用配置 ====================
+general:
+  data_dir: "./data/job_one_stop"     # SQLite 数据目录，本地数据不会提交
+
+# ==================== 公司调研配置 ====================
+research:
+  source_allowlist:
+    - "company_site"
+    - "job_post"
+    - "search"
+    - "xhs"
+    - "maimai"
+    - "kanzhun"
+    - "manual_note"
+
+# ==================== 公众号 / 元宝渠道配置 ====================
+# 岗位发现：招聘信息多发布在微信公众号；先用腾讯元宝（网页版）找出相关
+# mp.weixin.qq.com 文章链接，再把链接/整段回答粘贴进「公众号导入」。
+wechat:
+  source_label: "公众号" # 入库时 Job.source 的取值
+  fetch:
+    enabled: true # 是否允许服务端自动抓取文章正文（关闭则只能手动粘正文）
+    # 用移动端 UA 抓 mp.weixin 公开文章，单用户低频即可
+    user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.49"
+    rate_limit_seconds: 3 # 每次抓取之间的固定间隔，避免触发风控
+    timeout_seconds: 20
+  # 一篇文章正则抽到的岗位数 < 该值时，若 ai.enabled 再调用 LLM 兜底补抽
+  min_jobs_before_llm_fallback: 1
+  yuanbao_automation:
+    enabled: false # 默认关闭：元宝网页自动化脆弱且涉 ToS/账号风险，opt-in
+    user_data_dir: "./data/.yuanbao" # 持久化登录目录（一次性扫码后复用）
+    prompt_template: |
+      帮我找最近【请填写目标城市和目标岗位】相关的招聘公众号文章。
+      只输出一个 JSON 数组，每项含 title 和 link 两个字段；
+      link 必须是以 https://mp.weixin.qq.com/s 开头的公众号文章原文链接，不要任何解释或多余文字。
+
+# ==================== beBee 渠道配置 ====================
+# beBee 是实验来源：优先解析 schema.org JobPosting JSON-LD，
+# 再尝试 Next/RSC jobs payload、microdata 和列表页可见卡片。
+# 若采集结果为 0，通常是页面结构或外部 JS 接口渲染问题。
+bebee:
+  enabled: true
+  source_label: "beBee"
+  role_urls:
+    - "https://example.com/jobs" # 合成示例；使用前仅在本机替换
+  user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+  rate_limit_seconds: 3 # 多个角色页之间的固定间隔,避免触发风控
+  timeout_seconds: 20
+
+# ==================== 匹配评分配置 ====================
+scoring:
+  weights:
+    role_match: 25
+    salary_city: 15
+    growth: 15
+    stability: 15
+    reputation: 10
+    commute_rest: 10
+    interview_roi: 10
+
+# ==================== 跟进提醒配置 ====================
+# fit/interview 状态超过 stale_days 天没有任何活动（状态变更/面试复盘/跟进任务）
+# 时，会在冲刺包和「跟进任务」里高亮为“需跟进”。只提醒，不自动联系对方。
+followup:
+  stale_days: 5
+
+# ==================== AI 配置 ====================
+ai:
+  enabled: true
+  provider: "openai_compatible"
+  # 密钥继续放 .env，例如 OPENAI_API_KEY / OPENAI_BASE_URL

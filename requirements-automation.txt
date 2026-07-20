@@ -1,0 +1,4 @@
+# 可选：元宝网页自动化（opt-in，默认不需要）。
+# 安装后还需执行一次：playwright install chromium
+# 仅当 config.yaml wechat.yuanbao_automation.enabled=true 时才用到。
+playwright>=1.40.0

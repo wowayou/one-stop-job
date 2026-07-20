@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from typing import Optional
+
+from pydantic import field_validator
+from sqlmodel import Field, SQLModel
+
+from .services.domain import (
+    APPLICATION_EVENT_TYPES,
+    COMPANY_RISK_LEVELS,
+    FOLLOWUP_STATUSES,
+    JOB_STATUSES,
+    RECRUITMENT_STATUSES,
+    RESEARCH_SENTIMENTS,
+    validate_choice,
+    validate_optional_choice,
+    validate_optional_text,
+    validate_required_text,
+)
+
+
+class JobCreate(SQLModel):
+    title: str
+    company_name: str
+    source: str = "manual"
+    url: Optional[str] = None
+    salary_text: Optional[str] = None
+    city: Optional[str] = None
+    area: Optional[str] = None
+    experience: Optional[str] = None
+    degree: Optional[str] = None
+    skills: Optional[str] = None
+    description: Optional[str] = None
+    recruiter: Optional[str] = None
+    published_at: Optional[date] = None
+    recruitment_status: Optional[str] = None
+
+    _validate_title = field_validator("title")(lambda cls, value: validate_required_text("title", value))
+    _validate_company_name = field_validator("company_name")(lambda cls, value: validate_required_text("company_name", value))
+    _normalize_optional = field_validator(
+        "source",
+        "url",
+        "salary_text",
+        "city",
+        "area",
+        "experience",
+        "degree",
+        "skills",
+        "description",
+        "recruiter",
+        mode="before",
+    )(lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value)
+    _validate_recruitment_status = field_validator("recruitment_status")(
+        lambda cls, value: validate_optional_choice("recruitment_status", value, RECRUITMENT_STATUSES)
+    )
+
+
+class JobUpdate(SQLModel):
+    title: Optional[str] = None
+    company_name: Optional[str] = None
+    url: Optional[str] = None
+    salary_text: Optional[str] = None
+    city: Optional[str] = None
+    area: Optional[str] = None
+    experience: Optional[str] = None
+    degree: Optional[str] = None
+    skills: Optional[str] = None
+    description: Optional[str] = None
+    recruiter: Optional[str] = None
+    published_at: Optional[date] = None
+    recruitment_status: Optional[str] = None
+    status: Optional[str] = None
+    favorite: Optional[bool] = None
+
+    _normalize_optional = field_validator(
+        "url",
+        "salary_text",
+        "city",
+        "area",
+        "experience",
+        "degree",
+        "skills",
+        "description",
+        "recruiter",
+        mode="before",
+    )(lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value)
+    _strip_title = field_validator("title", "company_name", mode="before")(
+        lambda cls, value: value.strip() if isinstance(value, str) else value
+    )
+    _validate_recruitment_status = field_validator("recruitment_status")(
+        lambda cls, value: validate_optional_choice("recruitment_status", value, RECRUITMENT_STATUSES)
+    )
+    _validate_status = field_validator("status")(lambda cls, value: validate_optional_choice("status", value, JOB_STATUSES))
+
+
+class JobBulkUpdate(SQLModel):
+    ids: list[int]
+    status: Optional[str] = None
+    favorite: Optional[bool] = None
+
+    _validate_status = field_validator("status")(lambda cls, value: validate_optional_choice("status", value, JOB_STATUSES))
+
+
+class WeChatCollectRequest(SQLModel):
+    # text：元宝整段回答 / 链接列表（自动正则抽链）；urls：已拆好的链接；
+    # bodies：抓取失败时按 {url: 正文} 手动粘贴兜底。
+    text: Optional[str] = None
+    urls: Optional[list[str]] = None
+    bodies: Optional[dict[str, str]] = None
+
+
+class ResearchItemCreate(SQLModel):
+    source_type: str
+    title: str
+    summary: str
+    source_url: Optional[str] = None
+    sentiment: str = "neutral"
+    confidence: float = 0.6
+    captured_at: Optional[datetime] = None
+
+    _validate_source_type = field_validator("source_type")(lambda cls, value: validate_required_text("source_type", value))
+    _validate_title = field_validator("title")(lambda cls, value: validate_required_text("title", value))
+    _validate_summary = field_validator("summary")(lambda cls, value: validate_required_text("summary", value))
+    _normalize_source_url = field_validator("source_url", mode="before")(
+        lambda cls, value: validate_optional_text("source_url", value) if isinstance(value, str) or value is None else value
+    )
+    _validate_sentiment = field_validator("sentiment")(lambda cls, value: validate_choice("sentiment", value, RESEARCH_SENTIMENTS))
+
+
+class CompanyUpdate(SQLModel):
+    website: Optional[str] = None
+    industry: Optional[str] = None
+    size: Optional[str] = None
+    stage: Optional[str] = None
+    location: Optional[str] = None
+    risk_level: Optional[str] = None
+    notes: Optional[str] = None
+
+    _normalize_optional = field_validator("website", "industry", "size", "stage", "location", "notes", mode="before")(
+        lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value
+    )
+    _validate_risk_level = field_validator("risk_level")(
+        lambda cls, value: validate_optional_choice("risk_level", value, COMPANY_RISK_LEVELS)
+    )
+
+
+class ProfileUpdate(SQLModel):
+    target_titles: Optional[str] = None
+    target_cities: Optional[str] = None
+    salary_min_k: Optional[float] = None
+    salary_max_k: Optional[float] = None
+    skills: Optional[str] = None
+    strengths: Optional[str] = None
+    work_experience: Optional[str] = None
+    dealbreakers: Optional[str] = None
+    commute_preferences: Optional[str] = None
+    weights: Optional[dict] = None
+
+    _normalize_optional = field_validator(
+        "target_titles",
+        "target_cities",
+        "skills",
+        "strengths",
+        "work_experience",
+        "dealbreakers",
+        "commute_preferences",
+        mode="before",
+    )(lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value)
+
+
+class DraftCreate(SQLModel):
+    job_id: Optional[int] = None
+    kind: str = "message"
+    channel: str = "manual"
+    content: str
+    status: str = "draft"
+
+
+class FollowUpTaskCreate(SQLModel):
+    job_id: Optional[int] = None
+    title: str
+    status: str = "todo"
+    due_date: Optional[date] = None
+
+    _validate_title = field_validator("title")(lambda cls, value: validate_required_text("title", value))
+    _validate_status = field_validator("status")(lambda cls, value: validate_choice("status", value, FOLLOWUP_STATUSES))
+
+
+class FollowUpTaskUpdate(SQLModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    due_date: Optional[date] = None
+
+    _normalize_title = field_validator("title", mode="before")(
+        lambda cls, value: validate_optional_text("title", value) if isinstance(value, str) or value is None else value
+    )
+    _validate_status = field_validator("status")(lambda cls, value: validate_optional_choice("status", value, FOLLOWUP_STATUSES))
+
+
+class InterviewLogCreate(SQLModel):
+    round: str = "一面"
+    interview_date: Optional[date] = None
+    interviewer: Optional[str] = None
+    real_picture: str = ""
+    opportunity_score: Optional[float] = None
+    conclusion: str = ""
+    score_details: dict = Field(default_factory=dict)
+    qa_review: str = ""
+    weaknesses: str = ""
+    next_actions: str = ""
+    follow_up: str = ""
+
+
+class InterviewLogUpdate(SQLModel):
+    round: Optional[str] = None
+    interview_date: Optional[date] = None
+    interviewer: Optional[str] = None
+    real_picture: Optional[str] = None
+    opportunity_score: Optional[float] = None
+    conclusion: Optional[str] = None
+    score_details: Optional[dict] = None
+    qa_review: Optional[str] = None
+    weaknesses: Optional[str] = None
+    next_actions: Optional[str] = None
+    follow_up: Optional[str] = None
+
+
+class ApplicationEventCreate(SQLModel):
+    event_type: str
+    event_date: date
+    channel: Optional[str] = None
+    note: str = ""
+
+    _validate_event_type = field_validator("event_type")(lambda cls, value: validate_choice("event_type", value, APPLICATION_EVENT_TYPES))
+    _normalize_channel = field_validator("channel", mode="before")(
+        lambda cls, value: validate_optional_text("channel", value) if isinstance(value, str) or value is None else value
+    )
+    _normalize_note = field_validator("note", mode="before")(
+        lambda cls, value: (validate_optional_text("note", value) or "") if isinstance(value, str) or value is None else value
+    )
+
+
+class AppConfigUpdate(SQLModel):
+    config: dict

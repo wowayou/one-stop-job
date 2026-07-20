@@ -1,0 +1,14 @@
+.git
+.venv
+data
+frontend/node_modules
+frontend/dist
+__pycache__
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.sqlite
+*.sqlite3
+*.log
+.env
+runbook

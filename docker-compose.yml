@@ -1,0 +1,29 @@
+services:
+  app:
+    build:
+      context: .
+      args:
+        NODE_IMAGE: ${NODE_IMAGE:-node:20-bookworm-slim}
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12-slim}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    image: one-stop-job:local
+    container_name: one-stop-job
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${HOST_PORT:-8000}:${PORT:-8000}"
+    environment:
+      JOB_ONE_STOP_CONFIG: /app/config.yaml
+      JOB_ONE_STOP_DATABASE_URL: sqlite:////data/job_one_stop.sqlite3
+      JOB_ONE_STOP_CORS_ORIGINS: ${JOB_ONE_STOP_CORS_ORIGINS:-http://localhost:8000,http://127.0.0.1:8000}
+      JOB_ONE_STOP_OPENCLI_SERVER_ENABLED: "false"
+      PORT: ${PORT:-8000}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+    volumes:
+      - job_one_stop_data:/data
+      - ./config.yaml:/app/config.yaml
+
+volumes:
+  job_one_stop_data:
