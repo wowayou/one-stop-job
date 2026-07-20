@@ -1,10 +1,23 @@
 # 快速开始
 
-> 推荐使用**本地开发模式**，启动只需 5-10 秒。Docker 作为可选的一键部署方案。
+> 普通使用优先走 Windows 一键部署；改代码和调试时使用本地开发。两种模式默认使用不同数据库，不要同时启动。
 
 ---
 
-## 🚀 方式一：本地开发（推荐，最快）
+## 🚀 方式一：Windows 一键部署（普通使用）
+
+前置条件：已安装并启动 Docker Desktop。
+
+1. 首次启动或代码更新后：双击 `rebuild_app.bat`。
+2. 以后日常启动：双击 `start_app.bat`。
+3. 健康检查通过后，浏览器会自动打开 `http://127.0.0.1:8000/`。
+4. 查看状态：双击 `status_app.bat`；停止：双击 `stop_app.bat`。
+
+如果浏览器没有自动打开，手动访问 `http://127.0.0.1:8000/`。首次构建需要下载依赖，耗时取决于网络；排障见 [docs/docker-optimization.md](docs/docker-optimization.md)。
+
+---
+
+## 🛠️ 方式二：本地开发（推荐用于改代码）
 
 ### 前置条件
 
@@ -73,7 +86,7 @@ npm run dev
 
 ---
 
-## 🐳 方式二：Docker Compose（可选，适合部署）
+## 🐳 方式三：Docker Compose 命令行（适合 Linux/macOS/WSL）
 
 ### 前置条件
 
@@ -123,7 +136,7 @@ docker compose up -d --build
 docker compose up -d
 ```
 
-**Windows：** 双击 `start_app.bat`
+**Windows：** 优先使用文首的一键脚本。
 
 **访问：** `http://127.0.0.1:8000`
 

@@ -51,6 +51,7 @@ from .schemas import (
     ApplicationEventCreate,
     ChatMessageCreate,
     ChatThreadCreate,
+    ChatThreadUpdate,
     CompanyUpdate,
     DraftCreate,
     FollowUpTaskCreate,
@@ -1019,6 +1020,19 @@ async def get_chat_thread(thread_id: int, session: SessionDep) -> dict:
         select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
     ).all()
     return {"thread": _chat_thread_payload(session, thread), "messages": messages}
+
+
+@app.patch("/api/chat/threads/{thread_id}")
+async def update_chat_thread(thread_id: int, payload: ChatThreadUpdate, session: SessionDep) -> dict:
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    thread.title = payload.title[:120]
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+    return _chat_thread_payload(session, thread)
 
 
 @app.post("/api/chat/threads/{thread_id}/messages")

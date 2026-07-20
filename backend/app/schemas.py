@@ -182,6 +182,14 @@ class ChatThreadCreate(SQLModel):
     )
 
 
+class ChatThreadUpdate(SQLModel):
+    title: str = Field(max_length=120)
+
+    _validate_title = field_validator("title")(
+        lambda cls, value: validate_required_text("title", value)
+    )
+
+
 class ChatMessageCreate(SQLModel):
     content: str = Field(max_length=12000)
     image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)

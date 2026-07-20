@@ -66,6 +66,7 @@
 8. **来源解耦**:`scoring.py` / `prep.py` / 前端视图保持 source-agnostic,禁止出现 `if source == "xxx"` 的业务特判。
 9. **网络访问统一封装**:一律走 `httpx`,带超时、移动端 UA、限速;不在路由函数里裸发请求。重依赖(如 `playwright`)放 `requirements-automation.txt` 并**延迟 import**,默认关闭。
 10. **外部上下文只读**:`JOB_ONE_STOP_CONTEXT_REPO_PATH` 指向的仓库不是应用数据库。Phase 0 只能读取 `ContextRepository` 白名单文件，不得创建、修改、移动或删除其中任何文件，也不得把宿主机绝对路径返回 API。
+11. **KISS 优先**:聊天是默认入口，岗位管理是按需展开的辅助能力。新增功能前先证明它解决高频用户动作；优先复用现有模型、路由和组件，不为低频场景增加常驻导航、后台服务、抽象层或新依赖。
 
 ---
 

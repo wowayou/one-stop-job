@@ -34,7 +34,7 @@ import {
   Upload,
   X
 } from "lucide-react";
-import { FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
@@ -57,13 +57,13 @@ const TOUR_STEPS: TourStep[] = [
 ];
 
 const navItems = [
-  { id: "chat", label: "决策聊天", icon: MessageSquareText },
-  { id: "jobs", label: "岗位池", icon: BriefcaseBusiness },
-  { id: "companies", label: "公司调研", icon: Building2 },
-  { id: "prep", label: "面试准备", icon: FileQuestion },
-  { id: "interviews", label: "面试复盘", icon: NotebookPen },
+  { id: "chat", label: "聊天", icon: MessageSquareText },
+  { id: "jobs", label: "岗位", icon: BriefcaseBusiness },
+  { id: "companies", label: "公司", icon: Building2 },
+  { id: "prep", label: "准备", icon: FileQuestion },
+  { id: "interviews", label: "复盘", icon: NotebookPen },
   { id: "tasks", label: "待办", icon: CalendarCheck },
-  { id: "config", label: "系统配置", icon: SlidersHorizontal }
+  { id: "config", label: "设置", icon: SlidersHorizontal }
 ] as const;
 
 const statuses = ["all", "new", "researching", "fit", "applied", "interview", "offer", "rejected", "archived"];
@@ -944,7 +944,7 @@ function App() {
   }
 
   return (
-    <div className={sidebarCollapsed ? "app-shell sidebar-collapsed" : "app-shell"}>
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${activeNav === "chat" ? " chat-active" : ""}`}>
       <aside className="sidebar" aria-label="主导航">
         <div className="brand">
           <div className="brand-mark">J1</div>
@@ -981,15 +981,17 @@ function App() {
             );
           })}
         </nav>
-        <div className="run-strip">
-          <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
-          <strong>{latestRun?.status ?? "未运行"}</strong>
-          <small>
-            {latestRun
-              ? `${latestRun.fetched_count} 抓取 / ${latestRun.created_count} 新增 / ${latestRun.updated_count} 更新${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
-              : "等待首次采集"}
-          </small>
-        </div>
+        {activeNav !== "chat" && (
+          <div className="run-strip">
+            <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
+            <strong>{latestRun?.status ?? "未运行"}</strong>
+            <small>
+              {latestRun
+                ? `${latestRun.fetched_count} 抓取 / ${latestRun.created_count} 新增 / ${latestRun.updated_count} 更新${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
+                : "等待首次采集"}
+            </small>
+          </div>
+        )}
         <div className="run-strip ai-status">
           <span>AI 配置</span>
           <strong>{aiStatusLabel(aiStatus)}</strong>
@@ -1001,11 +1003,11 @@ function App() {
         </div>
       </aside>
 
-      <main className="workspace">
-        <header className="topbar">
+      <main className={activeNav === "chat" ? "workspace chat-workspace" : "workspace"}>
+        {activeNav !== "chat" && <header className="topbar">
           <div>
             <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
-            <p>{activeNav === "chat" ? "把拿不准的材料丢进来：规则先判，AI 可选，会话只存本机。" : "岗位发现、公司证据、匹配评分、准备材料都留在本机。"}</p>
+            <p>岗位发现、公司证据、匹配评分、准备材料都留在本机。</p>
           </div>
           <div className="toolbar-actions">
             <button data-tour="guide" className="icon-button" title="打开使用引导" onClick={() => setTourOpen(true)}>
@@ -1052,7 +1054,7 @@ function App() {
               新增岗位
             </button>
           </div>
-        </header>
+        </header>}
 
         {notice && <NoticeBanner notice={notice} onClose={() => setNotice(null)} />}
 
@@ -1640,6 +1642,9 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
   const [jobId, setJobId] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState<{ content: string; imageDataUrl: string; imageName: string } | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameDraft, setRenameDraft] = useState("");
   const [error, setError] = useState("");
   const messageEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -1687,7 +1692,12 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending]);
+  }, [messages, pendingMessage, sending]);
+
+  useEffect(() => {
+    setRenaming(false);
+    setRenameDraft(activeThread?.title ?? "");
+  }, [activeThreadId, activeThread?.title]);
 
   async function createThread(kind: "general" | "job") {
     setError("");
@@ -1713,23 +1723,50 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
     event?.preventDefault();
     const content = draft.trim() || (imageDataUrl ? "请分析这张截图。" : "");
     if (!activeThreadId || !content || sending) return;
+    const sentImageDataUrl = imageDataUrl;
+    const sentImageName = imageName;
     setSending(true);
     setError("");
     setDraft("");
+    setImageDataUrl("");
+    setImageName("");
+    setPendingMessage({ content, imageDataUrl: sentImageDataUrl, imageName: sentImageName });
     try {
       const reply = await api<ChatReply>(`/api/chat/threads/${activeThreadId}/messages`, {
         method: "POST",
-        ...jsonBody({ content, image_data_url: imageDataUrl || null, image_name: imageName || null })
+        ...jsonBody({ content, image_data_url: sentImageDataUrl || null, image_name: sentImageName || null })
       });
       setMessages((items) => [...items, reply.user_message, reply.assistant_message]);
-      setImageDataUrl("");
-      setImageName("");
       await loadThreads(activeThreadId);
     } catch (err) {
       setDraft(content);
+      setImageDataUrl(sentImageDataUrl);
+      setImageName(sentImageName);
       setError(errorMessage(err, "分析失败；消息可能已保存在本机，可刷新查看"));
     } finally {
+      setPendingMessage(null);
       setSending(false);
+    }
+  }
+
+  async function renameThread(event: FormEvent) {
+    event.preventDefault();
+    const title = renameDraft.trim();
+    if (!activeThreadId || !title || title === activeThread?.title) {
+      setRenaming(false);
+      setRenameDraft(activeThread?.title ?? "");
+      return;
+    }
+    try {
+      const updated = await api<ChatThread>(`/api/chat/threads/${activeThreadId}`, {
+        method: "PATCH",
+        ...jsonBody({ title })
+      });
+      setThreads((items) => items.map((item) => (item.id === updated.id ? updated : item)));
+      setRenaming(false);
+      setError("");
+    } catch (err) {
+      setError(errorMessage(err, "重命名失败"));
     }
   }
 
@@ -1753,23 +1790,36 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
     reader.readAsDataURL(file);
   }
 
+  function pasteImage(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const imageItem = Array.from(event.clipboardData.items).find(
+      (item) => item.kind === "file" && item.type.startsWith("image/")
+    );
+    const file = imageItem?.getAsFile();
+    if (!file) return;
+    const namedFile = file.name
+      ? file
+      : new File([file], `剪贴板截图-${new Date().toISOString().replace(/:/g, "-")}.${file.type.split("/")[1] || "png"}`, { type: file.type });
+    chooseImage(namedFile);
+    if (!event.clipboardData.getData("text/plain")) event.preventDefault();
+  }
+
   return (
     <section className="chat-shell" aria-label="决策聊天">
       <aside className="chat-sidebar">
         <div className="chat-sidebar-head">
           <div><strong>对话</strong><small>刷新页面后仍会保留</small></div>
-          <button className="small-action" type="button" onClick={() => createThread("general")}><Plus size={15} /> 新对话</button>
+          <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
         </div>
         <div className="chat-job-create">
           <select value={jobId} onChange={(event) => setJobId(event.target.value)} aria-label="选择岗位创建聊天">
             <option value="">选择岗位专属聊天…</option>
             {jobs.map((job) => <option key={job.id} value={job.id}>{job.company_name} · {job.title}</option>)}
           </select>
-          <button className="small-action" type="button" onClick={() => createThread("job")} disabled={!jobId}>创建 / 打开</button>
+          <button className="small-action" type="button" onClick={() => createThread("job")} disabled={!jobId || sending}>创建 / 打开</button>
         </div>
         <div className="chat-thread-list">
           {threads.map((thread) => (
-            <button type="button" key={thread.id} className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)}>
+            <button type="button" key={thread.id} className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)} disabled={sending}>
               <span>{thread.kind === "job" ? "岗位" : "通用"}</span>
               <strong>{thread.title}</strong>
               <small>{thread.last_message || "还没有消息"}</small>
@@ -1784,8 +1834,22 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
           <>
             <header className="chat-head">
               <div>
-                <div className="chat-title-line"><span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : "通用聊天"}</span><h2>{activeThread.title}</h2></div>
-                <p>先走本地规则，再由已配置的 AI 结合个人上下文细化；不会自动写看板或发消息。</p>
+                <div className="chat-title-line">
+                  <span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : "通用聊天"}</span>
+                  {renaming ? (
+                    <form className="chat-rename" onSubmit={renameThread}>
+                      <input autoFocus maxLength={120} value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} aria-label="聊天名称" />
+                      <button className="small-action" type="submit" disabled={!renameDraft.trim()}>保存</button>
+                      <button className="icon-button compact" type="button" title="取消重命名" onClick={() => { setRenaming(false); setRenameDraft(activeThread.title); }}><X size={14} /></button>
+                    </form>
+                  ) : (
+                    <>
+                      <h2>{activeThread.title}</h2>
+                      <button className="icon-button compact chat-rename-trigger" type="button" title="重命名聊天" aria-label="重命名聊天" onClick={() => setRenaming(true)} disabled={sending}><Pencil size={14} /></button>
+                    </>
+                  )}
+                </div>
+                <p>规则优先，AI 可选；内容留在本机，启用 AI 时才发送本次材料与所需上下文。</p>
               </div>
               {activeJob && <button className="small-action" type="button" onClick={() => onOpenJob(activeJob)}>查看岗位</button>}
             </header>
@@ -1803,20 +1867,31 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
                   </div>
                 </div>
               )}
-              {messages.map((message) => (
-                <article key={message.id} className={`chat-message ${message.role}`}>
-                  <div className="chat-message-label">{message.role === "user" ? "你" : "助手"}</div>
+              {messages.map((message) => {
+                const analysis = message.role === "assistant" ? message.metadata_json?.analysis : undefined;
+                return (
+                  <article key={message.id} className={`chat-message ${message.role}`}>
+                    <div className="chat-message-label">{message.role === "user" ? "你" : "助手"}</div>
+                    <div className="chat-bubble">
+                      <p>{analysis?.summary || message.content}</p>
+                      {message.metadata_json?.attachment?.kind === "image" && (
+                        <img className="chat-attachment" src={apiUrl(`/api/chat/attachments/${message.metadata_json.attachment.id}`)} alt={message.metadata_json.attachment.name || "聊天截图"} />
+                      )}
+                      {analysis && <DecisionAnalysisCard analysis={analysis} aiUsed={Boolean(message.metadata_json?.ai_used)} />}
+                    </div>
+                  </article>
+                );
+              })}
+              {pendingMessage && (
+                <article className="chat-message user pending" aria-label="消息已发送，等待分析">
+                  <div className="chat-message-label">你</div>
                   <div className="chat-bubble">
-                    <p>{message.content}</p>
-                    {message.metadata_json?.attachment?.kind === "image" && (
-                      <img className="chat-attachment" src={apiUrl(`/api/chat/attachments/${message.metadata_json.attachment.id}`)} alt={message.metadata_json.attachment.name || "聊天截图"} />
-                    )}
-                    {message.role === "assistant" && message.metadata_json?.analysis && (
-                      <DecisionAnalysisCard analysis={message.metadata_json.analysis} aiUsed={Boolean(message.metadata_json.ai_used)} />
-                    )}
+                    <p>{pendingMessage.content}</p>
+                    {pendingMessage.imageDataUrl && <img className="chat-attachment" src={pendingMessage.imageDataUrl} alt={pendingMessage.imageName || "待分析截图"} />}
+                    <small className="chat-pending-label"><CheckCircle2 size={13} />已发送</small>
                   </div>
                 </article>
-              ))}
+              )}
               {sending && (
                 <article className="chat-message assistant">
                   <div className="chat-message-label">助手</div>
@@ -1838,13 +1913,14 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
               <textarea
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
+                onPaste={pasteImage}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey) {
                     event.preventDefault();
                     void sendMessage();
                   }
                 }}
-                rows={3}
+                rows={2}
                 maxLength={12000}
                 placeholder="粘贴材料或描述问题。Enter 发送，Shift + Enter 换行。"
                 disabled={sending}
@@ -1853,7 +1929,7 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
                 <div className="chat-attachment-control">
                   <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { chooseImage(event.target.files?.[0]); event.target.value = ""; }} />
                   <button className="small-action" type="button" onClick={() => imageInputRef.current?.click()} disabled={sending}><ImagePlus size={15} />截图</button>
-                  <small>启用 AI 时，本次材料及选定的个人上下文会发送给你配置的模型服务商。</small>
+                  <small>也可按 Ctrl + V 直接粘贴截图</small>
                 </div>
                 <button className="primary-action" disabled={(!draft.trim() && !imageDataUrl) || sending}>
                   {sending ? <Loader2 className="spin" size={17} /> : <Send size={17} />}{sending ? "分析中" : "发送"}
@@ -1877,6 +1953,14 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
 
 function DecisionAnalysisCard({ analysis, aiUsed }: { analysis: DecisionAnalysis; aiUsed: boolean }) {
   const checks = analysis.rule_checks ?? [];
+  const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+
+  async function copyReplyDraft() {
+    const ok = await copyToClipboard(analysis.reply_draft);
+    setCopyState(ok ? "copied" : "error");
+    window.setTimeout(() => setCopyState("idle"), 1600);
+  }
+
   return (
     <div className="decision-card">
       <div className="decision-head">
@@ -1904,7 +1988,10 @@ function DecisionAnalysisCard({ analysis, aiUsed }: { analysis: DecisionAnalysis
       {analysis.reply_draft && (
         <div className="decision-draft">
           <span>可发送草稿</span><p>{analysis.reply_draft}</p>
-          <button className="small-action" type="button" onClick={() => void copyToClipboard(analysis.reply_draft)}><Copy size={14} />复制</button>
+          <button className={`small-action copy-feedback ${copyState}`} type="button" onClick={copyReplyDraft} aria-live="polite">
+            {copyState === "copied" ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+            {copyState === "copied" ? "已复制" : copyState === "error" ? "复制失败" : "复制"}
+          </button>
         </div>
       )}
       <p className="decision-boundary">{analysis.pipeline_recommendation?.reason || "当前为只读建议，不会自动执行。"}</p>

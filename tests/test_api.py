@@ -99,6 +99,19 @@ def test_decision_chat_persists_job_thread_and_falls_back_to_rules(monkeypatch, 
             assert reused.json()["id"] == thread["id"]
             assert reused.json()["reused"] is True
 
+            renamed = await client.patch(
+                f"/api/chat/threads/{thread['id']}",
+                json={"title": "示例科技沟通判断"},
+            )
+            assert renamed.status_code == 200, renamed.text
+            assert renamed.json()["title"] == "示例科技沟通判断"
+
+            invalid_title = await client.patch(
+                f"/api/chat/threads/{thread['id']}",
+                json={"title": "   "},
+            )
+            assert invalid_title.status_code == 422
+
             reply = await client.post(
                 f"/api/chat/threads/{thread['id']}/messages",
                 json={"content": "这个岗位值得继续聊吗？"},

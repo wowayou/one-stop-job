@@ -163,7 +163,13 @@ if ($wslInfo) {
 if ($exitCode -eq 0 -and ($Action -eq "start" -or $Action -eq "rebuild")) {
   Write-Host ""
   Wait-AppHealth
-  Write-Host "Started. Open http://127.0.0.1:8000/"
+  $appUrl = "http://127.0.0.1:8000/"
+  Write-Host "Started. Opening $appUrl"
+  try {
+    Start-Process $appUrl
+  } catch {
+    Write-Host "Browser could not be opened automatically. Open $appUrl manually."
+  }
   if ($Action -eq "start") {
     Write-Host "Daily start reuses the existing image. After code updates, run rebuild_app.bat."
   }
