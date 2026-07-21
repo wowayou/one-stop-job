@@ -317,3 +317,111 @@ def test_env_absolute_path_error_mentions_os(monkeypatch):
     with pytest.raises(config.ConfigError) as exc:
         config._env_absolute_path("JOB_ONE_STOP_CONTEXT_REPO_PATH")
     assert "WSL" in str(exc.value) or "posix" in str(exc.value).lower()
+
+
+# ==================== 配置回环与 chat id 容错 ====================
+
+
+def test_config_roundtrip_keeps_telegram_section(monkeypatch, tmp_path):
+    """GET /api/config → PUT 回环必须成功：config.yaml 自带 telegram 段，
+    白名单漏掉它会让 Web 设置保存与系统冒烟同时 400。"""
+    import shutil
+    from pathlib import Path
+
+    cfg = tmp_path / "config.yaml"
+    shutil.copy(Path(__file__).resolve().parents[1] / "config.yaml", cfg)
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(cfg))
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "config-roundtrip.sqlite3")
+
+    async def scenario():
+        async for client in _client(main.app):
+            got = (await client.get("/api/config")).json()
+            assert "telegram" in got["config"]
+            resp = await client.put("/api/config", json={"config": got["config"]})
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["config"]["telegram"]["enabled"] is False
+
+    asyncio.run(scenario())
+
+
+def test_poll_loop_accepts_numeric_string_chat_id(monkeypatch, tmp_path):
+    """config.yaml 默认把 allowed_chat_id 写成字符串；数字字符串必须照常生效，
+    而不是静默不启动轮询（P0 真机联调最容易踩的坑）。"""
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-strid.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [[{"update_id": 20, "message": {"chat": {"id": 42}, "text": "owner text"}}]]
+    calls = {"sent": [], "persisted": []}
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: calls["sent"].append(chat_id))
+    monkeypatch.setattr(
+        main,
+        "_persist_ingest_to_chat",
+        lambda session, text, image_data_url=None: calls["persisted"].append(text)
+        or {"candidate_count": 1, "unmatched": False, "needs_ai": False},
+    )
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": "42", "poll_timeout_seconds": 1}},
+    )
+
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+    assert calls["persisted"] == ["owner text"]
+    assert calls["sent"] == [42]
+
+
+# ==================== 红线绊线：入库只能发生在用户确认的 commit ====================
+
+
+def _imported_names(module) -> set[str]:
+    """收集模块源码里 import 的模块名与符号名（AST 级，不受注释/文档字符串干扰）。"""
+    import ast
+    import inspect
+
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(module))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            names.add(node.module or "")
+            names.update(alias.name for alias in node.names)
+    return names
+
+
+def test_ingest_and_telegram_modules_never_import_importer():
+    """红线绊线（CLAUDE.md §2/§6）：ingest 只产候选，telegram 只做传输。
+
+    任何人往这两个模块里塞回 importer/upsert（= ingest 自动入库），这里立即翻红；
+    改动前必须先改产品决策并更新 CLAUDE.md。
+    """
+    for module in (ingest, telegram):
+        imported = _imported_names(module)
+        assert not any("importer" in name for name in imported), f"{module.__name__} 不得引用 importer"
+        assert not any("upsert" in name.lower() for name in imported), f"{module.__name__} 不得引用 upsert_*"
+
+
+def test_persist_ingest_and_poll_loop_write_chat_only():
+    """红线绊线：HTTP 与 Telegram 共用的落盘函数只写聊天，不碰 Job 表。"""
+    import inspect
+
+    import backend.app.main as main
+
+    for func in (main._persist_ingest_to_chat, main._telegram_poll_loop):
+        source = inspect.getsource(func)
+        assert "upsert" not in source, f"{func.__name__} 不得出现 upsert 调用"
+        assert "Job(" not in source, f"{func.__name__} 不得直接构造 Job"

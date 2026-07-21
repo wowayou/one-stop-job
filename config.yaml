@@ -121,7 +121,7 @@ bebee:
 # 红线边界：只处理 allowed_chat_id（你本人）的消息，回执也只发给你自己，绝不向招聘方发消息。
 telegram:
   enabled: false
-  allowed_chat_id: "" # 你本人的 Telegram chat id（字符串）；留空则忽略所有消息
+  allowed_chat_id: "" # 你本人的数字 Telegram chat id（整数或数字字符串均可）；留空则不启动轮询
   poll_timeout_seconds: 30 # 长轮询超时；后端主动出站拉取，无需暴露端口
 
 # ==================== ingest 统一入口 ====================

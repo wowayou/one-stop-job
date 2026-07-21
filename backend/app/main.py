@@ -107,9 +107,18 @@ async def _telegram_poll_loop() -> None:
 
     tg_cfg = settings.telegram_config
     token = telegram.bot_token()
-    allowed_chat_id = tg_cfg.get("allowed_chat_id")
-    poll_timeout = int(tg_cfg.get("poll_timeout", 30) or 30)
-    if not token or not isinstance(allowed_chat_id, int):
+    raw_chat_id = tg_cfg.get("allowed_chat_id")
+    try:
+        allowed_chat_id = int(str(raw_chat_id).strip()) if str(raw_chat_id or "").strip() else None
+    except ValueError:
+        allowed_chat_id = None
+    poll_timeout = int(tg_cfg.get("poll_timeout_seconds", tg_cfg.get("poll_timeout", 30)) or 30)
+    if not token or allowed_chat_id is None:
+        # enabled=true 但缺 token / chat id 时必须给出可见原因，否则「手机无回执」只能盲猜。
+        logger.warning(
+            "Telegram 已启用但轮询未启动：%s",
+            "缺少 TELEGRAM_BOT_TOKEN（.env）" if not token else f"allowed_chat_id 无效：{raw_chat_id!r}（需要你本人的数字 chat id）",
+        )
         return
 
     offset: int | None = None
@@ -180,7 +189,7 @@ if (FRONTEND_DIST / "assets").is_dir():
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 
