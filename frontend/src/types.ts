@@ -122,6 +122,14 @@ export type AiStatus = {
   base_url_configured: boolean;
 };
 
+export type AiProbeResult = {
+  ok: boolean;
+  stage: "config" | "call";
+  reason: string;
+  model: string;
+  latency_ms?: number;
+};
+
 export type DecisionRuleCheck = {
   code: string;
   label: string;
@@ -147,7 +155,7 @@ export type DecisionAnalysis = {
 
 export type ChatThread = {
   id: number;
-  kind: "general" | "job";
+  kind: "general" | "job" | "ingest";
   job_id?: number | null;
   title: string;
   created_at: string;
@@ -174,6 +182,10 @@ export type ChatMessage = {
     analysis?: DecisionAnalysis;
     ai_used?: boolean;
     run_status?: "completed" | "fallback" | "rules_only";
+    candidates?: IngestCandidate[];
+    sources_report?: { source: string; jobs: number; skipped?: unknown[] }[];
+    unmatched?: boolean;
+    needs_ai?: boolean;
     attachment?: {
       kind: "image";
       id: string;
@@ -183,6 +195,19 @@ export type ChatMessage = {
     };
   };
   created_at: string;
+};
+
+export type IngestCandidate = {
+  title: string;
+  company_name: string;
+  salary_text?: string | null;
+  city?: string | null;
+  area?: string | null;
+  source?: string;
+  url?: string | null;
+  status?: "pending" | "committed" | "skipped";
+  job_id?: number | null;
+  description?: string | null;
 };
 
 export type ChatThreadDetail = {
@@ -196,6 +221,16 @@ export type ChatReply = {
   assistant_message: ChatMessage;
   analysis: DecisionAnalysis;
   ai_used: boolean;
+};
+
+export type ChatContextPreview = {
+  ai_enabled: boolean;
+  model: string | null;
+  sections: { key: string; chars: number; content: string }[];
+  context_chars_total: number;
+  job_context: Record<string, string>;
+  conversation_count: number;
+  note: string;
 };
 
 export type AppConfig = {

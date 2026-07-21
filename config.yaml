@@ -115,6 +115,22 @@ bebee:
   rate_limit_seconds: 3 # 多个角色页之间的固定间隔,避免触发风控
   timeout_seconds: 20
 
+# ==================== Telegram 入口（可选，默认关）====================
+# 手机把岗位链接发给你的 Telegram bot → 后端长轮询拉取 → 抽链落盘 + 评分 → 回执给你自己。
+# bot token 只进 .env（TELEGRAM_BOT_TOKEN）；这里只放开关与白名单。
+# 红线边界：只处理 allowed_chat_id（你本人）的消息，回执也只发给你自己，绝不向招聘方发消息。
+telegram:
+  enabled: false
+  allowed_chat_id: "" # 你本人的 Telegram chat id（字符串）；留空则忽略所有消息
+  poll_timeout_seconds: 30 # 长轮询超时；后端主动出站拉取，无需暴露端口
+
+# ==================== ingest 统一入口 ====================
+# POST /api/ingest 与 Telegram 轮询共用。认识的链接走专用采集器（公众号/beBee），
+# 残余文本/截图走 freeform LLM 抽取（覆盖 BOSS 等抓不到的平台）。
+# manual_source 是 freeform 抽出的岗位入库时的 Job.source 标签。
+ingest:
+  manual_source: "manual" # 也可设成如 "手机粘贴" 以区分手机端来源
+
 # ==================== 匹配评分配置 ====================
 scoring:
   weights:

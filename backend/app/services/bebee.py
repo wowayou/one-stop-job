@@ -38,6 +38,27 @@ def fetch_listing(url: str, cfg: dict | None = None) -> str:
         return resp.text or ""
 
 
+BEBEE_LINK_RE = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)*bebee\.com/[^\s\)\]\}\"'<>，。、；;）】]+",
+    re.IGNORECASE,
+)
+_TRAILING_PUNCT = "）)】」』,，。.;；、!！?？\"'>》"
+
+
+def extract_bebee_links(blob: str) -> list[str]:
+    """从任意粘贴文本提取并去重 bebee.com 链接（与 wechat.extract_mp_links 对称）。"""
+    if not blob:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in BEBEE_LINK_RE.findall(blob):
+        cleaned = raw.rstrip(_TRAILING_PUNCT)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
+
 def _clean(value) -> str | None:
     if value is None:
         return None

@@ -167,6 +167,65 @@ def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_fai
             assert payload["analysis"]["summary"] == "模型结合上下文给出的简短判断。"
             assert payload["analysis_run"]["status"] == "completed"
             assert payload["assistant_message"]["metadata_json"]["ai_used"] is True
+            assert payload["assistant_message"]["metadata_json"]["run_status"] == "completed"
+
+    asyncio.run(scenario())
+
+
+def test_decision_chat_marks_fallback_when_ai_enabled_but_call_fails(monkeypatch, tmp_path):
+    """AI 已启用但本次调用失败：run_status 应是 fallback，与「从没配 AI」的 rules_only 区分开。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    app = _fresh_app(monkeypatch, tmp_path, "decision-chat-fallback.sqlite3")
+
+    import backend.app.main as main
+
+    # 模拟坏 key / 端点不通：analyze 返回 None，端点应回退规则但标记 fallback。
+    monkeypatch.setattr(main, "analyze_decision_chat_llm", lambda **_kwargs: None)
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "这个岗位值得继续聊吗？"},
+            )
+            assert reply.status_code == 200, reply.text
+            payload = reply.json()
+            assert payload["ai_used"] is False
+            assert payload["analysis_run"]["status"] == "fallback"
+            assert payload["assistant_message"]["metadata_json"]["run_status"] == "fallback"
+
+    asyncio.run(scenario())
+
+
+def test_chat_context_preview_shows_what_would_be_sent_without_leaking_path(monkeypatch, tmp_path):
+    """发送前预览：列出启用 AI 时会发送的固定上下文，且不返回宿主机绝对路径。"""
+    context_root = tmp_path / "personal-context"
+    _write_context_fixture(context_root)
+    monkeypatch.setenv("JOB_ONE_STOP_CONTEXT_REPO_PATH", str(context_root))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("OPENAI_MODEL", "preview-model")
+    app = _fresh_app(monkeypatch, tmp_path, "chat-context-preview.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "这个岗位值得继续聊吗？"},
+            )
+            preview = await client.get(f"/api/chat/threads/{thread['id']}/context-preview")
+            assert preview.status_code == 200, preview.text
+            payload = preview.json()
+
+            assert payload["ai_enabled"] is True
+            assert payload["model"] == "preview-model"
+            section_keys = {section["key"] for section in payload["sections"]}
+            assert {"decision_rules", "profile", "board"} <= section_keys
+            assert payload["context_chars_total"] > 0
+            # 已发过 1 轮：user + assistant 两条进入最近对话预览。
+            assert payload["conversation_count"] == 2
+            assert str(context_root) not in preview.text
 
     asyncio.run(scenario())
 
@@ -400,6 +459,83 @@ def test_ai_status_endpoint_hides_secret_values(monkeypatch, tmp_path):
             assert payload["model"] == "test-model"
             assert "sk-test-secret" not in resp.text
             assert "example.invalid" not in resp.text
+
+    asyncio.run(scenario())
+
+
+def test_ai_test_endpoint_reports_success_without_leaking_secret(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  enabled: true\n  provider: openai_compatible\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    monkeypatch.setenv("OPENAI_MODEL", "test-model")
+    app = _fresh_app(monkeypatch, tmp_path, "ai-test-ok.sqlite3")
+
+    import backend.app.services.ai as ai
+
+    monkeypatch.setattr(ai, "_client", lambda: object())
+    monkeypatch.setattr(ai, "_chat", lambda *args, **kwargs: "ok")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post("/api/ai/test")
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            assert payload["ok"] is True
+            assert payload["stage"] == "call"
+            assert payload["model"] == "test-model"
+            assert isinstance(payload["latency_ms"], int)
+            assert "sk-test-secret" not in resp.text
+
+    asyncio.run(scenario())
+
+
+def test_ai_test_endpoint_classifies_auth_failure(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  enabled: true\n  provider: openai_compatible\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-bad-key")
+    app = _fresh_app(monkeypatch, tmp_path, "ai-test-401.sqlite3")
+
+    import backend.app.services.ai as ai
+
+    class _AuthError(Exception):
+        status_code = 401
+
+    def _raise(*args, **kwargs):
+        raise _AuthError("unauthorized")
+
+    monkeypatch.setattr(ai, "_client", lambda: object())
+    monkeypatch.setattr(ai, "_chat", _raise)
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post("/api/ai/test")
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            assert payload["ok"] is False
+            assert payload["stage"] == "call"
+            assert "401" in payload["reason"]
+            assert "sk-bad-key" not in resp.text
+
+    asyncio.run(scenario())
+
+
+def test_ai_test_endpoint_flags_config_disabled(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  enabled: false\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
+    app = _fresh_app(monkeypatch, tmp_path, "ai-test-disabled.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post("/api/ai/test")
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            assert payload["ok"] is False
+            assert payload["stage"] == "config"
+            assert "sk-test-secret" not in resp.text
 
     asyncio.run(scenario())
 

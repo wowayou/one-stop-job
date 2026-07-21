@@ -112,6 +112,41 @@ class WeChatCollectRequest(SQLModel):
     bodies: Optional[dict[str, str]] = None
 
 
+class IngestRequest(SQLModel):
+    # 文本和/或截图 → 抽取候选写入聊天；**默认不入库**，用户在聊天里点确认才写 Job 表。
+    text: Optional[str] = Field(default=None, max_length=20000)
+    image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)
+
+    _normalize_text = field_validator("text", mode="before")(
+        lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value
+    )
+
+    @field_validator("image_data_url")
+    @classmethod
+    def validate_ingest_image(cls, value: Optional[str], info) -> Optional[str]:
+        if value is None:
+            if not (info.data.get("text") or "").strip():
+                raise ValueError("必须提供 text 或 image_data_url 之一")
+            return None
+        allowed = ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
+        if not value.startswith(allowed):
+            raise ValueError("image_data_url must be a PNG, JPEG, or WebP data URL")
+        try:
+            decoded = base64.b64decode(value.split(",", 1)[1], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise ValueError("image_data_url contains invalid base64 data") from exc
+        if not decoded:
+            raise ValueError("image_data_url cannot be empty")
+        return value
+
+
+class CandidatesCommitRequest(SQLModel):
+    """把聊天消息里的候选岗位真正写入 Job 表（仅用户明确选中的 indexes）。"""
+
+    message_id: int
+    indexes: list[int] = Field(default_factory=list)
+
+
 class ResearchItemCreate(SQLModel):
     source_type: str
     title: str
@@ -176,7 +211,7 @@ class ChatThreadCreate(SQLModel):
     job_id: Optional[int] = None
     title: Optional[str] = None
 
-    _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job"}))
+    _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job", "ingest"}))
     _normalize_title = field_validator("title", mode="before")(
         lambda cls, value: validate_optional_text("title", value) if isinstance(value, str) or value is None else value
     )

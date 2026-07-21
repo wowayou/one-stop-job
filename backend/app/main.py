@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import base64
+import logging
 import math
 import os
 import re
@@ -49,6 +51,7 @@ from .models import (
 from .schemas import (
     AppConfigUpdate,
     ApplicationEventCreate,
+    CandidatesCommitRequest,
     ChatMessageCreate,
     ChatThreadCreate,
     ChatThreadUpdate,
@@ -61,11 +64,12 @@ from .schemas import (
     JobBulkUpdate,
     JobCreate,
     JobUpdate,
+    IngestRequest,
     ProfileUpdate,
     ResearchItemCreate,
     WeChatCollectRequest,
 )
-from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, tailor_interview_prep_llm
+from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, probe_ai_connection, tailor_interview_prep_llm
 from .services.analytics import build_funnel_payload
 from .services.companies import company_list_payload
 from .services.context_repository import ContextRepository, ContextRepositoryError
@@ -79,6 +83,7 @@ from .services.exporter import (
 )
 from .services.followup import find_stale_jobs
 from .services.importer import get_or_create_company, upsert_job_record, upsert_job_records, upsert_job_records_with_ids
+from .services.ingest import run_ingest, score_job_ids
 from .services.jobs import company_map, job_payload, latest_prep_map, latest_score_map, research_items_map, source_links_map
 from .services.normalizer import canonical_job_key, normalize_record, parse_recruiter, parse_salary
 from .services.prep import build_interview_prep
@@ -89,12 +94,75 @@ from .services.wechat import extract_mp_links
 
 settings = get_settings()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+logger = logging.getLogger(__name__)
+
+
+async def _telegram_poll_loop() -> None:
+    """后台长轮询：拉取机主消息 → 抽取候选写入聊天 → 回执给机主本人。
+
+    默认关闭；仅当 config.yaml telegram.enabled=true 且配置了 TELEGRAM_BOT_TOKEN 时启动。
+    只处理白名单 allowed_chat_id 的消息；**不自动写 Job 表**，用户在 Web 聊天确认后才入库。
+    """
+    from .services import telegram
+
+    tg_cfg = settings.telegram_config
+    token = telegram.bot_token()
+    allowed_chat_id = tg_cfg.get("allowed_chat_id")
+    poll_timeout = int(tg_cfg.get("poll_timeout", 30) or 30)
+    if not token or not isinstance(allowed_chat_id, int):
+        return
+
+    offset: int | None = None
+    while True:
+        try:
+            updates = await run_in_threadpool(telegram.get_updates, token, offset, poll_timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.warning("Telegram getUpdates 失败，稍后重试", exc_info=True)
+            await asyncio.sleep(5)
+            continue
+
+        for update in updates:
+            offset = int(update.get("update_id", 0)) + 1
+            chat_id, text, photo_file_id = telegram.extract_message(update)
+            if chat_id != allowed_chat_id:
+                continue
+            image_data_url: str | None = None
+            if photo_file_id:
+                image_data_url = await run_in_threadpool(telegram.download_photo_data_url, token, photo_file_id)
+            if not text.strip() and not image_data_url:
+                await run_in_threadpool(
+                    telegram.send_message, token, chat_id, "请发送岗位链接、复制的招聘文本，或一张招聘截图。"
+                )
+                continue
+            try:
+                with Session(engine) as session:
+                    result = await run_in_threadpool(_persist_ingest_to_chat, session, text, image_data_url)
+                reply = telegram.summarize_ingest(result)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Telegram ingest 失败", exc_info=True)
+                reply = f"处理失败：{exc}"
+            await run_in_threadpool(telegram.send_message, token, chat_id, reply)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    yield
+    task: asyncio.Task | None = None
+    if settings.telegram_config.get("enabled"):
+        task = asyncio.create_task(_telegram_poll_loop())
+    try:
+        yield
+    finally:
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
@@ -112,7 +180,7 @@ if (FRONTEND_DIST / "assets").is_dir():
 
 SessionDep = Annotated[Session, Depends(get_session)]
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 
@@ -347,6 +415,21 @@ def _config_diagnostics() -> list[dict[str, Any]]:
         checks.append(_check("scoring_config", "warning", str(exc.detail)))
     else:
         checks.append(_check("scoring_config", "ok", "评分权重配置有效。"))
+
+    # 个人上下文仓库：只报状态与 message，不回显绝对路径（红线 §10）。
+    context_status_payload = ContextRepository(settings.context_repo_path).status()
+    if not context_status_payload.get("configured"):
+        checks.append(_check("context_repo", "ok", "未配置个人上下文仓库（可选）。"))
+    elif context_status_payload.get("available"):
+        checks.append(_check("context_repo", "ok", context_status_payload.get("message") or "个人上下文仓库只读连接正常。"))
+    else:
+        checks.append(
+            _check(
+                "context_repo",
+                "warning",
+                context_status_payload.get("message") or "个人上下文仓库不可用。",
+            )
+        )
     return checks
 
 
@@ -948,6 +1031,26 @@ def _decision_context() -> tuple[str, str, bool]:
     return "\n\n".join(parts)[:32000], rules_version, rules_loaded
 
 
+def _job_context(job: Job | None) -> dict:
+    """岗位事实（发送给 AI 的字段）。preview 与真正发送共用，避免两处漂移。"""
+    if not job:
+        return {}
+    return {
+        "title": job.title,
+        "company_name": job.company_name,
+        "salary": job.salary_text,
+        "location": " · ".join(filter(None, [job.city, job.area])),
+        "skills": job.skills,
+        "description": job.description,
+        "recruiter_message": job.recruiter,
+    }
+
+
+def _recent_conversation(messages: list[ChatMessage]) -> list[dict[str, str]]:
+    """最近对话（最多 12 条，每条截断到 4000 字）。preview 与真正发送共用。"""
+    return [{"role": item.role, "content": item.content[:4000]} for item in messages[-12:]]
+
+
 def _save_chat_image(data_url: str, original_name: str | None) -> dict:
     header, encoded = data_url.split(",", 1)
     mime_type = header.removeprefix("data:").removesuffix(";base64")
@@ -993,8 +1096,8 @@ async def create_chat_thread(payload: ChatThreadCreate, session: SessionDep) -> 
     job = session.get(Job, payload.job_id) if payload.job_id else None
     if payload.kind == "job" and job is None:
         raise HTTPException(status_code=400, detail="岗位聊天必须关联一个存在的岗位")
-    if payload.kind == "general" and payload.job_id is not None:
-        raise HTTPException(status_code=400, detail="通用聊天不能关联岗位")
+    if payload.kind in {"general", "ingest"} and payload.job_id is not None:
+        raise HTTPException(status_code=400, detail="通用/入库候选聊天不能关联岗位")
 
     if job is not None:
         existing = session.exec(
@@ -1020,6 +1123,49 @@ async def get_chat_thread(thread_id: int, session: SessionDep) -> dict:
         select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
     ).all()
     return {"thread": _chat_thread_payload(session, thread), "messages": messages}
+
+
+@app.get("/api/chat/threads/{thread_id}/context-preview")
+async def chat_context_preview(thread_id: int, session: SessionDep) -> dict:
+    """预览启用 AI 后本线程一次调用会发送给模型的内容，让用户发送前知道什么会离开本机。
+
+    只读、与真正发送共用 `_decision_context` / `_job_context` / `_recent_conversation`，
+    避免预览与实际发送漂移。不含本次草稿文字和截图（由发送时决定），也不返回宿主机绝对路径。
+    """
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    ai_cfg = settings.config.get("ai", {})
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
+
+    repository = ContextRepository(settings.context_repo_path)
+    sections: list[dict] = []
+    for key in ("decision_rules", "profile", "board"):
+        try:
+            document = repository.read_document(key)
+        except ContextRepositoryError:
+            continue
+        content = document.content or ""
+        sections.append({"key": key, "chars": len(content), "content": content})
+
+    job = session.get(Job, thread.job_id) if thread.job_id else None
+    job_context = _job_context(job)
+    history = session.exec(
+        select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
+    ).all()
+    conversation = _recent_conversation(history)
+
+    return {
+        "ai_enabled": ai_enabled,
+        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini") if ai_enabled else None,
+        "sections": sections,
+        "context_chars_total": sum(section["chars"] for section in sections),
+        "job_context": job_context,
+        "conversation_count": len(conversation),
+        "note": "以上是启用 AI 时本次调用会发送的固定上下文；本次输入的文字与截图会另外附上，未启用 AI 时不发送任何内容。",
+    }
 
 
 @app.patch("/api/chat/threads/{thread_id}")
@@ -1071,20 +1217,8 @@ async def create_chat_message(thread_id: int, payload: ChatMessageCreate, sessio
     history = session.exec(
         select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
     ).all()
-    conversation = [{"role": item.role, "content": item.content[:4000]} for item in history[-12:]]
-    job_context = (
-        {
-            "title": job.title,
-            "company_name": job.company_name,
-            "salary": job.salary_text,
-            "location": " · ".join(filter(None, [job.city, job.area])),
-            "skills": job.skills,
-            "description": job.description,
-            "recruiter_message": job.recruiter,
-        }
-        if job
-        else {}
-    )
+    conversation = _recent_conversation(history)
+    job_context = _job_context(job)
 
     ai_cfg = settings.config.get("ai", {})
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
@@ -1167,6 +1301,20 @@ async def ai_status() -> dict:
         "api_key_configured": api_key_configured,
         "base_url_configured": bool(os.getenv("OPENAI_BASE_URL")),
     }
+
+
+@app.post("/api/ai/test")
+async def ai_test() -> dict:
+    """发一次不含个人信息的最小请求，验证 AI 是否真正可用并给出具体原因。
+
+    与 /api/ai/status 的区别：status 只看 key 字符串是否存在；本端点真的发一次调用，
+    区分「未配置 / 调用成功 / 调用失败（401/404/429/超时…）」，避免聊天里静默回退。
+    """
+    ai_cfg = settings.config.get("ai", {})
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    if not bool(ai_cfg.get("enabled")):
+        return {"ok": False, "stage": "config", "reason": "config.yaml 未启用 ai.enabled。", "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini")}
+    return await run_in_threadpool(probe_ai_connection)
 
 
 @app.get("/api/jobs")
@@ -1449,6 +1597,181 @@ async def collect_wechat(payload: WeChatCollectRequest, session: SessionDep) -> 
         )
 
     return _run_wechat_collection(session, links, bodies, source_label)
+
+
+def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: str | None = None) -> dict:
+    """抽取候选 → 写入 kind=ingest 聊天线程（**不写 Job 表**）。HTTP 与 Telegram 共用。
+
+    即便 unmatched 也建线程，保留原文/截图原料，满足「资料别删」。
+    """
+    ai_cfg = settings.config.get("ai", {})
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
+    text = (text or "").strip()
+
+    extract = run_ingest(
+        text,
+        wechat_cfg=settings.wechat_config,
+        bebee_cfg=settings.bebee_config,
+        ai_enabled=ai_enabled,
+        image_data_url=image_data_url,
+        manual_source=str(settings.ingest_config.get("manual_source") or "manual"),
+    )
+
+    title_src = text.replace("\n", " ").strip() or ("截图入库" if image_data_url else "入库候选")
+    title = f"入库候选 · {title_src}"[:120]
+    thread = ChatThread(kind="ingest", job_id=None, title=title)
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+
+    attachment = _save_chat_image(image_data_url, None) if image_data_url else None
+    user_content = text or ("[截图]" if attachment else "")
+    user_message = ChatMessage(
+        thread_id=thread.id or 0,
+        role="user",
+        content=user_content,
+        metadata_json={"attachment": attachment} if attachment else {},
+    )
+    session.add(user_message)
+
+    n = extract["candidate_count"]
+    if n:
+        assistant_text = f"识别到 {n} 个候选岗位。请在下方勾选要入库的项；原文和截图已保留在本对话。"
+    elif extract.get("needs_ai"):
+        assistant_text = "未认出可抓取链接，且 AI 未启用，无法从文本/截图抽取岗位。原料已保留；启用 AI 后可重发。"
+    else:
+        assistant_text = "未从链接、文本或截图中认出岗位。原料已保留，可补充更完整的 JD 或更清晰的截图后重发。"
+
+    assistant_message = ChatMessage(
+        thread_id=thread.id or 0,
+        role="assistant",
+        content=assistant_text,
+        metadata_json={
+            "candidates": extract["candidates"],
+            "sources_report": extract["sources_report"],
+            "unmatched": extract["unmatched"],
+            "needs_ai": extract.get("needs_ai", False),
+            "run_status": "rules_only" if not ai_enabled else ("completed" if n else "fallback"),
+        },
+    )
+    session.add(assistant_message)
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+    session.refresh(user_message)
+    session.refresh(assistant_message)
+
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+        "candidate_count": n,
+        "unmatched": extract["unmatched"],
+        "needs_ai": extract.get("needs_ai", False),
+        "sources_report": extract["sources_report"],
+        "candidates": extract["candidates"],
+    }
+
+
+@app.post("/api/ingest")
+async def ingest_text(payload: IngestRequest, session: SessionDep) -> dict:
+    """抽取候选岗位并写入聊天；**默认不入库**，用户确认后再写 Job 表。
+
+    认识的链接走专用采集器；其余文本/截图走 LLM freeform。原料（原文/截图）落在聊天附件与消息里。
+    """
+    return await run_in_threadpool(_persist_ingest_to_chat, session, payload.text, payload.image_data_url)
+
+
+@app.post("/api/chat/threads/{thread_id}/candidates/commit")
+async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, session: SessionDep) -> dict:
+    """用户明确勾选后，把聊天里的候选岗位写入 Job 表并尽力评分。"""
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    message = session.get(ChatMessage, payload.message_id)
+    if not message or message.thread_id != thread_id or message.role != "assistant":
+        raise HTTPException(status_code=404, detail="Candidate message not found")
+
+    meta = dict(message.metadata_json or {})
+    candidates = list(meta.get("candidates") or [])
+    if not candidates:
+        raise HTTPException(status_code=400, detail="该消息没有可入库的候选岗位")
+
+    indexes = sorted({int(i) for i in payload.indexes if isinstance(i, int) or str(i).isdigit()})
+    if not indexes:
+        # 空 indexes = 全部跳过
+        for item in candidates:
+            if item.get("status") == "pending":
+                item["status"] = "skipped"
+        meta["candidates"] = candidates
+        message.metadata_json = meta
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+        return {
+            "thread": _chat_thread_payload(session, thread),
+            "assistant_message": message,
+            "created": 0,
+            "updated": 0,
+            "scored": 0,
+            "skipped": len(candidates),
+        }
+
+    to_upsert: list[dict] = []
+    selected_positions: list[int] = []
+    for idx in indexes:
+        if idx < 0 or idx >= len(candidates):
+            raise HTTPException(status_code=400, detail=f"候选索引越界：{idx}")
+        item = candidates[idx]
+        if item.get("status") == "committed" and item.get("job_id"):
+            continue
+        record = {k: v for k, v in item.items() if k not in {"status", "job_id"}}
+        to_upsert.append(record)
+        selected_positions.append(idx)
+
+    created = updated = scored = 0
+    created_ids: list[int] = []
+    if to_upsert:
+        # 逐条 upsert，保证 candidate 索引与 job_id 一一对应（跨来源去重时 zip 会对不齐）。
+        for pos, record in zip(selected_positions, to_upsert):
+            result = upsert_job_records_with_ids(session, [record])
+            created += result["created"]
+            updated += result["updated"]
+            job_id = (result.get("job_ids") or [None])[0]
+            candidates[pos]["status"] = "committed"
+            candidates[pos]["job_id"] = job_id
+            created_ids.extend(result.get("created_ids") or [])
+
+        scored = score_job_ids(session, created_ids, _get_profile(session))
+
+        run = SourceRun(
+            source="ingest_commit",
+            status="success",
+            fetched_count=len(to_upsert),
+            created_count=created,
+            updated_count=updated,
+            raw_config={"indexes": indexes, "thread_id": thread_id, "message_id": payload.message_id},
+            finished_at=utc_now(),
+        )
+        session.add(run)
+
+    meta["candidates"] = candidates
+    message.metadata_json = meta
+    session.add(message)
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(message)
+    session.refresh(thread)
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "assistant_message": message,
+        "created": created,
+        "updated": updated,
+        "scored": scored,
+    }
 
 
 @app.post("/api/collect/yuanbao")

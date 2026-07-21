@@ -58,6 +58,7 @@
 
 1. **本地优先 / 单用户**:无多用户、无登录体系;数据只存本机 SQLite。
 2. **不自动化对外动作**:不自动投递、不自动发消息、不自动外发任何联系方式。抓到的招聘人微信/电话/邮箱**仅本地留存供查看**。
+   - **例外(仅此一种):给机主本人发系统回执。** Telegram 渠道只向白名单 `allowed_chat_id`(机主自己那个 chat)回执「识别到 N 个候选，请在 Web 确认入库」,这属于本机→本人的状态通知,**不是对外动作**。绝不向招聘方或任何第三方发任何消息;回执内容不得包含未经本人触发就外发的联系方式。**ingest 默认不写 Job 表**，用户在聊天里点「入库选中」才 upsert。
 3. **抓取合规**:只抓**公开**内容;低频、人工触发;**不破解验证码 / 风控页 / 付费墙**;尊重 robots 与各平台 ToS;**不二次分发**抓到的内容。被风控拦截就跳过并记录原因,不硬刚。
 4. **不泄密**:`.env`、`*.sqlite3`、`data/`、日志、`*.xlsx`、登录态(`.yuanbao/`、`*storage_state*`)一律不提交;改 `.gitignore` 前先确认不会带出隐私。
 5. **不用 `create_all` 偷改表结构**:`init_db()` 走 `SQLModel.metadata.create_all`——**新增表 OK,但给现有表加列不会自动迁移**。优先复用 `Job` 现有字段;确需加列/改列,写显式 alembic 迁移并在 PR 说明,不可假设旧库会自动升级。
@@ -115,3 +116,13 @@ Windows 宿主机可用 `run_backend.bat` / `run_frontend.bat`。**不要混用�
 | `beBee` | `BeBeeCollector` | `POST /api/collect/bebee` | 抓 bebee 角色/列表页 → 解析 JobPosting JSON-LD、Next/RSC jobs、microdata 或可见卡片 |
 
 > 外部平台页面会变化。公众号、元宝自动化和 beBee 首次接入新页面时必须先拿真实样例核对；解析器有 fixture 测试和 skipped 降级，但不要盲写选择器。
+
+### 统一 ingest 入口与传输层
+
+- `services/ingest.py::run_ingest` 是**统一分派器**:文本/截图 → `classify_links` 分派采集器 + freeform LLM → **只返回 `candidates`（不写 Job 表）**。规范化仍走 `normalize_record`；真正入库只在用户确认后调用 `upsert_job_records_with_ids`（§6）。`Job.source` 仍是各来源标签,**不是** `Telegram`(§8)。
+- **默认不入库**:`POST /api/ingest` 与 Telegram 轮询都走 `_persist_ingest_to_chat`：建 `ChatThread(kind="ingest")`，user 消息保留原文/截图附件，assistant 消息 `metadata_json.candidates` 挂候选。用户在 Web 聊天勾选后 `POST /api/chat/threads/{id}/candidates/commit` 才 upsert + 尽力评分。跳过/不入库时原料仍保留在聊天里。
+- **触发方式≠数据源**:HTTP/Telegram 只是触发方式。新增采集器不需要动 ingest;新增来源识别只在 `classify_links` 加一行。
+- **Telegram 传输层**(`services/telegram.py`,默认关闭,opt-in):
+  - 长轮询 `getUpdates` 是后端主动**出站**请求 `api.telegram.org`,后端**无需对外暴露端口**;`config.yaml telegram.enabled=true` + `.env` 的 `TELEGRAM_BOT_TOKEN` 才启动(见 `main.py` lifespan 的 `_telegram_poll_loop`)。
+  - **只处理白名单 `telegram.allowed_chat_id`(机主本人)的消息**,其余一律忽略。回执**只发机主本人**——符合 §2 的机主回执豁免,绝不发招聘方。
+  - 回执文案是「识别到 N 个候选…打开 Web 确认」,**不声称已入库**。

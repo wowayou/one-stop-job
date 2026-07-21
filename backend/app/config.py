@@ -53,13 +53,41 @@ def _resolve_project_path(value: str | os.PathLike[str]) -> Path:
     return path
 
 
+def _to_wsl_path(value: str) -> str:
+    """在非 Windows(WSL/Linux)上把 `X:\\dir\\sub` 形式的盘符路径转成 `/mnt/x/dir/sub`。
+
+    让同一份 .env 在 Windows 宿主机和 WSL 里都能读到同一个上下文仓库；
+    Windows 上原样返回，其它平台仅在识别到盘符路径时转换。
+    """
+    import re
+
+    if os.name == "nt":
+        return value
+    # X:\dir 或 X:/dir 盘符路径。
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", value)
+    if match:
+        drive, rest = match.group(1).lower(), match.group(2).replace("\\", "/")
+        return f"/mnt/{drive}/{rest}" if rest else f"/mnt/{drive}"
+    # 手误漏了开头斜杠的 `mnt/x/...`（本应是 `/mnt/x/...`）：补回斜杠。
+    if re.match(r"^mnt/[A-Za-z]/", value) or re.match(r"^mnt/[A-Za-z]$", value):
+        return "/" + value
+    return value
+
+
 def _env_absolute_path(name: str) -> Path | None:
     value = os.getenv(name)
     if value is None or not value.strip():
         return None
-    path = Path(value.strip()).expanduser()
+    raw = value.strip()
+    resolved = _to_wsl_path(raw)
+    path = Path(resolved).expanduser()
     if not path.is_absolute():
-        raise ConfigError(f"{name} must be an absolute path")
+        os_hint = "posix (WSL/Linux)" if os.name != "nt" else "Windows"
+        raise ConfigError(
+            f"{name} 必须是绝对路径（当前 OS={os_hint}，收到 {raw!r}）。"
+            "WSL 示例：/mnt/d/006-Overseas ；Windows 示例：D:\\\\006-Overseas 。"
+            "同一物理目录在两种环境下路径写法不同，请按当前运行环境填写。"
+        )
     return path.resolve()
 
 
@@ -133,6 +161,16 @@ class Settings:
     @property
     def bebee_config(self) -> dict[str, Any]:
         value = self.config.get("bebee", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def telegram_config(self) -> dict[str, Any]:
+        value = self.config.get("telegram", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def ingest_config(self) -> dict[str, Any]:
+        value = self.config.get("ingest", {})
         return value if isinstance(value, dict) else {}
 
     @property

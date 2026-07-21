@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,59 @@ def extract_jobs_llm(body_text: str, url: str, og_title: str | None) -> list[dic
         if not str(job.get("company_name") or "").strip() and article_company:
             job["company_name"] = article_company
         out.append(job)
+    return out
+
+
+# ==================== 自由文本 / 截图抽取（可选 AI） ====================
+# 链接不是唯一事实源：BOSS/其它平台常常抓不到（风控/付费墙/无公开页），
+# 但用户手上有截图或复制的文本。这里用 LLM 把任意文本或一张截图抽成岗位 dict 列表，
+# 键与 normalizer 兼容；不可用/失败/空输入时返回 []，由调用方回退。
+_FREEFORM_SYSTEM = (
+    "你是招聘信息抽取器。输入是用户手动复制的文本或一张招聘截图，可能包含一个或多个岗位。"
+    "只依据可见内容抽取，严禁编造未出现的公司、薪资、联系方式或 URL；找不到的字段留空字符串。"
+    "只输出 JSON，禁止任何解释。"
+)
+
+_FREEFORM_USER = """从下面的内容里抽取所有岗位，返回严格 JSON 对象：{"jobs":[{"title":"","company_name":"","salary_text":"","city":"","area":"","experience":"","degree":"","skills":"","description":"","recruiter":"","url":""}]}
+规则：
+- 每个独立岗位一个对象；有几个岗位就返回几个对象；一个都认不出时返回 {"jobs":[]}。
+- salary_text 原样保留（如 8-12K·13薪 / 面议）。
+- 只填能从内容里看到的字段；看不到就留空字符串，不要猜、不要补全。
+- 联系方式（微信/电话/邮箱）放 recruiter；只有内容里出现的链接才填 url。
+"""
+
+
+def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -> list[dict]:
+    """把一段自由文本和/或一张截图抽成岗位 dict 列表（键与 normalizer 兼容）。
+
+    text 与 image_data_url 至少给一个；两者都给时一起送模型（文本 + 图像）。
+    不可用（无 key）/无输入/调用或解析失败时返回 []，由调用方回退（不抛异常）。
+    """
+    if not is_ai_available():
+        return []
+    text = (text or "").strip()
+    if not text and not image_data_url:
+        return []
+
+    user_text = _FREEFORM_USER + (f"\n内容：\n<<<\n{text[:_MAX_CHARS]}\n>>>" if text else "\n内容见随附截图。")
+    if image_data_url:
+        user_content: object = [
+            {"type": "text", "text": user_text},
+            {"type": "image_url", "image_url": {"url": image_data_url, "detail": "high"}},
+        ]
+    else:
+        user_content = user_text
+
+    try:
+        content = _chat(_client(), _FREEFORM_SYSTEM, user_content)
+    except Exception:
+        logger.warning("AI 自由文本/截图抽取失败", exc_info=True)
+        return []
+
+    out: list[dict] = []
+    for job in _parse_jobs(content):
+        if str(job.get("title") or "").strip():
+            out.append(job)
     return out
 
 
@@ -307,3 +361,63 @@ def analyze_decision_chat_llm(
         logger.warning("AI 决策聊天失败，回退规则分析", exc_info=True)
         return None
     return _parse_object(content)
+
+
+# ==================== 连接自检（真正发一次最小请求） ====================
+# /api/ai/status 只看 key 字符串是否存在；本函数发一次不含个人信息的最小请求，
+# 区分「未配置 / 调用成功 / 调用失败」并给出具体原因，避免聊天里静默回退到「仅规则」。
+_PROBE_SYSTEM = "你是连通性测试端点，只回复一个词。"
+_PROBE_USER = "回复 ok"
+
+
+def _status_code(exc: Exception) -> int | None:
+    """从 openai SDK 异常里尽量取出 HTTP 状态码；取不到返回 None。"""
+    for attr in ("status_code", "code"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, int):
+            return value
+    response = getattr(exc, "response", None)
+    code = getattr(response, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def probe_ai_connection() -> dict:
+    """发一次最小合成请求，返回结构化自检结果（不含任何密钥/个人信息）。
+
+    返回键：ok(bool) / stage("config"|"call") / reason(str) / model / latency_ms(可选)。
+    - 未配置 key：stage="config"，不发网络请求。
+    - 调用成功：ok=True，stage="call"，带 latency_ms。
+    - 调用失败：ok=False，stage="call"，按 401/404/429/超时给出具体原因。
+    """
+    model = _model()
+    if not is_ai_available():
+        return {"ok": False, "stage": "config", "reason": "未配置 OPENAI_API_KEY", "model": model}
+
+    started = time.monotonic()
+    try:
+        _chat(_client(), _PROBE_SYSTEM, _PROBE_USER)
+    except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常
+        logger.warning("AI 连接自检失败", exc_info=True)
+        code = _status_code(exc)
+        if code == 401:
+            reason = "认证失败：API Key 无效或权限不足（401）。"
+        elif code == 403:
+            reason = "拒绝访问：Key 无该模型权限或地区受限（403）。"
+        elif code == 404:
+            reason = "未找到：模型名或 Base URL 不正确（404）。"
+        elif code == 429:
+            reason = "被限流或余额不足（429）。"
+        elif code and code >= 500:
+            reason = f"服务端错误（{code}），稍后重试。"
+        else:
+            name = type(exc).__name__.lower()
+            if "timeout" in name:
+                reason = "请求超时：网络不通或端点无响应。"
+            elif "connect" in name:
+                reason = "连接失败：Base URL 不可达或网络受限。"
+            else:
+                reason = f"调用失败：{type(exc).__name__}。"
+        return {"ok": False, "stage": "call", "reason": reason, "model": model}
+
+    latency_ms = int((time.monotonic() - started) * 1000)
+    return {"ok": True, "stage": "call", "reason": "调用成功", "model": model, "latency_ms": latency_ms}

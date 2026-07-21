@@ -54,7 +54,7 @@ class ContextRepository:
         missing = [key for key, available in documents.items() if not available]
         available = root_available and not missing
         if not root_available:
-            message = "个人上下文仓库不可访问"
+            message = "路径已配置但目录不可访问（请确认当前 OS 下该路径存在，WSL 用 /mnt/d/...，Windows 用 D:\\...）"
         elif missing:
             message = f"个人上下文仓库缺少白名单文件：{', '.join(missing)}"
         else:

@@ -39,7 +39,7 @@ import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody }
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour, { TourStep } from "./Tour";
-import type { AiStatus, AppConfig, ApplicationEvent, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
+import type { AiProbeResult, AiStatus, AppConfig, ApplicationEvent, ChatContextPreview, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, IngestCandidate, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
 
 // 聚光灯引导步骤：只指向首屏稳定存在的元素，避免切视图编排，保持简单稳健。
 const TOUR_STEPS: TourStep[] = [
@@ -353,6 +353,8 @@ function App() {
   const [scores, setScores] = useState<FitScore[]>([]);
   const [jobEvents, setJobEvents] = useState<ApplicationEvent[]>([]);
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [aiProbe, setAiProbe] = useState<AiProbeResult | null>(null);
+  const [aiTesting, setAiTesting] = useState(false);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -666,6 +668,20 @@ function App() {
         notify("error", errorMessage(err, "公众号采集失败"));
       }
     });
+  }
+
+  async function testAiConnection() {
+    if (aiTesting) return;
+    setAiTesting(true);
+    setAiProbe(null);
+    try {
+      const result = await api<AiProbeResult>("/api/ai/test", { method: "POST" });
+      setAiProbe(result);
+    } catch (err) {
+      setAiProbe({ ok: false, stage: "call", reason: errorMessage(err, "测试请求失败"), model: aiStatus?.model ?? "" });
+    } finally {
+      setAiTesting(false);
+    }
   }
 
   async function createSprintBrief() {
@@ -1000,6 +1016,25 @@ function App() {
               ? `${aiStatus.model} · Key ${aiStatus.api_key_configured ? "已配置" : "未配置"} · Base URL ${aiStatus.base_url_configured ? "已配置" : "默认"}`
               : "正在读取"}
           </small>
+          <button
+            className="small-action ai-test-button"
+            type="button"
+            onClick={testAiConnection}
+            disabled={aiTesting || !aiStatus?.enabled_in_config}
+          >
+            {aiTesting ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
+            {aiTesting ? "测试中…" : "测试连接"}
+          </button>
+          {aiProbe && (
+            <div className={`ai-probe-result ${aiProbe.ok ? "ok" : "fail"}`} aria-live="polite">
+              {aiProbe.ok ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+              <span>
+                {aiProbe.ok
+                  ? `连接成功 · ${aiProbe.model}${aiProbe.latency_ms != null ? ` · ${aiProbe.latency_ms}ms` : ""}`
+                  : aiProbe.reason}
+              </span>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -1070,7 +1105,7 @@ function App() {
         )}
 
         <section className="workspace-content">
-          {activeNav === "chat" && <ChatView jobs={jobs} onOpenJob={openJob} />}
+          {activeNav === "chat" && <ChatView jobs={jobs} onOpenJob={openJob} aiAvailable={Boolean(aiStatus?.available)} />}
           {activeNav === "jobs" && (
             <JobsView
               jobs={filteredJobs}
@@ -1625,7 +1660,7 @@ function PaginationControls({
   );
 }
 
-function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => void | Promise<void> }) {
+function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (job: Job) => void | Promise<void>; aiAvailable: boolean }) {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<number | null>(() => {
     try {
@@ -1646,6 +1681,11 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [error, setError] = useState("");
+  const [preview, setPreview] = useState<ChatContextPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  // 阶段进度：结构化决策卡无法逐字流式，改为显式展示「检查规则 → 询问模型 → 整理结果」，让等待可见。
+  const [stage, setStage] = useState(0);
+  const stageTimers = useRef<number[]>([]);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
 
@@ -1687,6 +1727,7 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
       // Local storage is optional; SQLite remains the source of truth.
     }
     setError("");
+    setPreview(null);
     loadMessages(activeThreadId).catch((err) => setError(errorMessage(err, "聊天记录加载失败")));
   }, [activeThreadId]);
 
@@ -1731,6 +1772,13 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
     setImageDataUrl("");
     setImageName("");
     setPendingMessage({ content, imageDataUrl: sentImageDataUrl, imageName: sentImageName });
+    // 阶段推进：规则先跑（立即），启用 AI 时约 0.4s 进入「询问模型」，兜底再显示「整理结果」。
+    // 只是等待时的可见进度，不改变后端流程；请求返回时立刻清掉。
+    setStage(0);
+    stageTimers.current.forEach((id) => window.clearTimeout(id));
+    stageTimers.current = aiAvailable
+      ? [window.setTimeout(() => setStage(1), 400), window.setTimeout(() => setStage(2), 3500)]
+      : [window.setTimeout(() => setStage(2), 250)];
     try {
       const reply = await api<ChatReply>(`/api/chat/threads/${activeThreadId}/messages`, {
         method: "POST",
@@ -1738,14 +1786,37 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
       });
       setMessages((items) => [...items, reply.user_message, reply.assistant_message]);
       await loadThreads(activeThreadId);
+      setPreview(null);
     } catch (err) {
       setDraft(content);
       setImageDataUrl(sentImageDataUrl);
       setImageName(sentImageName);
       setError(errorMessage(err, "分析失败；消息可能已保存在本机，可刷新查看"));
     } finally {
+      stageTimers.current.forEach((id) => window.clearTimeout(id));
+      stageTimers.current = [];
+      setStage(0);
       setPendingMessage(null);
       setSending(false);
+    }
+  }
+
+  // 发送前预览：显示启用 AI 时这一线程会离开本机的固定上下文（决策规则/画像/看板 + 岗位事实 + 最近对话）。
+  async function togglePreview() {
+    if (preview) {
+      setPreview(null);
+      return;
+    }
+    if (!activeThreadId || previewLoading) return;
+    setPreviewLoading(true);
+    setError("");
+    try {
+      const result = await api<ChatContextPreview>(`/api/chat/threads/${activeThreadId}/context-preview`);
+      setPreview(result);
+    } catch (err) {
+      setError(errorMessage(err, "预览加载失败"));
+    } finally {
+      setPreviewLoading(false);
     }
   }
 
@@ -1820,7 +1891,7 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
         <div className="chat-thread-list">
           {threads.map((thread) => (
             <button type="button" key={thread.id} className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)} disabled={sending}>
-              <span>{thread.kind === "job" ? "岗位" : "通用"}</span>
+              <span>{thread.kind === "job" ? "岗位" : thread.kind === "ingest" ? "入库" : "通用"}</span>
               <strong>{thread.title}</strong>
               <small>{thread.last_message || "还没有消息"}</small>
             </button>
@@ -1835,7 +1906,7 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
             <header className="chat-head">
               <div>
                 <div className="chat-title-line">
-                  <span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : "通用聊天"}</span>
+                  <span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : activeThread.kind === "ingest" ? "入库候选" : "通用聊天"}</span>
                   {renaming ? (
                     <form className="chat-rename" onSubmit={renameThread}>
                       <input autoFocus maxLength={120} value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} aria-label="聊天名称" />
@@ -1869,6 +1940,7 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
               )}
               {messages.map((message) => {
                 const analysis = message.role === "assistant" ? message.metadata_json?.analysis : undefined;
+                const candidates = message.role === "assistant" ? message.metadata_json?.candidates : undefined;
                 return (
                   <article key={message.id} className={`chat-message ${message.role}`}>
                     <div className="chat-message-label">{message.role === "user" ? "你" : "助手"}</div>
@@ -1877,7 +1949,19 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
                       {message.metadata_json?.attachment?.kind === "image" && (
                         <img className="chat-attachment" src={apiUrl(`/api/chat/attachments/${message.metadata_json.attachment.id}`)} alt={message.metadata_json.attachment.name || "聊天截图"} />
                       )}
-                      {analysis && <DecisionAnalysisCard analysis={analysis} aiUsed={Boolean(message.metadata_json?.ai_used)} />}
+                      {analysis && <DecisionAnalysisCard analysis={analysis} runStatus={message.metadata_json?.run_status ?? (message.metadata_json?.ai_used ? "completed" : "rules_only")} />}
+                      {!!candidates?.length && (
+                        <CandidateListCard
+                          threadId={activeThreadId!}
+                          messageId={message.id}
+                          candidates={candidates}
+                          onUpdated={(updated) => {
+                            setMessages((items) => items.map((m) => (m.id === updated.id ? updated : m)));
+                            void loadThreads(activeThreadId);
+                          }}
+                          onError={(msg) => setError(msg)}
+                        />
+                      )}
                     </div>
                   </article>
                 );
@@ -1895,11 +1979,44 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
               {sending && (
                 <article className="chat-message assistant">
                   <div className="chat-message-label">助手</div>
-                  <div className="chat-bubble chat-thinking"><Loader2 className="spin" size={17} /> 正在先检查规则，再组织建议…</div>
+                  <div className="chat-bubble chat-thinking">
+                    <ChatProgress stage={stage} aiAvailable={aiAvailable} />
+                  </div>
                 </article>
               )}
               <div ref={messageEndRef} />
             </div>
+
+            {preview && (
+              <div className="chat-preview" aria-label="发送给 AI 的内容预览">
+                <div className="chat-preview-head">
+                  <div>
+                    <strong>{preview.ai_enabled ? "启用 AI 时会发送以下内容" : "当前未启用 AI，不会发送任何内容"}</strong>
+                    <small>{preview.ai_enabled ? `模型 ${preview.model} · 固定上下文约 ${preview.context_chars_total} 字 · 最近对话 ${preview.conversation_count} 条` : "配置并测试连接后，这里会显示将要发送的上下文。"}</small>
+                  </div>
+                  <button type="button" className="icon-button compact" title="关闭预览" onClick={() => setPreview(null)}><X size={14} /></button>
+                </div>
+                {preview.ai_enabled && (
+                  <>
+                    <div className="chat-preview-sections">
+                      {preview.sections.length ? preview.sections.map((section) => (
+                        <details key={section.key} className="chat-preview-section">
+                          <summary>{PREVIEW_SECTION_LABELS[section.key] ?? section.key}<span>{section.chars} 字</span></summary>
+                          <pre>{section.content}</pre>
+                        </details>
+                      )) : <p className="muted">未配置外部上下文仓库，仅发送本地规则结果与对话。</p>}
+                      {!!Object.keys(preview.job_context).length && (
+                        <details className="chat-preview-section">
+                          <summary>岗位事实<span>{Object.keys(preview.job_context).length} 项</span></summary>
+                          <pre>{JSON.stringify(preview.job_context, null, 2)}</pre>
+                        </details>
+                      )}
+                    </div>
+                    <p className="chat-preview-note"><Info size={13} />{preview.note}</p>
+                  </>
+                )}
+              </div>
+            )}
 
             <form className="chat-composer" onSubmit={sendMessage}>
               {error && <div className="chat-error"><AlertCircle size={15} />{error}</div>}
@@ -1929,6 +2046,9 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
                 <div className="chat-attachment-control">
                   <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => { chooseImage(event.target.files?.[0]); event.target.value = ""; }} />
                   <button className="small-action" type="button" onClick={() => imageInputRef.current?.click()} disabled={sending}><ImagePlus size={15} />截图</button>
+                  <button className="small-action" type="button" onClick={togglePreview} disabled={sending || previewLoading} title="查看启用 AI 时这一线程会发送给模型的固定上下文">
+                    {previewLoading ? <Loader2 className="spin" size={15} /> : <Info size={15} />}{preview ? "收起预览" : "预览发送内容"}
+                  </button>
                   <small>也可按 Ctrl + V 直接粘贴截图</small>
                 </div>
                 <button className="primary-action" disabled={(!draft.trim() && !imageDataUrl) || sending}>
@@ -1951,9 +2071,136 @@ function ChatView({ jobs, onOpenJob }: { jobs: Job[]; onOpenJob: (job: Job) => v
   );
 }
 
-function DecisionAnalysisCard({ analysis, aiUsed }: { analysis: DecisionAnalysis; aiUsed: boolean }) {
+// 阶段进度：结构化决策卡无法逐字流式，改为把等待拆成可见的三步。
+// 规则检查始终第一步；询问模型仅在启用 AI 时出现；整理结果收尾。stage 由发送时的定时器推进。
+function ChatProgress({ stage, aiAvailable }: { stage: number; aiAvailable: boolean }) {
+  const steps = aiAvailable
+    ? ["检查规则", "询问模型", "整理建议"]
+    : ["检查规则", "整理建议"];
+  // 无 AI 时只有两步：stage 0=检查规则，stage 2=整理建议，映射到 steps 下标 0/1。
+  const activeIndex = aiAvailable ? stage : stage === 0 ? 0 : 1;
+  return (
+    <div className="chat-progress" aria-live="polite">
+      {steps.map((label, index) => {
+        const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "wait";
+        return (
+          <span key={label} className={`chat-progress-step ${state}`}>
+            {state === "done" ? <CheckCircle2 size={14} /> : state === "active" ? <Loader2 className="spin" size={14} /> : <span className="chat-progress-dot" />}
+            {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+const PREVIEW_SECTION_LABELS: Record<string, string> = {
+  decision_rules: "决策规则",
+  profile: "个人画像",
+  board: "求职看板",
+};
+
+type RunStatus = "completed" | "fallback" | "rules_only";
+
+// 三态来源标记：AI 成功融合、AI 调用失败已回退、未启用 AI。
+// 关键点是把「启用了但调用失败」和「从没配 AI」区分开，避免坏 key 时静默显示「仅规则」。
+const RUN_STATUS_BADGE: Record<RunStatus, { label: string; tone: string; title: string }> = {
+  completed: { label: "规则 + AI", tone: "ok", title: "规则先行，AI 已结合上下文补充。" },
+  fallback: { label: "规则(AI 调用失败)", tone: "warn", title: "AI 已启用但本次调用失败，已回退到规则结果。可在侧栏「测试连接」查看原因。" },
+  rules_only: { label: "仅规则", tone: "muted", title: "未启用 AI，仅使用本地规则。" },
+};
+
+function CandidateListCard({
+  threadId,
+  messageId,
+  candidates,
+  onUpdated,
+  onError,
+}: {
+  threadId: number;
+  messageId: number;
+  candidates: IngestCandidate[];
+  onUpdated: (message: ChatMessage) => void;
+  onError: (message: string) => void;
+}) {
+  const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
+  const [selected, setSelected] = useState<number[]>(pendingIndexes);
+  const [busy, setBusy] = useState(false);
+
+  function toggle(index: number) {
+    if (candidates[index]?.status === "committed" || candidates[index]?.status === "skipped") return;
+    setSelected((prev) => (prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]));
+  }
+
+  async function commit(indexes: number[]) {
+    setBusy(true);
+    try {
+      const reply = await api<{ assistant_message: ChatMessage }>(`/api/chat/threads/${threadId}/candidates/commit`, {
+        method: "POST",
+        ...jsonBody({ message_id: messageId, indexes }),
+      });
+      onUpdated(reply.assistant_message);
+      const next = reply.assistant_message.metadata_json?.candidates ?? [];
+      setSelected(next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0));
+    } catch (err) {
+      onError(errorMessage(err, "入库失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="candidate-card" aria-label="入库候选">
+      <div className="candidate-head">
+        <strong>候选岗位</strong>
+        <small>默认不入库；勾选后点「入库选中」</small>
+      </div>
+      <ul className="candidate-list">
+        {candidates.map((item, index) => {
+          const status = item.status || "pending";
+          const disabled = status !== "pending";
+          return (
+            <li key={`${item.title}-${index}`} className={`candidate-item status-${status}`}>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(index)}
+                  disabled={disabled || busy}
+                  onChange={() => toggle(index)}
+                />
+                <span className="candidate-body">
+                  <strong>{item.title || "未命名岗位"}</strong>
+                  <small>
+                    {[item.company_name, item.salary_text, [item.city, item.area].filter(Boolean).join(" · "), item.source]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </small>
+                  {status === "committed" && item.job_id != null && <em>已入库 · #{item.job_id}</em>}
+                  {status === "skipped" && <em>已跳过</em>}
+                </span>
+              </label>
+            </li>
+          );
+        })}
+      </ul>
+      {pendingIndexes.length > 0 && (
+        <div className="candidate-actions">
+          <button className="primary-action" type="button" disabled={busy || !selected.length} onClick={() => void commit(selected)}>
+            {busy ? "处理中…" : `入库选中（${selected.length}）`}
+          </button>
+          <button className="small-action" type="button" disabled={busy} onClick={() => void commit([])}>
+            全部跳过
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DecisionAnalysisCard({ analysis, runStatus }: { analysis: DecisionAnalysis; runStatus: RunStatus }) {
   const checks = analysis.rule_checks ?? [];
   const [copyState, setCopyState] = useState<"idle" | "copied" | "error">("idle");
+  const badge = RUN_STATUS_BADGE[runStatus] ?? RUN_STATUS_BADGE.rules_only;
 
   async function copyReplyDraft() {
     const ok = await copyToClipboard(analysis.reply_draft);
@@ -1966,7 +2213,7 @@ function DecisionAnalysisCard({ analysis, aiUsed }: { analysis: DecisionAnalysis
       <div className="decision-head">
         <span className={`priority priority-${analysis.priority === "待确认" ? "unknown" : analysis.priority.toLowerCase()}`}>{analysis.priority}</span>
         <strong>{analysis.direction}</strong>
-        <small>{aiUsed ? "规则 + AI" : "仅规则"}</small>
+        <small className={`run-badge run-badge-${badge.tone}`} title={badge.title}>{badge.label}</small>
       </div>
       <div className="decision-next"><span>唯一下一步 · {analysis.next_action}</span><strong>{analysis.action_text}</strong></div>
       {!!checks.length && (

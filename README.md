@@ -68,6 +68,8 @@ cd frontend && npm run dev
 
 ## 🔌 数据来源
 
+所有来源最终汇入同一条管线（采集器 → 规范化 → 入库 → 评分），互不耦合。
+
 | 来源 | 触发方式 | 说明 |
 |------|---------|------|
 | **BOSS 直聘** | 宿主机脚本 | 需安装 OpenCLI，Windows 双击 `tools\host_collect_boss.bat` |
@@ -76,6 +78,38 @@ cd frontend && npm run dev
 | **beBee** | 配置采集 | 解析页面 JobPosting JSON-LD 或 Next.js payload |
 | **CSV/Excel** | 文件上传 | 支持自定义字段映射 |
 | **手动录入** | 表单填写 | 单条岗位快速录入 |
+| **Telegram 截图/文本** | 手机发消息 | 见下方「手机一键入库」；先写聊天候选，本人确认后才入库 |
+
+### 📱 手机一键入库（Telegram，可选）
+
+离开电脑时，用 Telegram 把岗位链接或截图发给自己的 bot。后端**只抽取候选并写入本地聊天**，**默认不入库**；你在 Web「聊天」里勾选要沉淀的岗位再点「入库选中」。这是「手机发过来 → 自动处理 → 本人确认后落盘」的入口。
+
+**为什么用 Telegram 长轮询**：后端主动向 `api.telegram.org` 拉取消息，**不需要对外暴露端口、不需要内网穿透**——`127.0.0.1` 本机运行即可。
+
+**链接不是唯一事实源**：很多平台（BOSS 等）有风控/付费墙、抓不到公开页。所以 ingest 同时支持三种输入——
+- **认识的链接**（公众号 `mp.weixin` / beBee）→ 走专用采集器抓取解析；
+- **复制的文本**（如手动复制的 BOSS JD）→ 走 LLM 抽取；
+- **一张截图** → 走 LLM 视觉抽取。
+三者可任意组合。原文与截图会保留在对应聊天线程里（不因「不入库」而删除）。freeform 抽出的岗位 `Job.source` 用 `ingest.manual_source`（默认 `manual`），仅在你确认入库后才写入 Job 表。
+
+**启用步骤**：
+1. 在 Telegram 找 `@BotFather` 创建一个 bot，拿到 token。
+2. `.env` 加：
+   ```
+   TELEGRAM_BOT_TOKEN=你的token
+   ```
+3. 给你的 bot 发一条消息，用 `@userinfobot` 查到**你本人**的 chat id，填进 `config.yaml`：
+   ```yaml
+   telegram:
+     enabled: true
+     allowed_chat_id: 123456789   # 你本人的 chat id（整数）
+     poll_timeout_seconds: 30
+   ```
+4. 重启后端。手机发链接/截图后 bot 回执「识别到 N 个候选…打开 Web 确认」；在聊天线程里勾选入库。
+
+> **隐私与边界（红线 §2）**：bot 只处理 `allowed_chat_id`（你本人）的消息，陌生人发来的会被静默忽略。回执**只发给你本人**；**绝不向招聘方发消息**。开启 AI 抽取后，文本和截图会发送给你配置的模型服务商。
+
+也可以不配 Telegram，直接 `POST /api/ingest`（body: `{"text": "…"}` 和/或 `{"image_data_url": "data:..."}`）写入聊天候选，再在 Web 确认入库。
 
 ## ⚙️ 配置说明
 
