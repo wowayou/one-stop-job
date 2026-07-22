@@ -29,3 +29,6 @@ assets/README/*.png
 .yuanbao/
 data/.yuanbao/
 *storage_state*.json
+
+# 本人材料/截图投递目录,绝不入库
+外部/
