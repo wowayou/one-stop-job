@@ -102,6 +102,12 @@ do_start() {
   ensure_frontend_build
   check_port_free_or_owned "$PORT"
 
+  # 日志超过 10MB 就滚动一份,避免 backend.log 无限增长。
+  if [[ -f "$BACKEND_LOG" ]] && [[ "$(wc -c <"$BACKEND_LOG")" -gt $((10 * 1024 * 1024)) ]]; then
+    mv -f "$BACKEND_LOG" "$BACKEND_LOG.1"
+    touch "$BACKEND_LOG"
+  fi
+
   (
     cd "$ROOT_DIR"
     nohup .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >>"$BACKEND_LOG" 2>&1 &
@@ -175,8 +181,46 @@ do_update() {
   fi
 }
 
+do_backup() {
+  local db_path="$ROOT_DIR/data/job_one_stop/job_one_stop.sqlite3"
+  local attachments_dir="$ROOT_DIR/data/job_one_stop/chat_attachments"
+
+  if [[ ! -f "$db_path" ]]; then
+    echo "尚无数据可备份(未找到 $db_path)。"
+    return 0
+  fi
+  if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    echo "缺少 .venv,请先运行一次 scripts/app.sh start 建好虚拟环境。" >&2
+    exit 1
+  fi
+
+  local backup_dir="$ROOT_DIR/data/backups/$(date +%Y%m%d-%H%M%S)"
+  mkdir -p "$backup_dir"
+
+  # SQLite Connection.backup() 是并发安全的在线备份,后端运行中也能用。
+  "$ROOT_DIR/.venv/bin/python" -c '
+import sqlite3
+import sys
+
+src = sqlite3.connect(sys.argv[1])
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+src.close()
+dst.close()
+' "$db_path" "$backup_dir/job_one_stop.sqlite3"
+
+  if [[ -d "$attachments_dir" ]]; then
+    cp -a "$attachments_dir" "$backup_dir/"
+  fi
+
+  echo "备份完成: $backup_dir"
+  du -sh "$backup_dir"
+  echo "还原方法: 先 scripts/app.sh stop 停止后端,再把备份目录里的 job_one_stop.sqlite3(和 chat_attachments/,如有)复制回 $ROOT_DIR/data/job_one_stop/,然后 scripts/app.sh start。"
+}
+
 usage() {
-  echo "Usage: $0 {start|stop|status|logs|update}"
+  echo "Usage: $0 {start|stop|status|logs|update|backup}"
   echo
   echo "单进程部署模式:构建后仅需一个 uvicorn 进程(端口 \$PORT,默认 8000),"
   echo "同时提供前端页面与 API。运行时文件在 data/app/。"
@@ -197,6 +241,9 @@ case "${1:-}" in
     ;;
   update)
     do_update
+    ;;
+  backup)
+    do_backup
     ;;
   "")
     do_status

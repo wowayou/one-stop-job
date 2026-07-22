@@ -174,6 +174,20 @@ class Settings:
         return value if isinstance(value, dict) else {}
 
     @property
+    def ai_config(self) -> dict[str, Any]:
+        value = self.config.get("ai", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def ai_timeout_seconds(self) -> float:
+        value = self.ai_config.get("timeout_seconds", 60)
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            return 60.0
+        return seconds if seconds > 0 else 60.0
+
+    @property
     def followup_stale_days(self) -> int:
         followup = self.config.get("followup", {})
         value = followup.get("stale_days") if isinstance(followup, dict) else None

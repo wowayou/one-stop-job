@@ -152,4 +152,5 @@ followup:
 ai:
   enabled: true
   provider: "openai_compatible"
+  timeout_seconds: 60 # 单次调用超时上限（秒）；超时会走既有的规则/模板回退，不会卡住请求
   # 密钥继续放 .env，例如 OPENAI_API_KEY / OPENAI_BASE_URL

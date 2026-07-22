@@ -38,6 +38,7 @@ scripts/app.sh start
 scripts/app.sh status  # 进程 + 健康检查
 scripts/app.sh logs    # 跟踪日志
 scripts/app.sh stop    # 停止
+scripts/app.sh backup  # 备份 SQLite + 聊天附件到 data/backups/
 ```
 
 ## 之后做什么

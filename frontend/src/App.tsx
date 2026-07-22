@@ -1680,6 +1680,7 @@ function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (j
   const [pendingMessage, setPendingMessage] = useState<{ content: string; imageDataUrl: string; imageName: string } | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
+  const [deletingThreadId, setDeletingThreadId] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<ChatContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -1841,6 +1842,24 @@ function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (j
     }
   }
 
+  async function deleteThread(thread: ChatThread) {
+    if (!window.confirm(`删除聊天「${thread.title}」？会同时删除消息与截图附件，不可恢复。`)) return;
+    setDeletingThreadId(thread.id);
+    setError("");
+    try {
+      await api<{ deleted: boolean; id: number }>(`/api/chat/threads/${thread.id}`, { method: "DELETE" });
+      setThreads((items) => items.filter((item) => item.id !== thread.id));
+      if (activeThreadId === thread.id) {
+        setActiveThreadId(null);
+        setMessages([]);
+      }
+    } catch (err) {
+      setError(errorMessage(err, "删除聊天失败"));
+    } finally {
+      setDeletingThreadId(null);
+    }
+  }
+
   function chooseImage(file?: File) {
     if (!file) return;
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
@@ -1890,11 +1909,23 @@ function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (j
         </div>
         <div className="chat-thread-list">
           {threads.map((thread) => (
-            <button type="button" key={thread.id} className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)} disabled={sending}>
-              <span>{thread.kind === "job" ? "岗位" : thread.kind === "ingest" ? "入库" : "通用"}</span>
-              <strong>{thread.title}</strong>
-              <small>{thread.last_message || "还没有消息"}</small>
-            </button>
+            <div className="chat-thread-row" key={thread.id}>
+              <button type="button" className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)} disabled={sending}>
+                <span>{thread.kind === "job" ? "岗位" : thread.kind === "ingest" ? "入库" : "通用"}</span>
+                <strong>{thread.title}</strong>
+                <small>{thread.last_message || "还没有消息"}</small>
+              </button>
+              <button
+                type="button"
+                className="icon-button compact chat-thread-delete"
+                title="删除聊天"
+                aria-label={`删除聊天 ${thread.title}`}
+                onClick={() => deleteThread(thread)}
+                disabled={sending || deletingThreadId === thread.id}
+              >
+                {deletingThreadId === thread.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}
+              </button>
+            </div>
           ))}
           {!loading && !threads.length && <p className="muted chat-empty-copy">先创建一个通用聊天，或者给某个岗位开专属聊天。</p>}
         </div>

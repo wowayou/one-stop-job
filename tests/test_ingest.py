@@ -385,6 +385,50 @@ def test_poll_loop_accepts_numeric_string_chat_id(monkeypatch, tmp_path):
     assert calls["sent"] == [42]
 
 
+def test_poll_loop_backs_off_exponentially_and_resets_after_success(monkeypatch, tmp_path):
+    """断网时指数退避（5s → 10s → … 封顶 300s）；一次成功拉取后失败计数清零，
+    下次失败应重新从 5s 起，不能一直停留在封顶值。"""
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-backoff.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    # 前 7 次失败触发退避封顶；第 8 次成功（空列表）清零计数；第 9 次再失败一次
+    # 验证退避重新从 5s 起；随后 call_plan 耗尽抛 KeyboardInterrupt 跳出无限循环。
+    call_plan = ["fail"] * 7 + ["ok", "fail"]
+
+    def fake_get_updates(token, offset, timeout):
+        if not call_plan:
+            raise KeyboardInterrupt
+        step = call_plan.pop(0)
+        if step == "fail":
+            raise RuntimeError("network down")
+        return []
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(main.asyncio, "sleep", fake_sleep)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+
+    assert sleeps == [5, 10, 20, 40, 80, 160, 300, 5]
+
+
 # ==================== 红线绊线：入库只能发生在用户确认的 commit ====================
 
 

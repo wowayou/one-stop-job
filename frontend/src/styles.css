@@ -2090,6 +2090,22 @@ meter {
   overflow-y: auto;
 }
 
+.chat-thread-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.chat-thread-row > .chat-thread {
+  flex: 1;
+  min-width: 0;
+}
+
+.chat-thread-delete {
+  align-self: center;
+  flex-shrink: 0;
+}
+
 .chat-thread {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

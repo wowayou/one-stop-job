@@ -267,6 +267,120 @@ def test_decision_chat_stores_supported_screenshot_locally(monkeypatch, tmp_path
     asyncio.run(scenario())
 
 
+def test_save_chat_image_rejects_unknown_mime_defensively(monkeypatch, tmp_path):
+    """Schema 校验已挡掉非 PNG/JPEG/WebP，但 `_save_chat_image` 自身也要防御性拒绝而不是 KeyError。"""
+    app = _fresh_app(monkeypatch, tmp_path, "chat-image-mime.sqlite3")
+
+    import backend.app.main as main
+    from dataclasses import replace
+    from fastapi import HTTPException
+
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
+
+    try:
+        main._save_chat_image("data:image/gif;base64,R0lGODlh", None)
+    except HTTPException as exc:
+        assert exc.status_code == 400
+        assert "PNG" in exc.detail and "JPEG" in exc.detail and "WebP" in exc.detail
+    else:
+        raise AssertionError("expected HTTPException for unsupported mime type")
+
+
+def test_delete_chat_thread_removes_messages_and_attachment_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "chat-delete.sqlite3")
+    image_data_url = "data:image/png;base64,iVBORw0KGgo="
+
+    import backend.app.main as main
+    from dataclasses import replace
+
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "请看这张截图", "image_data_url": image_data_url, "image_name": "shot.png"},
+            )
+            assert reply.status_code == 200, reply.text
+            attachment = reply.json()["user_message"]["metadata_json"]["attachment"]
+            attachment_path = main.settings.data_dir / "chat_attachments" / attachment["id"]
+            assert attachment_path.is_file()
+
+            delete_resp = await client.delete(f"/api/chat/threads/{thread['id']}")
+            assert delete_resp.status_code == 200, delete_resp.text
+            assert delete_resp.json() == {"deleted": True, "id": thread["id"]}
+
+            missing_thread = await client.get(f"/api/chat/threads/{thread['id']}")
+            assert missing_thread.status_code == 404
+            assert not attachment_path.exists()
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(str(tmp_path / "chat-delete.sqlite3"))
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0]
+        assert count == 0
+        count = conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0]
+        assert count == 0
+    finally:
+        conn.close()
+
+
+def test_delete_chat_thread_404_for_missing_thread(monkeypatch, tmp_path):
+    app = _fresh_app(monkeypatch, tmp_path, "chat-delete-404.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.delete("/api/chat/threads/999999")
+            assert resp.status_code == 404
+
+    asyncio.run(scenario())
+
+
+def test_delete_chat_thread_does_not_affect_other_threads(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "chat-delete-isolated.sqlite3")
+    image_data_url = "data:image/png;base64,iVBORw0KGgo="
+
+    import backend.app.main as main
+    from dataclasses import replace
+
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
+
+    async def scenario():
+        async for client in _client(app):
+            thread_a = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            thread_b = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+
+            reply_a = await client.post(
+                f"/api/chat/threads/{thread_a['id']}/messages",
+                json={"content": "线程 A 截图", "image_data_url": image_data_url, "image_name": "a.png"},
+            )
+            reply_b = await client.post(
+                f"/api/chat/threads/{thread_b['id']}/messages",
+                json={"content": "线程 B 截图", "image_data_url": image_data_url, "image_name": "b.png"},
+            )
+            attachment_a = reply_a.json()["user_message"]["metadata_json"]["attachment"]
+            attachment_b = reply_b.json()["user_message"]["metadata_json"]["attachment"]
+            path_a = main.settings.data_dir / "chat_attachments" / attachment_a["id"]
+            path_b = main.settings.data_dir / "chat_attachments" / attachment_b["id"]
+            assert path_a.is_file() and path_b.is_file()
+
+            delete_resp = await client.delete(f"/api/chat/threads/{thread_a['id']}")
+            assert delete_resp.status_code == 200, delete_resp.text
+
+            assert not path_a.exists()
+            assert path_b.is_file()
+
+            still_there = await client.get(f"/api/chat/threads/{thread_b['id']}")
+            assert still_there.status_code == 200
+            assert len(still_there.json()["messages"]) == 2  # user + assistant
+
+    asyncio.run(scenario())
+
+
 def _create_pre_resume_schema_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute(

@@ -44,7 +44,12 @@ def _model() -> str:
 def _client():
     from openai import OpenAI
 
-    kwargs: dict = {"api_key": os.getenv("OPENAI_API_KEY")}
+    from ..config import get_settings
+
+    kwargs: dict = {
+        "api_key": os.getenv("OPENAI_API_KEY"),
+        "timeout": get_settings().ai_timeout_seconds,
+    }
     base = os.getenv("OPENAI_BASE_URL")
     if base:
         kwargs["base_url"] = base

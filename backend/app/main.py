@@ -122,15 +122,23 @@ async def _telegram_poll_loop() -> None:
         return
 
     offset: int | None = None
+    failure_streak = 0
     while True:
         try:
             updates = await run_in_threadpool(telegram.get_updates, token, offset, poll_timeout)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            logger.warning("Telegram getUpdates 失败，稍后重试", exc_info=True)
-            await asyncio.sleep(5)
+            # 断网/接口异常时指数退避（5s → 10s → … 封顶 300s），避免网络恢复前空转刷日志。
+            failure_streak += 1
+            delay = min(5 * 2 ** (failure_streak - 1), 300)
+            if failure_streak == 1:
+                logger.warning("Telegram getUpdates 失败，稍后重试", exc_info=True)
+            elif failure_streak < 4 or failure_streak % 4 == 0:
+                logger.warning("Telegram getUpdates 持续失败（第 %d 次），%d 秒后重试", failure_streak, delay)
+            await asyncio.sleep(delay)
             continue
+        failure_streak = 0
 
         for update in updates:
             offset = int(update.get("update_id", 0)) + 1
@@ -1063,7 +1071,9 @@ def _recent_conversation(messages: list[ChatMessage]) -> list[dict[str, str]]:
 def _save_chat_image(data_url: str, original_name: str | None) -> dict:
     header, encoded = data_url.split(",", 1)
     mime_type = header.removeprefix("data:").removesuffix(";base64")
-    extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}[mime_type]
+    extension = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}.get(mime_type)
+    if extension is None:
+        raise HTTPException(status_code=400, detail="截图格式不支持，仅支持 PNG、JPEG、WebP")
     attachment_id = f"{uuid.uuid4().hex}.{extension}"
     attachment_dir = settings.data_dir / "chat_attachments"
     attachment_dir.mkdir(parents=True, exist_ok=True)
@@ -1085,6 +1095,17 @@ def _chat_attachment_path(attachment_id: str) -> Path:
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Attachment not found")
     return path
+
+
+def _remove_chat_attachment(attachment_id: str | None) -> None:
+    """删除一个聊天截图文件；ID 非法或文件已缺失都容忍,不抛异常。"""
+    if not attachment_id:
+        return
+    try:
+        path = _chat_attachment_path(attachment_id)
+    except HTTPException:
+        return
+    path.unlink(missing_ok=True)
 
 
 @app.get("/api/chat/threads")
@@ -1188,6 +1209,31 @@ async def update_chat_thread(thread_id: int, payload: ChatThreadUpdate, session:
     session.commit()
     session.refresh(thread)
     return _chat_thread_payload(session, thread)
+
+
+@app.delete("/api/chat/threads/{thread_id}")
+async def delete_chat_thread(thread_id: int, session: SessionDep) -> dict:
+    """删除整个聊天线程:连同全部消息与消息里引用的截图附件一起清理,不可恢复。"""
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    messages = session.exec(select(ChatMessage).where(ChatMessage.thread_id == thread_id)).all()
+    attachment_ids = [
+        message.metadata_json.get("attachment", {}).get("id")
+        for message in messages
+        if isinstance(message.metadata_json, dict) and isinstance(message.metadata_json.get("attachment"), dict)
+    ]
+
+    for message in messages:
+        session.delete(message)
+    session.delete(thread)
+    session.commit()
+
+    for attachment_id in attachment_ids:
+        _remove_chat_attachment(attachment_id)
+
+    return {"deleted": True, "id": thread_id}
 
 
 @app.post("/api/chat/threads/{thread_id}/messages")

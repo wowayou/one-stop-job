@@ -34,6 +34,7 @@ scripts/app.sh status  # 查看进程与健康检查状态
 scripts/app.sh logs    # 跟踪日志(Ctrl+C 退出)
 scripts/app.sh stop    # 停止
 scripts/app.sh update  # 代码更新后：装依赖 + 重新构建前端 + 若在运行则重启
+scripts/app.sh backup  # 备份 SQLite + 聊天附件到 data/backups/<时间戳>/
 ```
 
 运行时文件(pid、日志)在 `data/app/`,与本地开发模式的 `data/dev/` 互不干扰,可各自独立启停,但**两者共用同一个数据库** `./data/job_one_stop/`,且都监听 `8000` 端口,所以不能同时启动。如果 `scripts/app.sh start` 报端口被占用,先确认没有本地开发后端或 Docker 容器在跑。
