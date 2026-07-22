@@ -741,6 +741,24 @@ button.stat-chip:hover {
   min-height: 0;
 }
 
+/* 聊天composer 里的「本条用 AI」开关：和 .ai-tailor-toggle 同一种小 checkbox+label 观感，
+   但不需要 margin-left:auto——composer-foot 里已经是 space-between，不用再抢占空间对齐。 */
+.chat-ai-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #4b5563;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat-ai-toggle input {
+  width: auto;
+  min-height: 0;
+}
+
 .prep-mode-hint {
   margin: 6px 0 0;
   font-size: 12px;
@@ -1013,6 +1031,50 @@ button.stat-chip:hover {
 .score-pill.low {
   background: #ffe5dc;
   color: #9a3b20;
+}
+
+/* 表格评分芯片改成按钮，点开一个 fixed 定位、portal 到 body 的轻量分解 popover。 */
+.score-chip-trigger {
+  border: 0;
+  cursor: pointer;
+}
+
+.score-chip-trigger:hover,
+.score-chip-trigger:focus-visible {
+  filter: brightness(0.96);
+}
+
+.score-popover {
+  position: fixed;
+  z-index: 60;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(420px, calc(100vh - 24px));
+  overflow-y: auto;
+  padding: 14px;
+  border: 1px solid #d8ded8;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 14px 34px rgba(23, 32, 27, 0.16);
+}
+
+.score-popover-empty {
+  display: grid;
+  justify-items: start;
+  gap: 8px;
+}
+
+.score-breakdown {
+  display: grid;
+  gap: 10px;
+}
+
+.score-formula {
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px dashed #e1e7e1;
+  color: #66736b;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .status.fit,
@@ -1601,6 +1663,11 @@ legend {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 10px;
+}
+
+.weight-rescore-hint {
+  margin-top: 10px;
+  line-height: 1.55;
 }
 
 .rank-row,

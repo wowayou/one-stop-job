@@ -35,6 +35,7 @@ import {
   X
 } from "lucide-react";
 import { ClipboardEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
@@ -176,6 +177,7 @@ const PAGE_SIZE = 10;
 const JOB_PAGE_SIZE = 20;
 const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v1";
 const ACTIVE_CHAT_THREAD_KEY = "job-one-stop.active-chat-thread.v1";
+const CHAT_USE_AI_KEY = "job-one-stop.chat-use-ai.v1";
 const GLOBAL_BUSY_KEYS = ["source-boss", "source-bebee", "upload", "wechat", "sprint", "manual", "profile", "export"] as const;
 
 type ManualJob = {
@@ -784,6 +786,21 @@ function App() {
     });
   }
 
+  // 表格评分芯片的「尚未评分」空态入口：复用同一个评分端点，但不依赖 selectedJob/scores（那两个
+  // 是抽屉专属状态），评分完直接刷新 jobs 列表，popover 下次打开即读到最新 latest_score。
+  async function scoreJobById(jobId: number) {
+    await runBusy(`score-${jobId}`, async () => {
+      notify("info", "正在计算匹配评分…");
+      try {
+        const score = await api<FitScore>(`/api/jobs/${jobId}/score`, { method: "POST" });
+        await reload(["jobs", "funnel"]);
+        notify("success", `匹配评分已更新：${score.total} 分。`);
+      } catch (err) {
+        notify("error", errorMessage(err, "评分失败"));
+      }
+    });
+  }
+
   async function createPrep() {
     if (!selectedJob) return;
     await runBusy("prep", async () => {
@@ -841,6 +858,24 @@ function App() {
         notify("success", "画像已保存，后续评分会按新画像计算。", ["历史评分不会自动重算；可打开岗位重新评分，或直接生成今日求职冲刺包。"]);
       } catch (err) {
         notify("error", errorMessage(err, "画像保存失败"));
+      }
+    });
+  }
+
+  // 评分权重实际读的是 UserProfile.weights（见 scoring.py score_job），不是 config.yaml 的
+  // scoring.weights —— 后者只在首次创建画像时当一次性默认值种子，改了也不会影响之后的评分。
+  // 权重编辑因此必须走 /api/profile，和 updateProfile 用同一个持久化目标（同一条 UserProfile 行）。
+  async function updateScoringWeights(weights: Record<string, number>) {
+    await runBusy("profile-weights", async () => {
+      notify("info", "正在保存评分权重…");
+      try {
+        const updated = await api<UserProfile>("/api/profile", { method: "PUT", ...jsonBody({ weights }) });
+        setProfile(updated);
+        notify("success", "评分权重已保存。", [
+          "新权重对之后触发的评分生效；已有评分不会自动重算，可在岗位池评分芯片或岗位详情页点「重新评分」。"
+        ]);
+      } catch (err) {
+        notify("error", errorMessage(err, "评分权重保存失败"));
       }
     });
   }
@@ -1129,6 +1164,7 @@ function App() {
               onOpen={openJob}
               onPatch={patchJob}
               onBulkPatch={bulkPatchJobs}
+              onScoreJob={scoreJobById}
               busy={busy}
               onExport={() => exportFile(`/api/exports/jobs?format=csv&status=${status === "all" ? "" : status}&source=${sourceFilter === "all" ? "" : sourceFilter}`, "jobs.csv", "岗位池已导出")}
             />
@@ -1167,6 +1203,7 @@ function App() {
               onAiStatus={setAiStatus}
               onCollectSource={collectSource}
               onUpdateProfile={updateProfile}
+              onUpdateWeights={updateScoringWeights}
             />
           )}
         </section>
@@ -1830,6 +1867,15 @@ function ChatView({
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<ChatContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
+  // 「本条不用 AI」：默认开(=可用 AI 时用 AI)，状态存本机，跨会话记住上次选择。
+  const [useAiForMessage, setUseAiForMessage] = useState<boolean>(() => {
+    try {
+      const stored = window.localStorage.getItem(CHAT_USE_AI_KEY);
+      return stored === null ? true : stored === "true";
+    } catch {
+      return true;
+    }
+  });
   // 阶段进度：结构化决策卡无法逐字流式，改为显式展示「检查规则 → 询问模型 → 整理结果」，让等待可见。
   const [stage, setStage] = useState(0);
   const stageTimers = useRef<number[]>([]);
@@ -1838,6 +1884,16 @@ function ChatView({
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeJob = activeThread?.job_id ? jobs.find((job) => job.id === activeThread.job_id) ?? null : null;
+  // 这条消息实际会不会用到 AI：全局可用 且 本条开关没关。
+  const effectiveAiForMessage = aiAvailable && useAiForMessage;
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CHAT_USE_AI_KEY, String(useAiForMessage));
+    } catch {
+      // localStorage 只是记住上次选择的锦上添花，写入失败不影响本次发送。
+    }
+  }, [useAiForMessage]);
 
   async function loadThreads(preferredId?: number | null) {
     const loaded = await api<ChatThread[]>("/api/chat/threads");
@@ -1919,17 +1975,23 @@ function ChatView({
     setImageDataUrl("");
     setImageName("");
     setPendingMessage({ content, imageDataUrl: sentImageDataUrl, imageName: sentImageName });
-    // 阶段推进：规则先跑（立即），启用 AI 时约 0.4s 进入「询问模型」，兜底再显示「整理结果」。
-    // 只是等待时的可见进度，不改变后端流程；请求返回时立刻清掉。
+    // 阶段推进：规则先跑（立即），实际会用 AI 时约 0.4s 进入「询问模型」，兜底再显示「整理结果」。
+    // 只是等待时的可见进度，不改变后端流程；请求返回时立刻清掉。本条关了 AI 时按「仅规则」的
+    // 两步走，不显示不会发生的「询问模型」。
     setStage(0);
     stageTimers.current.forEach((id) => window.clearTimeout(id));
-    stageTimers.current = aiAvailable
+    stageTimers.current = effectiveAiForMessage
       ? [window.setTimeout(() => setStage(1), 400), window.setTimeout(() => setStage(2), 3500)]
       : [window.setTimeout(() => setStage(2), 250)];
     try {
       const reply = await api<ChatReply>(`/api/chat/threads/${activeThreadId}/messages`, {
         method: "POST",
-        ...jsonBody({ content, image_data_url: sentImageDataUrl || null, image_name: sentImageName || null })
+        ...jsonBody({
+          content,
+          image_data_url: sentImageDataUrl || null,
+          image_name: sentImageName || null,
+          use_ai: useAiForMessage
+        })
       });
       setMessages((items) => [...items, reply.user_message, reply.assistant_message]);
       await loadThreads(activeThreadId);
@@ -2155,7 +2217,7 @@ function ChatView({
                 <article className="chat-message assistant">
                   <div className="chat-message-label">助手</div>
                   <div className="chat-bubble chat-thinking">
-                    <ChatProgress stage={stage} aiAvailable={aiAvailable} />
+                    <ChatProgress stage={stage} aiAvailable={effectiveAiForMessage} />
                   </div>
                 </article>
               )}
@@ -2166,12 +2228,24 @@ function ChatView({
               <div className="chat-preview" aria-label="发送给 AI 的内容预览">
                 <div className="chat-preview-head">
                   <div>
-                    <strong>{preview.ai_enabled ? "启用 AI 时会发送以下内容" : "当前未启用 AI，不会发送任何内容"}</strong>
-                    <small>{preview.ai_enabled ? `模型 ${preview.model} · 固定上下文约 ${preview.context_chars_total} 字 · 最近对话 ${preview.conversation_count} 条` : "配置并测试连接后，这里会显示将要发送的上下文。"}</small>
+                    <strong>
+                      {aiAvailable && !useAiForMessage
+                        ? "本条不发送任何内容给 AI"
+                        : preview.ai_enabled
+                        ? "启用 AI 时会发送以下内容"
+                        : "当前未启用 AI，不会发送任何内容"}
+                    </strong>
+                    <small>
+                      {aiAvailable && !useAiForMessage
+                        ? "已为这一条关闭「本条用 AI」，只走本地规则；重新勾选后即可恢复。"
+                        : preview.ai_enabled
+                        ? `模型 ${preview.model} · 固定上下文约 ${preview.context_chars_total} 字 · 最近对话 ${preview.conversation_count} 条`
+                        : "配置并测试连接后，这里会显示将要发送的上下文。"}
+                    </small>
                   </div>
                   <button type="button" className="icon-button compact" title="关闭预览" onClick={() => setPreview(null)}><X size={14} /></button>
                 </div>
-                {preview.ai_enabled && (
+                {preview.ai_enabled && useAiForMessage && (
                   <>
                     <div className="chat-preview-sections">
                       {preview.sections.length ? preview.sections.map((section) => (
@@ -2224,6 +2298,17 @@ function ChatView({
                   <button className="small-action" type="button" onClick={togglePreview} disabled={sending || previewLoading} title="查看启用 AI 时这一线程会发送给模型的固定上下文">
                     {previewLoading ? <Loader2 className="spin" size={15} /> : <Info size={15} />}{preview ? "收起预览" : "预览发送内容"}
                   </button>
+                  {aiAvailable && (
+                    <label className="chat-ai-toggle" title="关闭后，这一条只走规则引擎，不会发送给 AI；下一条可以再打开">
+                      <input
+                        type="checkbox"
+                        checked={useAiForMessage}
+                        disabled={sending}
+                        onChange={(event) => setUseAiForMessage(event.target.checked)}
+                      />
+                      本条用 AI
+                    </label>
+                  )}
                   <small>也可按 Ctrl + V 直接粘贴截图</small>
                 </div>
                 <button className="primary-action" disabled={(!draft.trim() && !imageDataUrl) || sending}>
@@ -2512,6 +2597,7 @@ function JobsView({
   onOpen,
   onPatch,
   onBulkPatch,
+  onScoreJob,
   busy,
   onExport
 }: {
@@ -2528,6 +2614,7 @@ function JobsView({
   onOpen: (job: Job) => void;
   onPatch: (job: Job, updates: Partial<Job>) => Promise<void>;
   onBulkPatch: (ids: number[], updates: Pick<Partial<Job>, "status" | "favorite">) => Promise<void>;
+  onScoreJob: (jobId: number) => Promise<void>;
   busy: BusyState;
   onExport: () => Promise<void>;
 }) {
@@ -2693,7 +2780,7 @@ function JobsView({
                 />
               </div>
               <div className="job-grid-cell job-col-score" role="cell" data-label="评分">
-                <span className={scoreClass(job.latest_score?.total)}>{job.latest_score?.total ?? "-"}</span>
+                <ScoreChip job={job} busy={busy} onScoreJob={onScoreJob} />
               </div>
               <div className="job-grid-cell job-col-title primary-cell" role="cell" data-label="岗位">
                 <button
@@ -3238,6 +3325,18 @@ const scoringFields = [
   ["interview_roi", "面试收益"]
 ] as const;
 
+// 与 backend/app/services/scoring.py 的 DEFAULT_WEIGHTS 保持一致，仅用于画像还没存过某个维度时
+// 的界面兜底显示（新增维度、或很旧的画像行缺键），不参与实际评分——评分永远读 UserProfile.weights。
+const DEFAULT_SCORING_WEIGHTS: Record<string, number> = {
+  role_match: 25,
+  salary_city: 15,
+  growth: 15,
+  stability: 15,
+  reputation: 10,
+  commute_rest: 10,
+  interview_roi: 10
+};
+
 const configSections = [
   ["status", "运行状态"],
   ["ai", "AI"],
@@ -3257,7 +3356,8 @@ function ConfigView({
   onNotify,
   onAiStatus,
   onCollectSource,
-  onUpdateProfile
+  onUpdateProfile,
+  onUpdateWeights
 }: {
   sources: JobSourceStatus[];
   runs: SourceRun[];
@@ -3267,12 +3367,22 @@ function ConfigView({
   onAiStatus: (status: AiStatus) => void;
   onCollectSource: (sourceKey: string, label: string, zeroFallback: string) => Promise<void>;
   onUpdateProfile: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  onUpdateWeights: (weights: Record<string, number>) => Promise<void>;
 }) {
   const [payload, setPayload] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [activeSection, setActiveSection] = useState<ConfigSection>("status");
   const [envExampleOpen, setEnvExampleOpen] = useState(false);
   useEscapeClose(envExampleOpen, () => setEnvExampleOpen(false));
+  // 评分权重实际存在 UserProfile.weights（见 updateScoringWeights 的注释），是独立于
+  // config.yaml 的一条草稿状态：从 profile 首次可用时播种一次，之后只由用户在这个 tab 里编辑，
+  // 不随其它 tab 的 config 拉取/保存被打断。
+  const [weightsDraft, setWeightsDraft] = useState<Record<string, number> | null>(null);
+  useEffect(() => {
+    if (profile && weightsDraft === null) {
+      setWeightsDraft({ ...DEFAULT_SCORING_WEIGHTS, ...(profile.weights ?? {}) });
+    }
+  }, [profile, weightsDraft]);
 
   useEffect(() => {
     let active = true;
@@ -3295,11 +3405,6 @@ function ConfigView({
   async function saveConfig(event: FormEvent) {
     event.preventDefault();
     if (!payload) return;
-    if (scoringWeightInvalid) {
-      setActiveSection("scoring");
-      onNotify("error", `评分权重合计不能超过 100，当前为 ${scoringWeightTotalText}/100。`);
-      return;
-    }
     setSaving(true);
     try {
       const saved = await api<AppConfig>("/api/config", { method: "PUT", ...jsonBody({ config: payload.config }) });
@@ -3331,11 +3436,6 @@ function ConfigView({
   const wechatFetch = asConfigMap(wechat.fetch);
   const yuanbao = asConfigMap(wechat.yuanbao_automation);
   const ai = asConfigMap(config.ai);
-  const scoring = asConfigMap(config.scoring);
-  const weights = asConfigMap(scoring.weights);
-  const scoringWeightTotal = scoringFields.reduce((sum, [key]) => sum + numberValue(weights[key], 0), 0);
-  const scoringWeightTotalText = Number.isInteger(scoringWeightTotal) ? String(scoringWeightTotal) : scoringWeightTotal.toFixed(1);
-  const scoringWeightInvalid = scoringWeightTotal > 100;
   const general = asConfigMap(config.general);
   const sourceByKey = (key: string) => sources.find((source) => source.key === key);
   const bossSource = sourceByKey("boss");
@@ -3384,6 +3484,78 @@ function ConfigView({
       ))}
     </div>
   );
+
+  if (activeSection === "scoring") {
+    // 评分权重存在 UserProfile.weights，和「个人画像」共享同一条数据库行，但用途和字段独立，
+    // 所以照抄 profile 这一段的写法：单独的 <form>、单独的保存按钮，不挂在下面 config.yaml
+    // 那个通用表单上——那个表单点保存不会碰权重，混在一起点了也没反应，容易误导。
+    const weightsTotal = weightsDraft ? scoringFields.reduce((sum, [key]) => sum + numberValue(weightsDraft[key], 0), 0) : 0;
+    const weightsTotalText = Number.isInteger(weightsTotal) ? String(weightsTotal) : weightsTotal.toFixed(1);
+    const weightsTotalInvalid = weightsTotal > 100;
+
+    async function submitWeights(event: FormEvent) {
+      event.preventDefault();
+      if (!weightsDraft) return;
+      if (weightsTotalInvalid) {
+        onNotify("error", `评分权重合计不能超过 100，当前为 ${weightsTotalText}/100。`);
+        return;
+      }
+      await onUpdateWeights(weightsDraft);
+    }
+
+    return (
+      <section className="content-panel config-panel">
+        <form className="config-layout" onSubmit={submitWeights}>
+          <div className="config-head">
+            <div>
+              <h2>评分权重</h2>
+              <p>7 个维度的权重，决定匹配评分怎么算；评分只是排序辅助，不会自动过滤或决定去留</p>
+            </div>
+            <button className="primary-action" disabled={!weightsDraft || hasBusy(busy, "profile-weights") || weightsTotalInvalid}>
+              {hasBusy(busy, "profile-weights") ? "保存中…" : "保存权重"}
+            </button>
+          </div>
+          {tabs}
+          <div className="config-scroll">
+            <div className="config-grid single-column">
+              <fieldset>
+                <legend>评分权重</legend>
+                <div className="fieldset-title-row">
+                  <span className={weightsTotalInvalid ? "weight-total invalid" : "weight-total"}>
+                    当前合计 {weightsTotalText}/100
+                  </span>
+                </div>
+                {weightsDraft ? (
+                  <div className="weights-grid">
+                    {scoringFields.map(([key, label]) => (
+                      <label key={key}>
+                        {label}
+                        <input
+                          type="number"
+                          min={0}
+                          value={numberValue(weightsDraft[key], 0)}
+                          onChange={(event) => {
+                            const next = Number(event.target.value);
+                            setWeightsDraft((current) => ({ ...(current ?? DEFAULT_SCORING_WEIGHTS), [key]: next }));
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="muted">正在加载画像…</p>
+                )}
+                <p className="muted weight-rescore-hint">
+                  保存后新权重只对之后触发的评分生效——已有评分不会自动重算；需要的话，去岗位池评分芯片
+                  或岗位详情页评分区对单个岗位点「重新评分」。当前没有「按新权重批量重评全部」的入口，逐个触发即可。
+                </p>
+              </fieldset>
+            </div>
+          </div>
+        </form>
+      </section>
+    );
+  }
 
   if (activeSection === "profile") {
     return (
@@ -3458,7 +3630,7 @@ function ConfigView({
             <h2>系统配置</h2>
             <p>{payload.path}</p>
           </div>
-          <button className="primary-action" disabled={saving || scoringWeightInvalid}>
+          <button className="primary-action" disabled={saving}>
             {saving ? "保存中..." : "保存配置"}
           </button>
         </div>
@@ -3694,32 +3866,6 @@ function ConfigView({
                 </label>
                 <small>最近：{latestRunText(latestWechatRun)}</small>
               </article>
-            </div>
-          )}
-
-          {activeSection === "scoring" && (
-            <div className="config-grid single-column">
-              <fieldset>
-                <legend>评分权重</legend>
-                <div className="fieldset-title-row">
-                  <span className={scoringWeightInvalid ? "weight-total invalid" : "weight-total"}>
-                    当前合计 {scoringWeightTotalText}/100
-                  </span>
-                </div>
-                <div className="weights-grid">
-                  {scoringFields.map(([key, label]) => (
-                    <label key={key}>
-                      {label}
-                      <input
-                        type="number"
-                        min={0}
-                        value={numberValue(weights[key], 0)}
-                        onChange={(event) => updateConfig(["scoring", "weights", key], Number(event.target.value))}
-                      />
-                    </label>
-                  ))}
-                </div>
-              </fieldset>
             </div>
           )}
 
@@ -4221,25 +4367,10 @@ function JobDrawer({
         {latestScore ? (
           <div className="score-detail">
             <span className={scoreClass(latestScore.total)}>{latestScore.total}</span>
-            {latestScore.hard_blocked && <strong className="danger-text">硬性条件阻断</strong>}
-            {latestScore.details?.hard_reasons?.map((reason) => <p key={reason}>{reason}</p>)}
-            <div className="dimension-list">
-              {Object.entries(latestScore.details?.dimensions ?? {}).map(([key, value]) => (
-                <div key={key} className="dimension-row">
-                  <span className="dimension-copy">
-                    <span>{dimensionLabel(key)}</span>
-                    {value.note && <small>{value.note}</small>}
-                  </span>
-                  <meter value={value.score} max={value.weight} />
-                  <strong>
-                    {value.score}/{value.weight}
-                  </strong>
-                </div>
-              ))}
-            </div>
+            <ScoreBreakdown score={latestScore} />
           </div>
         ) : (
-          <p className="muted">尚未评分</p>
+          <p className="muted">尚未评分。点右上角「重新评分」即可按当前权重计算。</p>
         )}
       </section>
 
@@ -4389,6 +4520,147 @@ function dimensionLabel(key: string) {
       commute_rest: "通勤/作息",
       interview_roi: "面试投入产出"
     }[key] ?? key
+  );
+}
+
+// 后端 score_job() 早就把逐维度分数/权重/理由存进了 FitScore.details（见 scoring.py），
+// API 也一直原样透出——评分“透明化”不需要重造引擎或加字段，只是把已有数据画出来。
+// 抽成共享组件：岗位详情抽屉和表格评分芯片弹层用同一份渲染，不重复维护两套 JSX。
+function round1(value: number) {
+  return Math.round(value * 10) / 10;
+}
+
+function ScoreBreakdown({ score }: { score: FitScore }) {
+  const dims = Object.entries(score.details?.dimensions ?? {});
+  const dimSum = round1(dims.reduce((sum, [, value]) => sum + (value?.score ?? 0), 0));
+  const weightSum = round1(dims.reduce((sum, [, value]) => sum + (value?.weight ?? 0), 0));
+  return (
+    <div className="score-breakdown">
+      {score.hard_blocked && <strong className="danger-text">硬性条件阻断</strong>}
+      {score.details?.hard_reasons?.map((reason) => <p key={reason}>{reason}</p>)}
+      {!!dims.length && (
+        <>
+          <div className="dimension-list">
+            {dims.map(([key, value]) => (
+              <div key={key} className="dimension-row">
+                <span className="dimension-copy">
+                  <span>{dimensionLabel(key)}</span>
+                  {value.note && <small>{value.note}</small>}
+                </span>
+                <meter value={value.score} max={value.weight || 1} />
+                <strong>
+                  {value.score}/{value.weight}
+                </strong>
+              </div>
+            ))}
+          </div>
+          <p className="score-formula">
+            {dims.map(([, value]) => value.score).join(" + ")} = {dimSum}
+            {score.hard_blocked
+              ? ` 分，命中硬性条件按 0.55 折算为总分 ${score.total}`
+              : ` 分（满分 ${weightSum}），即总分 ${score.total}`}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+// 表格评分芯片：点开一个轻量 popover 展示同一份分解，不用离开列表去开抽屉。
+// popover 用 portal 挂到 body 上，用 fixed 定位——表格行在一个 overflow:auto 的滚动容器里，
+// 普通 absolute 定位会被那层滚动裁掉；滚动/resize 时直接关闭而不是跟着重新定位，足够轻量。
+function ScoreChip({
+  job,
+  busy,
+  onScoreJob
+}: {
+  job: Job;
+  busy: BusyState;
+  onScoreJob: (jobId: number) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const score = job.latest_score;
+  const scoringBusy = hasBusy(busy, `score-${job.id}`);
+
+  useEscapeClose(open, () => setOpen(false));
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: MouseEvent) {
+      const target = event.target as Node;
+      if (triggerRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function handleDismiss() {
+      setOpen(false);
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    window.addEventListener("scroll", handleDismiss, true);
+    window.addEventListener("resize", handleDismiss);
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      window.removeEventListener("scroll", handleDismiss, true);
+      window.removeEventListener("resize", handleDismiss);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        ref={triggerRef}
+        className={`${scoreClass(score?.total)} score-chip-trigger`}
+        title={score ? "点击查看评分分解" : "尚未评分，点击查看"}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (open) {
+            setOpen(false);
+            return;
+          }
+          const rect = triggerRef.current?.getBoundingClientRect();
+          if (rect) {
+            const width = 340;
+            const left = Math.min(rect.left, window.innerWidth - width - 12);
+            setPos({ top: rect.bottom + 6, left: Math.max(12, left) });
+          }
+          setOpen(true);
+        }}
+      >
+        {score?.total ?? "-"}
+      </button>
+      {open && pos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="score-popover"
+            style={{ top: pos.top, left: pos.left }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            {score ? (
+              <ScoreBreakdown score={score} />
+            ) : (
+              <div className="score-popover-empty">
+                <p className="muted">尚未评分</p>
+                <button
+                  type="button"
+                  className="small-action"
+                  disabled={scoringBusy}
+                  onClick={() => {
+                    setOpen(false);
+                    void onScoreJob(job.id);
+                  }}
+                >
+                  {scoringBusy ? "评分中…" : "去评分"}
+                </button>
+              </div>
+            )}
+          </div>,
+          document.body
+        )}
+    </>
   );
 }
 

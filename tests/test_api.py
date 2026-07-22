@@ -198,6 +198,161 @@ def test_decision_chat_marks_fallback_when_ai_enabled_but_call_fails(monkeypatch
     asyncio.run(scenario())
 
 
+def test_decision_chat_use_ai_false_skips_model_call(monkeypatch, tmp_path):
+    """聊天composer里「本条不用 AI」开关关闭 → payload.use_ai=False：即便全局 ai.enabled=true
+    且 OPENAI_API_KEY 已配置，也不应调用模型一次；复用既有的「未启用/不可用」降级路径，
+    run_status 落在既有的 rules_only 标记上，不新写分支。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    app = _fresh_app(monkeypatch, tmp_path, "decision-chat-use-ai-false.sqlite3")
+
+    import backend.app.main as main
+
+    calls: list[dict] = []
+
+    def fake_analysis(**kwargs):
+        calls.append(kwargs)
+        return {
+            "summary": "不应该被调用到。",
+            "priority": "A",
+            "direction": "核心优先",
+            "next_action": "继续沟通",
+            "action_text": "先确认唯一关键条件。",
+            "reply_draft": "你好。",
+        }
+
+    monkeypatch.setattr(main, "analyze_decision_chat_llm", fake_analysis)
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            reply = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "这个岗位值得继续聊吗？", "use_ai": False},
+            )
+            assert reply.status_code == 200, reply.text
+            payload = reply.json()
+            assert calls == []  # 零调用
+            assert payload["ai_used"] is False
+            assert payload["analysis_run"]["status"] == "rules_only"
+            assert payload["analysis_run"]["provider"] == "rules"
+            assert payload["assistant_message"]["metadata_json"]["run_status"] == "rules_only"
+            assert payload["assistant_message"]["metadata_json"]["ai_used"] is False
+
+            # 默认(不传 use_ai)应该仍然是走 AI 的现状行为，证明这不是全局开关被误改。
+            second = await client.post(
+                f"/api/chat/threads/{thread['id']}/messages",
+                json={"content": "默认应该还是会调用模型。"},
+            )
+            assert second.status_code == 200, second.text
+            assert len(calls) == 1
+            assert second.json()["ai_used"] is True
+
+    asyncio.run(scenario())
+
+
+def test_profile_weights_roundtrip_and_used_by_scoring(monkeypatch, tmp_path):
+    """审计发现：score_job() 实际读的是 UserProfile.weights（scoring.py），不是 config.yaml 的
+    scoring.weights —— 后者只在首次建画像时当一次性种子默认值，改了不影响之后的评分。
+    权重可定制因此必须走 PUT /api/profile：这里验证保存 → 读回 → 真正影响评分三件事。"""
+    app = _fresh_app(monkeypatch, tmp_path, "profile-weights-roundtrip.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            job = (
+                await client.post(
+                    "/api/jobs",
+                    json={"title": "SEO专员", "company_name": "示例科技", "city": "上海"},
+                )
+            ).json()
+
+            updated = await client.put(
+                "/api/profile",
+                json={
+                    "weights": {
+                        "role_match": 100,
+                        "salary_city": 0,
+                        "growth": 0,
+                        "stability": 0,
+                        "reputation": 0,
+                        "commute_rest": 0,
+                        "interview_roi": 0,
+                    }
+                },
+            )
+            assert updated.status_code == 200, updated.text
+            assert updated.json()["weights"]["role_match"] == 100
+
+            fetched = await client.get("/api/profile")
+            assert fetched.json()["weights"]["role_match"] == 100
+
+            score = await client.post(f"/api/jobs/{job['id']}/score")
+            assert score.status_code == 200, score.text
+            dims = score.json()["details"]["dimensions"]
+            # 其它维度权重清零：不论命中比例多少，分数必须是 0——直接证明权重被读取并生效。
+            assert dims["salary_city"]["score"] == 0
+            assert dims["growth"]["score"] == 0
+            assert dims["stability"]["score"] == 0
+            assert dims["role_match"]["weight"] == 100
+
+    asyncio.run(scenario())
+
+
+def test_profile_weights_rejects_invalid_payload(monkeypatch, tmp_path):
+    """PUT /api/profile 的 weights 校验复用 _validate_weights，和 config.yaml 那条口径一致：
+    未知维度、合计超 100 都要拒绝，不静默接受垃圾权重。"""
+    app = _fresh_app(monkeypatch, tmp_path, "profile-weights-invalid.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            unknown = await client.put("/api/profile", json={"weights": {"unknown_dim": 10}})
+            assert unknown.status_code == 400
+            assert "未知维度" in unknown.text
+
+            too_high = await client.put(
+                "/api/profile",
+                json={"weights": {"role_match": 80, "salary_city": 30}},
+            )
+            assert too_high.status_code == 400
+            assert "合计不能超过 100" in too_high.text
+
+    asyncio.run(scenario())
+
+
+def test_job_list_and_score_endpoint_expose_score_dimensions(monkeypatch, tmp_path):
+    """评分透明化不是新功能——score_job() 早就把逐维度 score/weight/note 存进 FitScore.details，
+    API 也一直原样透出。这里断言它端到端确实可见：评分端点和岗位列表都能读到完整分解。"""
+    app = _fresh_app(monkeypatch, tmp_path, "score-dimensions.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            job = (
+                await client.post(
+                    "/api/jobs",
+                    json={"title": "SEO专员", "company_name": "示例科技", "city": "上海"},
+                )
+            ).json()
+            scored = await client.post(f"/api/jobs/{job['id']}/score")
+            assert scored.status_code == 200, scored.text
+            dims = scored.json()["details"]["dimensions"]
+            expected_keys = {
+                "role_match",
+                "salary_city",
+                "growth",
+                "stability",
+                "reputation",
+                "commute_rest",
+                "interview_roi",
+            }
+            assert expected_keys <= set(dims)
+            for key in expected_keys:
+                assert set(dims[key]) >= {"score", "weight", "note"}
+
+            listed = (await client.get("/api/jobs")).json()
+            assert listed[0]["latest_score"]["details"]["dimensions"] == dims
+
+    asyncio.run(scenario())
+
+
 def test_chat_context_preview_shows_what_would_be_sent_without_leaking_path(monkeypatch, tmp_path):
     """发送前预览：列出启用 AI 时会发送的固定上下文，且不返回宿主机绝对路径。"""
     context_root = tmp_path / "personal-context"

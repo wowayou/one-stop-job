@@ -229,6 +229,8 @@ class ChatMessageCreate(SQLModel):
     content: str = Field(max_length=12000)
     image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)
     image_name: Optional[str] = Field(default=None, max_length=180)
+    # 默认 True：沿用「配置了 AI 就用」的现状；False 时这一条只走规则引擎，即便全局 ai.enabled=true。
+    use_ai: bool = True
 
     _validate_content = field_validator("content")(lambda cls, value: validate_required_text("content", value))
     _normalize_image_name = field_validator("image_name", mode="before")(

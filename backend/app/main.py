@@ -416,12 +416,12 @@ def _safe_config_response(config: dict[str, Any]) -> dict:
     }
 
 
-def _validate_scoring_config(config: dict[str, Any]) -> None:
-    scoring = config.get("scoring")
-    if not isinstance(scoring, dict) or "weights" not in scoring:
-        return
+def _validate_weights(weights: Any) -> None:
+    """校验一份 {维度: 权重} 字典：维度必须认识、权重必须是非负有限数字、合计不能超过 100。
 
-    weights = scoring.get("weights")
+    两处调用：config.yaml 里 scoring.weights（首次建画像时的一次性种子默认值）和
+    `PUT /api/profile` 的 weights（scoring.py 实际读取、真正影响评分的那份）。
+    """
     if not isinstance(weights, dict):
         raise HTTPException(status_code=400, detail="scoring.weights must be an object")
 
@@ -439,6 +439,13 @@ def _validate_scoring_config(config: dict[str, Any]) -> None:
 
     if total > 100:
         raise HTTPException(status_code=400, detail=f"评分权重合计不能超过 100，当前为 {total:g}")
+
+
+def _validate_scoring_config(config: dict[str, Any]) -> None:
+    scoring = config.get("scoring")
+    if not isinstance(scoring, dict) or "weights" not in scoring:
+        return
+    _validate_weights(scoring.get("weights"))
 
 
 def _public_database_url(database_url: str) -> str:
@@ -1337,7 +1344,10 @@ async def create_chat_message(thread_id: int, payload: ChatMessageCreate, sessio
 
     ai_cfg = settings.config.get("ai", {})
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
-    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
+    # payload.use_ai=False（前端「本条不用 AI」开关关闭）时直接并入这条判断，复用下面既有的
+    # 「AI 不可用/未启用」降级路径——不新写分支：model_analysis 保持 None、ai_used=False、
+    # run_status 落到既有的 "rules_only"、provider 落到既有的 "rules"。
+    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available() and payload.use_ai
     model_analysis = None
     if ai_enabled:
         model_analysis = await run_in_threadpool(
@@ -2192,7 +2202,13 @@ async def get_profile(session: SessionDep) -> UserProfile:
 @app.put("/api/profile")
 async def update_profile(payload: ProfileUpdate, session: SessionDep) -> UserProfile:
     profile = _get_profile(session)
-    for key, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    # weights 是 score_job() 实际读取、真正影响评分的那份（config.yaml 的 scoring.weights 只在
+    # 首次建画像时当种子默认值，之后编辑不会再生效）——校验规则和 _validate_scoring_config 共用
+    # 同一个 _validate_weights，两边口径必须一致。
+    if "weights" in updates and updates["weights"] is not None:
+        _validate_weights(updates["weights"])
+    for key, value in updates.items():
         setattr(profile, key, value)
     profile.updated_at = utc_now()
     session.add(profile)
