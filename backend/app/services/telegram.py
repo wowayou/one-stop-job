@@ -12,10 +12,16 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
+
+# 「以文件发送」的图片：只认这三种 mime（与 schemas.IngestRequest.image_data_url 的 data URL 前缀一致）。
+_SUPPORTED_DOCUMENT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
+# 6MB 对齐 IngestRequest.image_data_url 的 max_length=6_000_000（近似值，够用即可，不追求字节级精确）。
+_MAX_DOCUMENT_IMAGE_BYTES = 6_000_000
 
 
 def bot_token() -> str | None:
@@ -45,8 +51,12 @@ def get_updates(token: str, offset: int | None, timeout: int) -> list[dict]:
     return result if isinstance(result, list) else []
 
 
-def send_message(token: str, chat_id: int, text: str) -> None:
-    """给指定 chat 发文本回执。仅用于给机主本人发系统通知，失败仅记日志不抛。"""
+def send_message(token: str, chat_id: int, text: str) -> int | None:
+    """给指定 chat 发文本回执，返回 Telegram 侧的 message_id。
+
+    仅用于给机主本人发系统通知；失败仅记日志不抛，返回 None——调用方（如「记录回执
+    message_id 供后续回复关联」）不应强依赖非 None，取不到就跳过关联，不影响主流程。
+    """
     import httpx
 
     url = f"{_API_BASE}/bot{token}/sendMessage"
@@ -54,15 +64,39 @@ def send_message(token: str, chat_id: int, text: str) -> None:
         with httpx.Client(timeout=15) as client:
             resp = client.post(url, json={"chat_id": chat_id, "text": text[:4000]})
             resp.raise_for_status()
+            data = resp.json()
     except Exception:  # noqa: BLE001 - 回执失败不影响已完成的落盘
         logger.warning("Telegram 回执发送失败 chat_id=%s", chat_id, exc_info=True)
+        return None
+    if not isinstance(data, dict) or not data.get("ok"):
+        return None
+    message_id = (data.get("result") or {}).get("message_id")
+    return message_id if isinstance(message_id, int) else None
 
 
-def extract_message(update: dict) -> tuple[int | None, str, str | None]:
-    """从一条 update 里取出 (chat_id, text, photo_file_id)。
+@dataclass
+class ExtractedMessage:
+    """从一条 Telegram update 里解析出的关键信息，供轮询循环分派处理。"""
 
-    链接不是唯一事实源：用户常直接发一张招聘截图。这里同时取出文字/caption 和
-    最大尺寸的照片 file_id（若有），供调用方下载后走截图抽取。
+    chat_id: int | None
+    text: str
+    photo_file_id: str | None = None
+    # 「以文件发送」的图片走 document，而不是 photo；mime/size 由调用方按策略判断是否下载。
+    document_file_id: str | None = None
+    document_mime_type: str | None = None
+    document_file_size: int | None = None
+    # 用户回复了哪条消息（如某次回执）；用于把补充材料关联回同一条 ingest 线索。
+    reply_to_message_id: int | None = None
+    # 同一相册（多图一次发送）里的分组 id；同批次内相同 id 的后续消息应追加到同一线程。
+    media_group_id: str | None = None
+
+
+def extract_message(update: dict) -> ExtractedMessage:
+    """从一条 update 里解析出关键信息。
+
+    链接不是唯一事实源：用户常直接发一张招聘截图，或「以文件发送」一张图片（document）。
+    同时取出 reply_to_message_id（用户回复了哪条消息）和 media_group_id（相册分组），
+    供轮询循环判断「这次材料应该追加到哪条已有线索」。
     """
     message = update.get("message") or update.get("edited_message") or {}
     chat = message.get("chat") or {}
@@ -77,7 +111,51 @@ def extract_message(update: dict) -> tuple[int | None, str, str | None]:
         if isinstance(largest, dict) and isinstance(largest.get("file_id"), str):
             photo_file_id = largest["file_id"]
 
-    return (chat_id if isinstance(chat_id, int) else None), str(text), photo_file_id
+    document_file_id: str | None = None
+    document_mime_type: str | None = None
+    document_file_size: int | None = None
+    document = message.get("document")
+    if isinstance(document, dict) and isinstance(document.get("file_id"), str):
+        document_file_id = document["file_id"]
+        mime = document.get("mime_type")
+        document_mime_type = mime if isinstance(mime, str) else None
+        size = document.get("file_size")
+        document_file_size = size if isinstance(size, int) else None
+
+    reply_to = message.get("reply_to_message")
+    reply_to_message_id = (
+        reply_to.get("message_id")
+        if isinstance(reply_to, dict) and isinstance(reply_to.get("message_id"), int)
+        else None
+    )
+
+    media_group_id = message.get("media_group_id")
+    media_group_id = media_group_id if isinstance(media_group_id, str) else None
+
+    return ExtractedMessage(
+        chat_id=chat_id if isinstance(chat_id, int) else None,
+        text=str(text),
+        photo_file_id=photo_file_id,
+        document_file_id=document_file_id,
+        document_mime_type=document_mime_type,
+        document_file_size=document_file_size,
+        reply_to_message_id=reply_to_message_id,
+        media_group_id=media_group_id,
+    )
+
+
+def classify_document_image(mime_type: str | None, file_size: int | None) -> str | None:
+    """判断「以文件发送」的图片是否可以下载。返回 None 表示可以下载；否则是要回执的原因文案。
+
+    只接受 PNG/JPEG/WebP；超过 6MB（对齐 IngestRequest 上限）也拒绝，避免下载一个注定
+    会在 /api/ingest 校验里被拒的大文件——两处不必要地做重复工作。
+    """
+    mime = (mime_type or "").lower()
+    if mime not in _SUPPORTED_DOCUMENT_IMAGE_MIME_TYPES:
+        return "仅支持 PNG/JPEG/WebP 格式的图片，请转换后重发。"
+    if file_size and file_size > _MAX_DOCUMENT_IMAGE_BYTES:
+        return "图片超过 6MB 限制，请压缩后重发。"
+    return None
 
 
 def download_photo_data_url(token: str, file_id: str) -> str | None:
@@ -120,14 +198,25 @@ def summarize_ingest(result: dict) -> str:
     - AI 调用异常（ai_error 非空）→ 明确说“调用失败”，不是「未认出」。
     - AI 未启用（needs_ai）→ 明确说「未启用」，提示去配置。
     - 前两种都不是 → 才是「规则/AI 都跑了，确实没认出岗位」。
+
+    `appended`（配合 `thread` 里的 title）：本次材料被追加到一条已有 ingest 线程（回复回执
+    或同一相册的后续图片），回执要明确说「已补充到『<线程标题>』」，而不是像新建线程那样
+    说「已写入本地聊天」——否则用户分不清这是不是又开了一条新线索。
     """
     n = int(result.get("candidate_count") or 0)
     candidates = result.get("candidates") or []
     existing = sum(1 for c in candidates if isinstance(c, dict) and c.get("existing_job_id"))
     ai_error = result.get("ai_error")
+    appended_title = (result.get("thread") or {}).get("title") if result.get("appended") else None
 
     parts: list[str] = []
-    if n > 0:
+    if appended_title and n > 0:
+        parts.append(f"已补充到『{appended_title}』；识别到 {n} 个新候选（未入库），可在 Web「聊天」里确认。")
+        if existing:
+            parts.append(f"其中 {existing} 个已在岗位池。")
+    elif appended_title:
+        parts.append(f"已补充到『{appended_title}』，材料已保留。")
+    elif n > 0:
         parts.append(
             f"识别到 {n} 个候选岗位，已写入本地聊天（未入库）。"
             "打开 Web「聊天」勾选要入库的项；原文和截图已保留。"

@@ -150,11 +150,17 @@ async def _telegram_poll_loop() -> None:
             continue
         failure_streak = 0
 
+        # 同一相册的多图会在同一批 updates 里各自成一条消息；只在本批次内记 media_group_id → thread_id，
+        # 不跨批次持久化（跨批次到达的相册项走「回复回执」关联或干脆新建线程，属于可接受的降级）。
+        media_group_threads: dict[str, int] = {}
+
         for update in updates:
             offset = int(update.get("update_id", 0)) + 1
-            chat_id, text, photo_file_id = telegram.extract_message(update)
+            extracted = telegram.extract_message(update)
+            chat_id = extracted.chat_id
             if chat_id != allowed_chat_id:
                 continue
+            text = extracted.text
             if text.strip() == "/start":
                 # 使用说明：不建 ingest 线程，只回一条本机→本人的操作提示（§2 机主回执豁免）。
                 await run_in_threadpool(
@@ -162,27 +168,61 @@ async def _telegram_poll_loop() -> None:
                     token,
                     chat_id,
                     "发送岗位链接、复制的 JD 文本或一张招聘截图即可；BOSS/智联链接请配上文本或截图。"
-                    "识别结果需在 Web 聊天确认后才入库。",
+                    "识别结果需在 Web 聊天确认后才入库。"
+                    "回复某条回执可把补充材料归入同一条线索。",
                 )
                 continue
+
             image_data_url: str | None = None
-            if photo_file_id:
-                image_data_url = await run_in_threadpool(telegram.download_photo_data_url, token, photo_file_id)
+            image_error: str | None = None
+            if extracted.photo_file_id:
+                image_data_url = await run_in_threadpool(telegram.download_photo_data_url, token, extracted.photo_file_id)
+            elif extracted.document_file_id:
+                # 「以文件发送」的图片：先按 mime/大小判断值不值得下载，避免为超限/不支持的文件白跑一趟网络。
+                image_error = telegram.classify_document_image(extracted.document_mime_type, extracted.document_file_size)
+                if image_error is None:
+                    image_data_url = await run_in_threadpool(
+                        telegram.download_photo_data_url, token, extracted.document_file_id
+                    )
+            if image_error:
+                await run_in_threadpool(telegram.send_message, token, chat_id, image_error)
+                continue
             if not text.strip() and not image_data_url:
                 await run_in_threadpool(
                     telegram.send_message, token, chat_id, "请发送岗位链接、复制的招聘文本，或一张招聘截图。"
                 )
                 continue
+
+            result: dict | None = None
             try:
                 with Session(engine) as session:
-                    result = await run_in_threadpool(_persist_ingest_to_chat, session, text, image_data_url)
+                    # 关联到已有线索的优先级：本批相册分组 > 回复了某条回执；都没命中就照旧新建线程。
+                    target_thread_id: int | None = None
+                    if extracted.media_group_id and extracted.media_group_id in media_group_threads:
+                        target_thread_id = media_group_threads[extracted.media_group_id]
+                    elif extracted.reply_to_message_id:
+                        target_thread_id = await run_in_threadpool(
+                            _find_ingest_thread_by_receipt, session, extracted.reply_to_message_id
+                        )
+                    result = await run_in_threadpool(
+                        _persist_ingest_to_chat, session, text, image_data_url, target_thread_id
+                    )
                 reply = telegram.summarize_ingest(result)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Telegram ingest 失败", exc_info=True)
                 reply = f"处理失败：{exc}"
-            await run_in_threadpool(telegram.send_message, token, chat_id, reply)
+
+            tg_message_id = await run_in_threadpool(telegram.send_message, token, chat_id, reply)
+
+            if result is not None:
+                thread_id = (result.get("thread") or {}).get("id")
+                if extracted.media_group_id and isinstance(thread_id, int):
+                    media_group_threads[extracted.media_group_id] = thread_id
+                assistant_id = getattr(result.get("assistant_message"), "id", None)
+                if isinstance(tg_message_id, int) and isinstance(assistant_id, int):
+                    await run_in_threadpool(_record_telegram_receipt, assistant_id, tg_message_id)
 
 
 @asynccontextmanager
@@ -1697,10 +1737,64 @@ def _ingest_thread_title(text: str, has_image: bool) -> str:
     return "入库候选"
 
 
-def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: str | None = None) -> dict:
+def _find_ingest_thread_by_receipt(session: Session, reply_to_message_id: int) -> int | None:
+    """按 Telegram「回复了哪条回执」找回对应的 ingest 线程 id；找不到返回 None。
+
+    单用户、量小：只看最近 ~50 个 ingest 线程里任意一条 assistant 消息的
+    `metadata_json.receipt_tg_message_id` 是否匹配即可，不加表不加列不做 JSON 索引。
+    """
+    threads = session.exec(
+        select(ChatThread).where(ChatThread.kind == "ingest").order_by(ChatThread.updated_at.desc()).limit(50)
+    ).all()
+    thread_ids = [t.id for t in threads if t.id is not None]
+    if not thread_ids:
+        return None
+    messages = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.thread_id.in_(thread_ids), ChatMessage.role == "assistant")
+        .order_by(ChatMessage.created_at.desc())
+    ).all()
+    for message in messages:
+        if (message.metadata_json or {}).get("receipt_tg_message_id") == reply_to_message_id:
+            return message.thread_id
+    return None
+
+
+def _record_telegram_receipt(chat_message_id: int, tg_message_id: int) -> None:
+    """把这次回执的 Telegram message_id 记到对应 assistant 消息 metadata，供下次「回复回执」关联。
+
+    必须整段重新赋值 metadata_json（深拷贝后加键再赋值），原地改共享的嵌套 dict 会被
+    SQLAlchemy 判定成未变更而静默丢弃（上一批已经踩过的坑）。失败只记日志，不影响已完成的
+    落盘/回执——这只是「下次能不能自动关联」的锦上添花，不是关键路径。
+    """
+    try:
+        with Session(engine) as session:
+            message = session.get(ChatMessage, chat_message_id)
+            if message is None:
+                return
+            meta = copy.deepcopy(message.metadata_json or {})
+            meta["receipt_tg_message_id"] = tg_message_id
+            message.metadata_json = meta
+            session.add(message)
+            session.commit()
+    except Exception:  # noqa: BLE001
+        logger.warning("记录 Telegram 回执 message_id 失败 chat_message_id=%s", chat_message_id, exc_info=True)
+
+
+def _persist_ingest_to_chat(
+    session: Session,
+    text: str | None,
+    image_data_url: str | None = None,
+    target_thread_id: int | None = None,
+) -> dict:
     """抽取候选 → 写入 kind=ingest 聊天线程（**不写 Job 表**）。HTTP 与 Telegram 共用。
 
     即便 unmatched 也建线程，保留原文/截图原料，满足「资料别删」。
+
+    `target_thread_id`：可选。命中一个已有的 `kind="ingest"` 线程时，这次的 user/assistant
+    消息追加进该线程而不是新建（用于 Telegram「回复回执」把补充材料关联回同一条线索，或
+    同一相册的多张图片归到一起）；线程不存在或不是 ingest 类型时静默回退到新建线程——
+    对应「回复的不是回执/太久远」的现状行为不变。
     """
     ai_cfg = settings.config.get("ai", {})
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
@@ -1725,11 +1819,20 @@ def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: 
         if key and key in existing_by_key:
             candidate["existing_job_id"] = existing_by_key[key]
 
-    title = _ingest_thread_title(text, bool(image_data_url))
-    thread = ChatThread(kind="ingest", job_id=None, title=title)
-    session.add(thread)
-    session.commit()
-    session.refresh(thread)
+    reused_thread = None
+    if target_thread_id is not None:
+        maybe_thread = session.get(ChatThread, target_thread_id)
+        if maybe_thread is not None and maybe_thread.kind == "ingest":
+            reused_thread = maybe_thread
+
+    if reused_thread is not None:
+        thread = reused_thread
+    else:
+        title = _ingest_thread_title(text, bool(image_data_url))
+        thread = ChatThread(kind="ingest", job_id=None, title=title)
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
 
     attachment = _save_chat_image(image_data_url, None) if image_data_url else None
     user_content = text or ("[截图]" if attachment else "")
@@ -1795,6 +1898,7 @@ def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: 
         "known_uncrawlable_hint": extract.get("known_uncrawlable_hint", False),
         "sources_report": extract["sources_report"],
         "candidates": candidates,
+        "appended": reused_thread is not None,
     }
 
 

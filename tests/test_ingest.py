@@ -439,10 +439,10 @@ def test_extract_message_picks_largest_photo_and_caption():
             ],
         },
     }
-    chat_id, text, photo = telegram.extract_message(update)
-    assert chat_id == 42
-    assert text == "BOSS 截图"
-    assert photo == "largest"
+    extracted = telegram.extract_message(update)
+    assert extracted.chat_id == 42
+    assert extracted.text == "BOSS 截图"
+    assert extracted.photo_file_id == "largest"
 
 
 def test_summarize_ingest_pending_not_committed():
@@ -555,7 +555,7 @@ def test_poll_loop_persists_chat_not_jobs(monkeypatch, tmp_path):
     def fake_send(token, chat_id, text):
         calls["sent"].append((chat_id, text))
 
-    def fake_persist(session, text, image_data_url=None):
+    def fake_persist(session, text, image_data_url=None, target_thread_id=None):
         calls["persisted"].append((text, image_data_url))
         return {"candidate_count": 1, "unmatched": False, "needs_ai": False}
 
@@ -601,6 +601,342 @@ def test_download_photo_data_url_builds_data_url(monkeypatch):
     data_url = telegram.download_photo_data_url("tok", "fid")
     assert data_url == "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff").decode()
     assert any("getFile" in u for u in calls["urls"])
+
+
+# ==================== 修复：Telegram 补充材料关联 ====================
+# 背景：同一岗位的补充材料（如通勤地图截图）会孤立成新线程；「以文件发送」的图片被静默忽略。
+
+
+def test_send_message_returns_message_id(monkeypatch):
+    import httpx
+
+    def fake_post(self, url, json=None):
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": {"message_id": 4321, "chat": {"id": 42}}},
+            request=httpx.Request("POST", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    assert telegram.send_message("tok", 42, "hello") == 4321
+
+
+def test_send_message_returns_none_on_failure(monkeypatch):
+    import httpx
+
+    def fake_post(self, url, json=None):
+        raise httpx.ConnectError("boom", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    assert telegram.send_message("tok", 42, "hello") is None
+
+
+def test_extract_message_picks_document_reply_and_media_group():
+    update = {
+        "update_id": 9,
+        "message": {
+            "message_id": 55,
+            "chat": {"id": 42},
+            "media_group_id": "grp-1",
+            "reply_to_message": {"message_id": 30},
+            "document": {"file_id": "doc-1", "mime_type": "image/png", "file_size": 2048},
+        },
+    }
+    extracted = telegram.extract_message(update)
+    assert extracted.document_file_id == "doc-1"
+    assert extracted.document_mime_type == "image/png"
+    assert extracted.document_file_size == 2048
+    assert extracted.reply_to_message_id == 30
+    assert extracted.media_group_id == "grp-1"
+
+
+def test_classify_document_image_rules():
+    assert telegram.classify_document_image("image/png", 1000) is None
+    assert telegram.classify_document_image("image/jpeg", None) is None
+    rejected_mime = telegram.classify_document_image("application/pdf", 1000)
+    assert rejected_mime is not None and "PNG/JPEG/WebP" in rejected_mime
+    rejected_size = telegram.classify_document_image("image/png", 7_000_000)
+    assert rejected_size is not None and "6MB" in rejected_size
+
+
+def _poll_once(main):
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+
+
+def test_poll_loop_reply_to_receipt_appends_to_same_thread(monkeypatch, tmp_path):
+    """回复某条回执 = 把补充材料关联回同一条 ingest 线索，而不是又开一条新线程（测试 a）。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-reply-append.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [{"update_id": 40, "message": {"message_id": 500, "chat": {"id": 42}, "text": "第一条招聘线索，没有可识别链接"}}],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent_texts: list[str] = []
+    next_message_id = {"n": 9000}
+
+    def fake_send(token, chat_id, text):
+        sent_texts.append(text)
+        next_message_id["n"] += 1
+        return next_message_id["n"]
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", fake_send)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1
+        thread_id = threads[0].id
+        assistant_msgs = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == thread_id, ChatMessage.role == "assistant")
+        ).all()
+        assert len(assistant_msgs) == 1
+        receipt_id = assistant_msgs[0].metadata_json.get("receipt_tg_message_id")
+        assert receipt_id == next_message_id["n"]
+
+    # 第二批：机主回复了第一次回执，补一句话。
+    batches.append(
+        [
+            {
+                "update_id": 41,
+                "message": {
+                    "message_id": 501,
+                    "chat": {"id": 42},
+                    "text": "补充：通勤地图截图，同一个岗位",
+                    "reply_to_message": {"message_id": receipt_id},
+                },
+            }
+        ]
+    )
+    batches.append([])
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1  # 没有新建线程
+        user_msgs = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == thread_id, ChatMessage.role == "user")
+        ).all()
+        assert len(user_msgs) == 2
+
+    assert any("已补充到" in text for text in sent_texts[1:])
+
+
+def test_poll_loop_reply_to_unknown_message_falls_back_to_new_thread(monkeypatch, tmp_path):
+    """回复的不是回执（或太久远）→ 现状回退：照常新建线程（测试 b）。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-reply-unknown.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    from backend.app.models import ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [
+            {
+                "update_id": 42,
+                "message": {
+                    "message_id": 502,
+                    "chat": {"id": 42},
+                    "text": "随手回复了一条不相关的老消息",
+                    "reply_to_message": {"message_id": 999999},
+                },
+            }
+        ],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: 1)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1  # 正常新建了一条线程，没有报错/被吞
+
+
+def test_poll_loop_document_image_downloads_pdf_rejected(monkeypatch, tmp_path):
+    """document 类型图片可以走截图路径；不支持的格式给出明确提示，不能静默忽略（测试 c）。"""
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-document.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [
+        [
+            {
+                "update_id": 50,
+                "message": {
+                    "message_id": 600,
+                    "chat": {"id": 42},
+                    "document": {"file_id": "doc-png", "mime_type": "image/png", "file_size": 12345},
+                },
+            },
+            {
+                "update_id": 51,
+                "message": {
+                    "message_id": 601,
+                    "chat": {"id": 42},
+                    "document": {"file_id": "doc-pdf", "mime_type": "application/pdf", "file_size": 12345},
+                },
+            },
+        ],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+    downloaded_ids: list[str] = []
+
+    def fake_send(token, chat_id, text):
+        sent.append(text)
+        return 7001 + len(sent)
+
+    def fake_download(token, file_id):
+        downloaded_ids.append(file_id)
+        return "data:image/png;base64,iVBORw0KGgo="
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", fake_send)
+    monkeypatch.setattr(telegram_svc, "download_photo_data_url", fake_download)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    assert downloaded_ids == ["doc-png"]  # pdf 完全不下载
+    assert any("仅支持" in text for text in sent)
+    assert not any("处理失败" in text for text in sent)  # 不崩溃
+
+
+def test_poll_loop_media_group_shares_one_thread(monkeypatch, tmp_path):
+    """同批相册两张图归到同一条线索：一条线程、两条 user 消息（测试 d）。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-album.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [
+            {
+                "update_id": 60,
+                "message": {
+                    "message_id": 700,
+                    "chat": {"id": 42},
+                    "media_group_id": "album-1",
+                    "photo": [{"file_id": "p1", "width": 100, "height": 100}],
+                },
+            },
+            {
+                "update_id": 61,
+                "message": {
+                    "message_id": 701,
+                    "chat": {"id": 42},
+                    "media_group_id": "album-1",
+                    "photo": [{"file_id": "p2", "width": 100, "height": 100}],
+                },
+            },
+        ],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: 8000)
+    monkeypatch.setattr(telegram_svc, "download_photo_data_url", lambda token, file_id: "data:image/png;base64,iVBORw0KGgo=")
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1
+        user_msgs = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == threads[0].id, ChatMessage.role == "user")
+        ).all()
+        assert len(user_msgs) == 2
+
+
+def test_poll_loop_start_command_mentions_reply_to_append(monkeypatch, tmp_path):
+    """/start 帮助文案要提到「回复回执可归入同一条线索」，不然这个新能力没人知道。"""
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-start-reply-hint.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [[{"update_id": 70, "message": {"chat": {"id": 42}, "text": "/start"}}]]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: sent.append(text))
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    assert len(sent) == 1
+    assert "回复" in sent[0] and "线索" in sent[0]
 
 
 # ==================== 修复 4：线程标题压缩空白 / 剔除 URL / 截断 ====================
@@ -717,7 +1053,7 @@ def test_poll_loop_accepts_numeric_string_chat_id(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main,
         "_persist_ingest_to_chat",
-        lambda session, text, image_data_url=None: calls["persisted"].append(text)
+        lambda session, text, image_data_url=None, target_thread_id=None: calls["persisted"].append(text)
         or {"candidate_count": 1, "unmatched": False, "needs_ai": False},
     )
     main.settings = replace(
