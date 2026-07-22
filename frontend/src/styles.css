@@ -2081,6 +2081,109 @@ meter {
   min-width: 0;
 }
 
+/* 岗位专属聊天检索框：原生 <select> 在真机上换成可检索 input + 下拉列表，
+   宽度撑满 .chat-job-create 这一列，与上面 select 的行为保持一致。 */
+.job-picker {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.job-picker-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid #d8ded8;
+  border-radius: 8px;
+  background: #fbfcfa;
+  color: #8a978e;
+}
+
+.job-picker-field:focus-within {
+  border-color: #a9cec5;
+}
+
+.job-picker-field input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #26332b;
+  font: inherit;
+}
+
+.job-picker-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  display: grid;
+  gap: 2px;
+  max-height: 260px;
+  padding: 6px;
+  overflow-y: auto;
+  border: 1px solid #d8ded8;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 10px 28px rgba(28, 42, 34, 0.14);
+}
+
+.job-picker-option {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+
+.job-picker-option strong,
+.job-picker-option span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-picker-option strong {
+  font-size: 12.5px;
+  color: #26332b;
+}
+
+.job-picker-option span {
+  font-size: 11.5px;
+  color: #68766c;
+}
+
+.job-picker-option:hover,
+.job-picker-option.active {
+  background: #eef4ef;
+}
+
+.job-picker-empty {
+  margin: 0;
+  padding: 8px;
+  color: #68766c;
+  font-size: 12px;
+}
+
+.job-picker-hint {
+  margin: 2px 0 0;
+  padding: 4px 8px 2px;
+  border-top: 1px dashed #e1e7e1;
+  color: #8a978e;
+  font-size: 11px;
+}
+
 .chat-thread-list {
   display: grid;
   align-content: start;
@@ -2164,6 +2267,22 @@ meter {
   background: #fbfcfb;
 }
 
+/* .chat-main 只声明了行(grid-template-rows),没声明列 —— 三个子项(.chat-head/.chat-messages/
+   .chat-composer)其实共用同一个隐式 auto 列。CSS Grid 的 auto 列在计算自身宽度时,会取列内每个
+   grid item 的"自动最小尺寸"里最大的那个;而 white-space:nowrap 的文本(超长线程标题)其自动最小
+   尺寸就是文本整行的宽度 —— overflow:hidden/text-overflow:ellipsis 只影响绘制,不影响这个尺寸计算。
+   之前只在 .chat-head-info(chat-head 内部 flex 子项)补了 min-width:0,没补到 .chat-head 自身这一级
+   (它是 grid item,不是 flex item,两套算法分别要断)，于是这一列仍会被撑宽,超出 .chat-main 自己的
+   宽度而溢出 —— 这正是"头部撑破+消息区整体右移"的共同根因:auto 列变宽后，.chat-messages 里
+   `.chat-message { margin: 0 auto }` 会按这个变宽后的列宽度居中，可见部分因此整体右移，右侧多出的
+   宽度又被外层 .chat-shell 的 overflow:hidden 裁掉，看起来像"左侧空白、气泡靠右"。
+   三个子项都显式 min-width:0，才能让这一列真正收缩到 .chat-main 的实际宽度。*/
+.chat-head,
+.chat-messages,
+.chat-composer {
+  min-width: 0;
+}
+
 .chat-main > .chat-welcome.standalone {
   grid-row: 1 / -1;
   align-self: center;
@@ -2174,6 +2293,8 @@ meter {
   padding: 14px 18px;
   border-bottom: 1px solid #e1e7e1;
   background: #fff;
+  /* 兜底：即便上面的 grid 列收缩失败，头部自身也不再把超宽内容外溢出去撑破布局。 */
+  overflow: hidden;
 }
 
 /* .chat-head 是 flex 容器；这个包裹 div 是它的直接 flex item，不加 min-width:0 时
@@ -2476,6 +2597,20 @@ meter {
   cursor: pointer;
 }
 
+/* 非 pending 候选不再渲染 checkbox；用同尺寸的状态图标占位，保持列表左侧对齐一致。 */
+.candidate-status-icon {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.candidate-status-icon.committed {
+  color: #1f7a4d;
+}
+
+.candidate-status-icon.skipped {
+  color: #8a978e;
+}
+
 .candidate-item.status-committed label,
 .candidate-item.status-skipped label {
   opacity: 0.72;
@@ -2505,6 +2640,16 @@ meter {
   border-radius: 999px;
   background: #eef1ee;
   color: #566259;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.candidate-duplicate-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fbeccd;
+  color: #9a5b00;
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;

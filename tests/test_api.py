@@ -1368,6 +1368,50 @@ def test_follow_up_task_update_and_delete(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_follow_up_task_create_dedupes_identical_pending_task(monkeypatch, tmp_path):
+    """同一 job_id + 相同标题（去首尾空白）+ 状态未完成的待办重复创建两次：只应有一条，
+    第二次返回已有记录并带 duplicate=True（复现用户实测「待办可无限重复加」的 bug）。"""
+    app = _fresh_app(monkeypatch, tmp_path, "tasks-dedupe.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            job = (
+                await client.post("/api/jobs", json={"title": "数据分析师", "company_name": "示例科技", "city": "上海"})
+            ).json()
+
+            first = await client.post(
+                "/api/follow-ups",
+                json={"title": "  跟进面试安排  ", "job_id": job["id"]},
+            )
+            assert first.status_code == 200, first.text
+            first_task = first.json()
+            assert first_task.get("duplicate") is False
+
+            second = await client.post(
+                "/api/follow-ups",
+                json={"title": "跟进面试安排", "job_id": job["id"]},
+            )
+            assert second.status_code == 200, second.text
+            second_task = second.json()
+            assert second_task["id"] == first_task["id"]
+            assert second_task.get("duplicate") is True
+
+            tasks = (await client.get("/api/follow-ups")).json()
+            assert len(tasks) == 1
+
+            # 标记完成后，同名待办应该允许再开一条新的跟进（不是同一件事的重复提交）。
+            await client.patch(f"/api/follow-ups/{first_task['id']}", json={"status": "done"})
+            third = await client.post(
+                "/api/follow-ups",
+                json={"title": "跟进面试安排", "job_id": job["id"]},
+            )
+            assert third.status_code == 200, third.text
+            assert third.json().get("duplicate") is False
+            assert third.json()["id"] != first_task["id"]
+
+    asyncio.run(scenario())
+
+
 def test_company_counts_and_validation_guards(monkeypatch, tmp_path):
     app = _fresh_app(monkeypatch, tmp_path, "company-counts.sqlite3")
 

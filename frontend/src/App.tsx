@@ -34,7 +34,7 @@ import {
   Upload,
   X
 } from "lucide-react";
-import { ClipboardEvent, FormEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
+import { ClipboardEvent, FormEvent, KeyboardEvent as ReactKeyboardEvent, RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
@@ -853,8 +853,12 @@ function App() {
           method: "POST",
           ...jsonBody({ title, job_id: jobId, due_date: dueDate || null })
         });
-        setTasks((items) => [task, ...items]);
-        notify("success", "待办已新增。");
+        if (task.duplicate) {
+          notify("info", "已存在相同待办，未重复新增。");
+        } else {
+          setTasks((items) => [task, ...items]);
+          notify("success", "待办已新增。");
+        }
       } catch (err) {
         notify("error", errorMessage(err, "待办新增失败"));
       }
@@ -1664,6 +1668,134 @@ function PaginationControls({
   );
 }
 
+// 岗位专属聊天检索框：岗位库常年 99+ 条，原生 <select> 逐条找太慢，换成「输入过滤 + 下拉选」，
+// 行为对齐原 select（选中即回填 jobId），不引组件库。列表最多渲染前 50 条，键盘上下+Enter 可选。
+function JobPickerCombobox({
+  jobs,
+  value,
+  onChange,
+  disabled,
+}: {
+  jobs: Job[];
+  value: string;
+  onChange: (jobId: string) => void;
+  disabled?: boolean;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlighted, setHighlighted] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // 只在「没有正在编辑」时把 query 同步成当前选中项的文案；编辑中（open=true）不能被这个
+  // effect 打断，否则 onChange 里为了让「创建/打开」及时失效而清空 value，会在下一渲染把
+  // 刚打的字又冲掉。
+  useEffect(() => {
+    if (open) return;
+    if (!value) {
+      setQuery("");
+      return;
+    }
+    const job = jobs.find((item) => String(item.id) === value);
+    setQuery(job ? `${job.company_name} · ${job.title}` : "");
+  }, [value, jobs, open]);
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [open]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const filtered = normalizedQuery
+    ? jobs.filter((job) => `${job.title} ${job.company_name}`.toLowerCase().includes(normalizedQuery))
+    : jobs;
+  const visible = filtered.slice(0, 50);
+
+  function choose(job: Job) {
+    onChange(String(job.id));
+    setQuery(`${job.company_name} · ${job.title}`);
+    setOpen(false);
+  }
+
+  function handleKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      if (open) {
+        event.preventDefault();
+        setOpen(false);
+      }
+      return;
+    }
+    if (!open) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((i) => Math.min(i + 1, visible.length - 1));
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((i) => Math.max(i - 1, 0));
+    } else if (event.key === "Enter" && visible[highlighted]) {
+      event.preventDefault();
+      choose(visible[highlighted]);
+    }
+  }
+
+  return (
+    <div className="job-picker" ref={containerRef}>
+      <div className="job-picker-field">
+        <Search size={14} />
+        <input
+          value={query}
+          disabled={disabled}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setOpen(true);
+            setHighlighted(0);
+            if (value) onChange("");
+          }}
+          onKeyDown={handleKeyDown}
+          placeholder="搜索岗位/公司…"
+          aria-label="搜索岗位创建专属聊天"
+        />
+      </div>
+      {open && (
+        <div className="job-picker-panel" role="listbox">
+          {visible.map((job, index) => (
+            <button
+              type="button"
+              key={job.id}
+              role="option"
+              aria-selected={String(job.id) === value}
+              className={`job-picker-option${index === highlighted ? " active" : ""}`}
+              onMouseDown={(event) => {
+                // 用 mousedown + preventDefault 抢在 input 的 blur 前完成选中，
+                // 避免「点选项」被「先失焦收起面板」抢先导致点不中。
+                event.preventDefault();
+                choose(job);
+              }}
+            >
+              <strong>{job.company_name}</strong>
+              <span>{job.title}</span>
+            </button>
+          ))}
+          {!visible.length && <p className="job-picker-empty">没有匹配的岗位</p>}
+          <p className="job-picker-hint">共 {filtered.length} 条，输入以过滤</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChatView({
   jobs,
   onOpenJob,
@@ -1915,10 +2047,7 @@ function ChatView({
           <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
         </div>
         <div className="chat-job-create">
-          <select value={jobId} onChange={(event) => setJobId(event.target.value)} aria-label="选择岗位创建聊天">
-            <option value="">选择岗位专属聊天…</option>
-            {jobs.map((job) => <option key={job.id} value={job.id}>{job.company_name} · {job.title}</option>)}
-          </select>
+          <JobPickerCombobox jobs={jobs} value={jobId} onChange={setJobId} disabled={sending} />
           <button className="small-action" type="button" onClick={() => createThread("job")} disabled={!jobId || sending}>创建 / 打开</button>
         </div>
         <div className="chat-thread-list">
@@ -2183,8 +2312,10 @@ function CandidateListCard({
   onError: (message: string) => void;
 }) {
   const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
-  // 已在岗位池的候选默认不勾选（避免误触重复合并），但仍保留在待处理列表里，用户可主动勾上。
-  const [selected, setSelected] = useState<number[]>(pendingIndexes.filter((i) => !candidates[i]?.existing_job_id));
+  // 已在岗位池 / 与近期候选重复的默认不勾选（避免误触重复合并），但仍保留在待处理列表里，用户可主动勾上。
+  const [selected, setSelected] = useState<number[]>(
+    pendingIndexes.filter((i) => !candidates[i]?.existing_job_id && candidates[i]?.duplicate_in_thread_id == null)
+  );
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
 
@@ -2203,7 +2334,7 @@ function CandidateListCard({
       onUpdated(reply.assistant_message);
       const next = reply.assistant_message.metadata_json?.candidates ?? [];
       const nextPending = next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
-      setSelected(nextPending.filter((i) => !next[i]?.existing_job_id));
+      setSelected(nextPending.filter((i) => !next[i]?.existing_job_id && next[i]?.duplicate_in_thread_id == null));
     } catch (err) {
       onError(errorMessage(err, "入库失败"));
     } finally {
@@ -2239,22 +2370,33 @@ function CandidateListCard({
       <ul className="candidate-list">
         {candidates.map((item, index) => {
           const status = item.status || "pending";
-          const disabled = status !== "pending";
           return (
             <li key={`${item.title}-${index}`} className={`candidate-item status-${status}`}>
               <label>
-                <input
-                  type="checkbox"
-                  checked={selected.includes(index)}
-                  disabled={disabled || busy}
-                  onChange={() => toggle(index)}
-                />
+                {status === "pending" ? (
+                  <input
+                    type="checkbox"
+                    checked={selected.includes(index)}
+                    disabled={busy}
+                    onChange={() => toggle(index)}
+                  />
+                ) : (
+                  // 已入库/已跳过的候选不再是可勾选项，不渲染空 checkbox；用同尺寸状态图标占位对齐。
+                  <span className={`candidate-status-icon ${status}`} aria-hidden="true">
+                    {status === "committed" ? <CheckCircle2 size={16} /> : <X size={16} />}
+                  </span>
+                )}
                 <span className="candidate-body">
                   <span className="candidate-title-row">
                     <strong>{item.title || "未命名岗位"}</strong>
                     {item.existing_job_id != null && (
                       <span className="candidate-existing-badge" title={`已在岗位池 · #${item.existing_job_id}`}>
                         已在岗位池
+                      </span>
+                    )}
+                    {item.duplicate_in_thread_id != null && (
+                      <span className="candidate-duplicate-badge" title={`与近期聊天里的候选重复 · 线程 #${item.duplicate_in_thread_id}`}>
+                        重复候选
                       </span>
                     )}
                   </span>

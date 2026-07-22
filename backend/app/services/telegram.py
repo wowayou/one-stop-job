@@ -202,15 +202,25 @@ def summarize_ingest(result: dict) -> str:
     `appended`（配合 `thread` 里的 title）：本次材料被追加到一条已有 ingest 线程（回复回执
     或同一相册的后续图片），回执要明确说「已补充到『<线程标题>』」，而不是像新建线程那样
     说「已写入本地聊天」——否则用户分不清这是不是又开了一条新线索。
+
+    `duplicate_merge`：本次候选和某条既有线索的候选**全部**重复，被自动并入那条线程（不是
+    用户主动关联），措辞要和 `appended` 的「已补充」区分开，明确说「与已有线索重复」，
+    避免用户误以为是自己回复了回执。`duplicate_count`：即便新建了线程，其中部分候选和
+    近期线索重复时，仍要提示一句，但不改变「未入库」的整体结论。
     """
     n = int(result.get("candidate_count") or 0)
     candidates = result.get("candidates") or []
     existing = sum(1 for c in candidates if isinstance(c, dict) and c.get("existing_job_id"))
+    duplicate_count = int(result.get("duplicate_count") or 0)
     ai_error = result.get("ai_error")
-    appended_title = (result.get("thread") or {}).get("title") if result.get("appended") else None
+    thread_title = (result.get("thread") or {}).get("title")
+    appended_title = thread_title if result.get("appended") and not result.get("duplicate_merge") else None
+    duplicate_merge_title = thread_title if result.get("duplicate_merge") else None
 
     parts: list[str] = []
-    if appended_title and n > 0:
+    if duplicate_merge_title:
+        parts.append(f"与已有线索重复，已归入『{duplicate_merge_title}』（未入库）。")
+    elif appended_title and n > 0:
         parts.append(f"已补充到『{appended_title}』；识别到 {n} 个新候选（未入库），可在 Web「聊天」里确认。")
         if existing:
             parts.append(f"其中 {existing} 个已在岗位池。")
@@ -223,6 +233,8 @@ def summarize_ingest(result: dict) -> str:
         )
         if existing:
             parts.append(f"其中 {existing} 个已在岗位池。")
+        if duplicate_count:
+            parts.append(f"其中 {duplicate_count} 个与近期候选重复。")
     elif ai_error:
         parts.append(f"AI 抽取失败：{ai_error}。若发送的是截图，请确认所配模型支持图片输入（OPENAI_MODEL）。原料已保留。")
     elif result.get("needs_ai"):

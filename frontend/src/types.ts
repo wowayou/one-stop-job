@@ -211,6 +211,9 @@ export type IngestCandidate = {
   board_written?: boolean;
   /** 命中岗位池里已有岗位的 canonical_key 时后端会带上；仅用于展示，提交时会被后端剔除。 */
   existing_job_id?: number | null;
+  /** 与最近 ~50 个 ingest 线程里出现过的候选重复（canonical_key，缺失时退化为标题+公司）时后端会带上
+   * 匹配到的线程 id；仅用于展示「重复候选」徽标并默认不勾选，提交时会被后端剔除。 */
+  duplicate_in_thread_id?: number | null;
 };
 
 export type ContextRepoStatus = {
@@ -344,6 +347,8 @@ export type FollowUpTask = {
   title: string;
   status: string;
   due_date?: string | null;
+  /** 创建接口命中已有的同岗位+同标题+未完成待办时返回 true（幂等，不新建），供前端提示已存在。 */
+  duplicate?: boolean;
 };
 
 export type StaleJob = {

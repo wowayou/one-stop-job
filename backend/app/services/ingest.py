@@ -12,13 +12,13 @@ from __future__ import annotations
 import logging
 import re
 
-from sqlmodel import Session
+from sqlmodel import Session, select
 
-from ..models import FitScore, Job, UserProfile
+from ..models import ChatMessage, ChatThread, FitScore, Job, UserProfile
 from . import bebee, wechat
 from .collectors import BeBeeCollector, WeChatPasteCollector
 from .jobs import company_map, research_items_map
-from .normalizer import normalize_record
+from .normalizer import UNKNOWN_COMPANIES, UNKNOWN_TITLES, normalize_record
 from .scoring import score_job
 
 logger = logging.getLogger(__name__)
@@ -88,6 +88,87 @@ def score_job_ids(session: Session, job_ids: list[int], profile: UserProfile) ->
             logger.warning("ingest 评分失败 job_id=%s", job.id, exc_info=True)
     session.commit()
     return scored
+
+
+def candidate_match_key(candidate: dict) -> str | None:
+    """候选去重匹配 key：优先复用 canonical_key；缺失时退化为「标题+公司」归一化字符串。
+
+    与 `canonical_job_key` 一致地过滤掉未知占位符（"未命名岗位"/"未知公司" 等），
+    避免大量抽取失败的候选因为都是占位符而被误判成同一条。
+    """
+    key = candidate.get("canonical_key")
+    if key:
+        return str(key)
+    title = re.sub(r"\s+", "", str(candidate.get("title") or "").strip().lower())
+    company = re.sub(r"\s+", "", str(candidate.get("company_name") or "").strip().lower())
+    if title in UNKNOWN_TITLES or company in UNKNOWN_COMPANIES:
+        return None
+    return f"title_company:{title}|{company}"
+
+
+def recent_ingest_candidate_index(session: Session, *, limit: int = 50) -> dict[str, int]:
+    """最近 `limit` 个 `kind="ingest"` 线程里出现过的候选 -> 所属线程 id。
+
+    同一个 key 命中多个线程时保留最近更新的那个线程。只读，不涉及 Job 表，
+    只是给「这批候选是不是最近已经录入过」提供一个只读比对索引。
+    """
+    threads = session.exec(
+        select(ChatThread).where(ChatThread.kind == "ingest").order_by(ChatThread.updated_at.desc()).limit(limit)
+    ).all()
+    thread_order = {t.id: idx for idx, t in enumerate(threads) if t.id is not None}
+    if not thread_order:
+        return {}
+    messages = session.exec(
+        select(ChatMessage).where(ChatMessage.thread_id.in_(list(thread_order)), ChatMessage.role == "assistant")
+    ).all()
+    # 按线程「从近到远」的顺序处理消息，保证同一 key 命中多个线程时，索引里留下的是最近的那个。
+    messages = sorted(messages, key=lambda m: thread_order.get(m.thread_id, len(thread_order)))
+    index: dict[str, int] = {}
+    for message in messages:
+        for candidate in (message.metadata_json or {}).get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            key = candidate_match_key(candidate)
+            if key and key not in index:
+                index[key] = message.thread_id
+    return index
+
+
+def find_duplicate_thread(session: Session, candidates: list[dict], *, limit: int = 50) -> tuple[int | None, int]:
+    """把本轮候选和最近 ingest 线程里的候选比对查重（只标注，不丢候选，不入库）。
+
+    返回 `(merge_thread_id, duplicate_count)`：
+    - `merge_thread_id` 非 None：本轮候选**全部**命中同一个既有线程，调用方应该把这条消息
+      并入该线程而不是新建；候选上暂时写的 `duplicate_in_thread_id` 会被清掉——它们即将
+      成为那个线程自己的一部分，不需要再额外标「重复候选」。
+    - `merge_thread_id` 为 None 但 `duplicate_count > 0`：部分命中，调用方仍新建线程，
+      每个命中的候选已经带上 `duplicate_in_thread_id`，供前端标「重复候选」并默认不勾选。
+    """
+    if not candidates:
+        return None, 0
+    index = recent_ingest_candidate_index(session, limit=limit)
+    if not index:
+        return None, 0
+
+    matched_thread_ids: set[int] = set()
+    all_matched = True
+    duplicate_count = 0
+    for candidate in candidates:
+        key = candidate_match_key(candidate)
+        thread_id = index.get(key) if key else None
+        if thread_id is not None:
+            candidate["duplicate_in_thread_id"] = thread_id
+            matched_thread_ids.add(thread_id)
+            duplicate_count += 1
+        else:
+            all_matched = False
+
+    if all_matched and len(matched_thread_ids) == 1:
+        merge_thread_id = next(iter(matched_thread_ids))
+        for candidate in candidates:
+            candidate.pop("duplicate_in_thread_id", None)
+        return merge_thread_id, duplicate_count
+    return None, duplicate_count
 
 
 def _residual_text(text: str, classified: dict[str, list[str]]) -> str:

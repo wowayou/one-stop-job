@@ -424,6 +424,132 @@ def test_ingest_endpoint_flags_existing_job_and_commit_reuses_job(monkeypatch, t
     asyncio.run(scenario())
 
 
+def test_ingest_full_duplicate_merges_into_existing_thread(monkeypatch, tmp_path):
+    """同一条链接内容 ingest 两次(候选完全一致)：第二次不新建线程,直接并入第一次那条,
+    回执明确说「已归入」，不是「已补充」。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-dup-merge.sqlite3")
+    from backend.app.services import ai
+    from backend.app.models import ChatThread
+    from sqlmodel import select
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [
+            {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海", "salary_text": "25-35K"}
+        ],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            first = await client.post("/api/ingest", json={"text": "看看这个岗位靠不靠谱"})
+            assert first.status_code == 200, first.text
+            first_thread_id = first.json()["thread"]["id"]
+
+            second = await client.post("/api/ingest", json={"text": "同一个链接又发了一遍"})
+            assert second.status_code == 200, second.text
+            payload = second.json()
+            assert payload["thread"]["id"] == first_thread_id
+            assert payload["duplicate_merge"] is True
+            assert "已归入" in payload["assistant_message"]["content"]
+
+            with db.Session(db.engine) as session:
+                threads = session.exec(select(ChatThread).where(ChatThread.kind == "ingest")).all()
+                assert len(threads) == 1  # 没有新建线程
+
+    asyncio.run(scenario())
+
+
+def test_ingest_partial_duplicate_tags_candidate_and_creates_new_thread(monkeypatch, tmp_path):
+    """一批候选里只有部分和近期线索重复：仍新建线程，重复项打 duplicate_in_thread_id
+    标注供前端默认不勾选，回执追加「其中 N 个与近期候选重复」，原料不丢。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-dup-partial.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            first = await client.post("/api/ingest", json={"text": "第一条线索"})
+            assert first.status_code == 200, first.text
+            first_thread_id = first.json()["thread"]["id"]
+
+            monkeypatch.setattr(
+                ai,
+                "extract_jobs_freeform",
+                lambda text, image_data_url=None: [
+                    {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"},
+                    {"title": "前端工程师", "company_name": "另一家公司", "city": "北京"},
+                ],
+            )
+            second = await client.post("/api/ingest", json={"text": "第二条线索，附带新岗位"})
+            assert second.status_code == 200, second.text
+            payload = second.json()
+            assert payload["thread"]["id"] != first_thread_id  # 部分重复仍新建线程
+            assert payload["duplicate_merge"] is False
+            assert payload["duplicate_count"] == 1
+
+            candidates = payload["assistant_message"]["metadata_json"]["candidates"]
+            assert len(candidates) == 2
+            dup = next(c for c in candidates if c["title"] == "资深BI工程师")
+            fresh = next(c for c in candidates if c["title"] == "前端工程师")
+            assert dup["duplicate_in_thread_id"] == first_thread_id
+            assert fresh.get("duplicate_in_thread_id") is None
+            assert "其中 1 个与近期候选重复" in payload["assistant_message"]["content"]
+
+    asyncio.run(scenario())
+
+
+def test_ingest_duplicate_badge_coexists_with_existing_job_id(monkeypatch, tmp_path):
+    """同一候选既命中岗位池里已入库的 Job(existing_job_id)，又和近期未入库线索重复
+    (duplicate_in_thread_id)：两个只读标注互不冲突，都应出现。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-dup-existing-combo.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            first = await client.post("/api/ingest", json={"text": "第一条线索"})
+            first_payload = first.json()
+            first_thread_id = first_payload["thread"]["id"]
+            first_assistant_id = first_payload["assistant_message"]["id"]
+
+            commit = await client.post(
+                f"/api/chat/threads/{first_thread_id}/candidates/commit",
+                json={"message_id": first_assistant_id, "indexes": [0]},
+            )
+            assert commit.status_code == 200, commit.text
+
+            monkeypatch.setattr(
+                ai,
+                "extract_jobs_freeform",
+                lambda text, image_data_url=None: [
+                    {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"},
+                    {"title": "前端工程师", "company_name": "另一家公司", "city": "北京"},
+                ],
+            )
+            second = await client.post("/api/ingest", json={"text": "第二条线索，附带新岗位"})
+            assert second.status_code == 200, second.text
+            candidates = second.json()["assistant_message"]["metadata_json"]["candidates"]
+            dup = next(c for c in candidates if c["title"] == "资深BI工程师")
+            assert dup["existing_job_id"] is not None
+            assert dup["duplicate_in_thread_id"] == first_thread_id
+
+    asyncio.run(scenario())
+
+
 # ==================== Telegram ====================
 
 

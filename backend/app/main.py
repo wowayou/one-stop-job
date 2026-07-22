@@ -84,7 +84,7 @@ from .services.exporter import (
 )
 from .services.followup import find_stale_jobs
 from .services.importer import get_or_create_company, upsert_job_record, upsert_job_records, upsert_job_records_with_ids
-from .services.ingest import run_ingest, score_job_ids
+from .services.ingest import find_duplicate_thread, run_ingest, score_job_ids
 from .services.jobs import (
     company_map,
     job_ids_by_canonical_key,
@@ -1825,6 +1825,19 @@ def _persist_ingest_to_chat(
         if maybe_thread is not None and maybe_thread.kind == "ingest":
             reused_thread = maybe_thread
 
+    # 重复检测：只在没有更明确的关联目标（回复回执/同相册）时才跑，避免和那两种「有意归并」互相打架。
+    # 全部命中同一个既有线程 → 直接复用那个线程（不新建，等同 target_thread_id 机制）；
+    # 部分命中 → 仍新建线程，只在候选上打 duplicate_in_thread_id 标注，原料一条都不丢。
+    duplicate_merge = False
+    duplicate_count = 0
+    if reused_thread is None and candidates:
+        merge_thread_id, duplicate_count = find_duplicate_thread(session, candidates)
+        if merge_thread_id is not None:
+            maybe_thread = session.get(ChatThread, merge_thread_id)
+            if maybe_thread is not None and maybe_thread.kind == "ingest":
+                reused_thread = maybe_thread
+                duplicate_merge = True
+
     if reused_thread is not None:
         thread = reused_thread
     else:
@@ -1846,8 +1859,13 @@ def _persist_ingest_to_chat(
 
     n = extract["candidate_count"]
     ai_error = extract.get("ai_error")
-    if n:
+    if duplicate_merge:
+        # 全部候选都和这条既有线索重复：不重复入库提示，直接说明已经归入哪条线索，原料仍然保留在这条消息里。
+        assistant_text = f"与已有线索重复，已归入『{thread.title}』（未入库）。"
+    elif n:
         assistant_text = f"识别到 {n} 个候选岗位。请在下方勾选要入库的项；原文和截图已保留在本对话。"
+        if duplicate_count:
+            assistant_text += f" 其中 {duplicate_count} 个与近期候选重复。"
     elif ai_error:
         # AI 已启用且理应能连通，但本次调用真的失败了：必须跟「AI 未启用」「AI 正常但没识别出岗位」区分开，
         # 否则用户只会看到「未认出」，误以为是内容问题而反复重试（真实场景常是模型不支持图片输入）。
@@ -1899,6 +1917,10 @@ def _persist_ingest_to_chat(
         "sources_report": extract["sources_report"],
         "candidates": candidates,
         "appended": reused_thread is not None,
+        # duplicate_merge=True 时 appended 也是 True（同样是「并入既有线程」），但措辞要和
+        # target_thread_id 那种「有意补充」区分开——这批候选是查重命中的，不是用户主动关联的。
+        "duplicate_merge": duplicate_merge,
+        "duplicate_count": duplicate_count,
     }
 
 
@@ -1956,8 +1978,13 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
         item = candidates[idx]
         if item.get("status") == "committed" and item.get("job_id"):
             continue
-        # existing_job_id 只是「已在岗位池」的只读标注，不是 Job 表字段，upsert 前必须剔除。
-        record = {k: v for k, v in item.items() if k not in {"status", "job_id", "existing_job_id"}}
+        # existing_job_id / duplicate_in_thread_id 只是只读标注（分别是「已在岗位池」「与近期候选重复」），
+        # 不是 Job 表字段，upsert 前必须剔除。
+        record = {
+            k: v
+            for k, v in item.items()
+            if k not in {"status", "job_id", "existing_job_id", "duplicate_in_thread_id"}
+        }
         to_upsert.append(record)
         selected_positions.append(idx)
 
@@ -2296,12 +2323,24 @@ async def list_stale_follow_ups(session: SessionDep) -> list[dict]:
 
 
 @app.post("/api/follow-ups")
-async def create_follow_up(payload: FollowUpTaskCreate, session: SessionDep) -> FollowUpTask:
+async def create_follow_up(payload: FollowUpTaskCreate, session: SessionDep) -> dict:
+    """新增待办；同一 job_id + 相同标题（去首尾空白）+ 状态未完成的待办已存在时不再新建，
+    直接把已有记录原样返回并带 duplicate=True，供前端提示「已存在」——避免用户手滑连点
+    （或前端重复提交）在待办清单里堆出一串重复项。已完成（status="done"）的旧待办不算重复，
+    允许针对同一件事再开一条新的跟进。"""
+    title = payload.title.strip()
+    existing_tasks = session.exec(
+        select(FollowUpTask).where(FollowUpTask.job_id == payload.job_id, FollowUpTask.status != "done")
+    ).all()
+    duplicate = next((t for t in existing_tasks if t.title.strip() == title), None)
+    if duplicate is not None:
+        return {**jsonable_encoder(duplicate), "duplicate": True}
+
     task = FollowUpTask(**payload.model_dump())
     session.add(task)
     session.commit()
     session.refresh(task)
-    return task
+    return {**jsonable_encoder(task), "duplicate": False}
 
 
 @app.patch("/api/follow-ups/{task_id}")
