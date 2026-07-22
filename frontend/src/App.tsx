@@ -39,7 +39,7 @@ import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody }
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour, { TourStep } from "./Tour";
-import type { AiProbeResult, AiStatus, AppConfig, ApplicationEvent, ChatContextPreview, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, IngestCandidate, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
+import type { AiProbeResult, AiStatus, AppConfig, ApplicationEvent, BoardWriteResult, ChatContextPreview, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, ContextRepoStatus, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, IngestCandidate, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
 
 // 聚光灯引导步骤：只指向首屏稳定存在的元素，避免切视图编排，保持简单稳健。
 const TOUR_STEPS: TourStep[] = [
@@ -355,6 +355,7 @@ function App() {
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   const [aiProbe, setAiProbe] = useState<AiProbeResult | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
+  const [contextStatus, setContextStatus] = useState<ContextRepoStatus | null>(null);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -429,7 +430,8 @@ function App() {
       { key: "interviews", label: "面试复盘", run: () => api<InterviewLog[]>("/api/interviews"), apply: (value) => setInterviews(value as InterviewLog[]) },
       { key: "funnel", label: "求职漏斗", run: () => api<FunnelAnalytics>("/api/analytics/funnel"), apply: (value) => setFunnel(value as FunnelAnalytics) },
       { key: "profile", label: "个人画像", run: () => api<UserProfile>("/api/profile"), apply: (value) => setProfile(value as UserProfile) },
-      { key: "ai", label: "AI 状态", run: () => api<AiStatus>("/api/ai/status"), apply: (value) => setAiStatus(value as AiStatus) }
+      { key: "ai", label: "AI 状态", run: () => api<AiStatus>("/api/ai/status"), apply: (value) => setAiStatus(value as AiStatus) },
+      { key: "contextStatus", label: "个人上下文仓库", run: () => api<ContextRepoStatus>("/api/context/status"), apply: (value) => setContextStatus(value as ContextRepoStatus) }
     ];
     const active = keys ? tasks.filter((task) => keys.includes(task.key)) : tasks;
     const results = await Promise.allSettled(active.map((task) => task.run()));
@@ -1105,7 +1107,9 @@ function App() {
         )}
 
         <section className="workspace-content">
-          {activeNav === "chat" && <ChatView jobs={jobs} onOpenJob={openJob} aiAvailable={Boolean(aiStatus?.available)} />}
+          {activeNav === "chat" && (
+            <ChatView jobs={jobs} onOpenJob={openJob} aiAvailable={Boolean(aiStatus?.available)} boardWriteEnabled={!!contextStatus?.available} />
+          )}
           {activeNav === "jobs" && (
             <JobsView
               jobs={filteredJobs}
@@ -1660,7 +1664,17 @@ function PaginationControls({
   );
 }
 
-function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (job: Job) => void | Promise<void>; aiAvailable: boolean }) {
+function ChatView({
+  jobs,
+  onOpenJob,
+  aiAvailable,
+  boardWriteEnabled,
+}: {
+  jobs: Job[];
+  onOpenJob: (job: Job) => void | Promise<void>;
+  aiAvailable: boolean;
+  boardWriteEnabled: boolean;
+}) {
   const [threads, setThreads] = useState<ChatThread[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<number | null>(() => {
     try {
@@ -1986,6 +2000,7 @@ function ChatView({ jobs, onOpenJob, aiAvailable }: { jobs: Job[]; onOpenJob: (j
                           threadId={activeThreadId!}
                           messageId={message.id}
                           candidates={candidates}
+                          boardWriteEnabled={boardWriteEnabled}
                           onUpdated={(updated) => {
                             setMessages((items) => items.map((m) => (m.id === updated.id ? updated : m)));
                             void loadThreads(activeThreadId);
@@ -2141,22 +2156,36 @@ const RUN_STATUS_BADGE: Record<RunStatus, { label: string; tone: string; title: 
   rules_only: { label: "仅规则", tone: "muted", title: "未启用 AI，仅使用本地规则。" },
 };
 
+function buildInboxLinePreview(candidate: IngestCandidate): string {
+  const flatten = (value?: string | null) => (value || "").replace(/\s+/g, " ").trim();
+  const company = flatten(candidate.company_name) || "?";
+  const title = flatten(candidate.title);
+  const salary = flatten(candidate.salary_text) || "薪资未知";
+  const source = candidate.source || "manual";
+  const now = new Date();
+  const dateTag = `${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
+  return `- [ ] ${company} - ${title} - ${salary} - ${source}/${dateTag} - 未判断 - 下一步：补齐主行并新建详情卡`;
+}
+
 function CandidateListCard({
   threadId,
   messageId,
   candidates,
+  boardWriteEnabled,
   onUpdated,
   onError,
 }: {
   threadId: number;
   messageId: number;
   candidates: IngestCandidate[];
+  boardWriteEnabled: boolean;
   onUpdated: (message: ChatMessage) => void;
   onError: (message: string) => void;
 }) {
   const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
   const [selected, setSelected] = useState<number[]>(pendingIndexes);
   const [busy, setBusy] = useState(false);
+  const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
 
   function toggle(index: number) {
     if (candidates[index]?.status === "committed" || candidates[index]?.status === "skipped") return;
@@ -2177,6 +2206,25 @@ function CandidateListCard({
       onError(errorMessage(err, "入库失败"));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function writeToBoard(index: number) {
+    setBoardWriteBusyIndex(index);
+    try {
+      const reply = await api<{ assistant_message: ChatMessage; results: BoardWriteResult[] }>(
+        `/api/chat/threads/${threadId}/candidates/board-write`,
+        { method: "POST", ...jsonBody({ message_id: messageId, indexes: [index] }) }
+      );
+      onUpdated(reply.assistant_message);
+      const result = reply.results.find((item) => item.index === index);
+      if (result && !result.ok) {
+        onError(result.reason);
+      }
+    } catch (err) {
+      onError(errorMessage(err, "写入看板失败"));
+    } finally {
+      setBoardWriteBusyIndex(null);
     }
   }
 
@@ -2210,6 +2258,28 @@ function CandidateListCard({
                   {status === "skipped" && <em>已跳过</em>}
                 </span>
               </label>
+              {status === "committed" && boardWriteEnabled && (
+                <div className="candidate-board-write">
+                  <code className="candidate-board-line">{buildInboxLinePreview(item)}</code>
+                  <button
+                    className="small-action"
+                    type="button"
+                    disabled={!!item.board_written || boardWriteBusyIndex === index}
+                    onClick={() => void writeToBoard(index)}
+                  >
+                    {item.board_written ? (
+                      <>
+                        <CheckCircle2 size={14} />
+                        已写入看板
+                      </>
+                    ) : boardWriteBusyIndex === index ? (
+                      "写入中…"
+                    ) : (
+                      "写入看板"
+                    )}
+                  </button>
+                </div>
+              )}
             </li>
           );
         })}

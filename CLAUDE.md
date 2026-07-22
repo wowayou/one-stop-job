@@ -4,7 +4,7 @@
 > 单用户、本地运行、不做账号体系、**不自动投递、不自动发消息**。
 > 本文件是 AI 与人类共同遵守的**架构标准与红线**,任何改动都必须先读它。修改架构前先更新本文件。
 
-> Phase 0 集成边界：`JOB_ONE_STOP_CONTEXT_REPO_PATH` 可指向独立的个人操作仓库。应用只允许通过 `ContextRepository` 读取白名单 Markdown；在实现“写入建议 + diff 复核 + 本人确认”之前，不得写入该仓库。
+> Phase 2 集成边界：`JOB_ONE_STOP_CONTEXT_REPO_PATH` 可指向独立的个人操作仓库。读取只允许通过 `ContextRepository` 白名单；写入只发生在本人于 Web 聊天的已入库候选卡上点「写入看板」时（点击前原样展示将写入的整行），由唯一的 `ContextWriter` 通道在白名单 `board` 文件的「收集箱」列内插入一行。除此之外不得有任何写入路径（有绊线测试锁定）。
 
 ---
 
@@ -66,7 +66,7 @@
 7. **不静默丢数据**:解析/抓取失败要进 `report.skipped` 带原因;一篇都拆不出时兜底产出至少 1 条,而不是返回空。
 8. **来源解耦**:`scoring.py` / `prep.py` / 前端视图保持 source-agnostic,禁止出现 `if source == "xxx"` 的业务特判。
 9. **网络访问统一封装**:一律走 `httpx`,带超时、移动端 UA、限速;不在路由函数里裸发请求。重依赖(如 `playwright`)放 `requirements-automation.txt` 并**延迟 import**,默认关闭。
-10. **外部上下文只读**:`JOB_ONE_STOP_CONTEXT_REPO_PATH` 指向的仓库不是应用数据库。Phase 0 只能读取 `ContextRepository` 白名单文件，不得创建、修改、移动或删除其中任何文件，也不得把宿主机绝对路径返回 API。
+10. **外部上下文写入唯一通道**:`JOB_ONE_STOP_CONTEXT_REPO_PATH` 指向的仓库不是应用数据库。读取只走 `ContextRepository` 白名单;写入未经本人在 Web 点击确认,不得写入任何字节;确认后也只允许 `ContextWriter` 在白名单 `board` 文件的指定列内插入一行(不改写、不删除既有内容,不创建/移动/删除文件,不 EOF 追加——看板是 Obsidian Kanban 文件,尾部有设置块)。`ContextWriter` 的引用只允许出现在 context_repository.py / board_write.py / main.py(AST 绊线测试锁定);不得把宿主机绝对路径返回 API。看板列=岗位状态唯一事实源,状态流转由本人在 Obsidian 拖卡完成,应用绝不写「移动卡片/状态变更」类内容;岗位卡(cards/)在拿到真实样例并回读 roadmap 之前不开放写入。
 11. **KISS 优先**:聊天是默认入口，岗位管理是按需展开的辅助能力。新增功能前先证明它解决高频用户动作；优先复用现有模型、路由和组件，不为低频场景增加常驻导航、后台服务、抽象层或新依赖。
 
 ---

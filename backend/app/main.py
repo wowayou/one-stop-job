@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import logging
 import math
 import os
@@ -89,6 +90,7 @@ from .services.normalizer import canonical_job_key, normalize_record, parse_recr
 from .services.prep import build_interview_prep
 from .services.scoring import DEFAULT_WEIGHTS, score_job
 from .services.sources import build_source_collector, get_source_definition, list_source_definitions, source_health, source_public_config
+from .services.board_write import write_candidate_to_board
 from .services.wechat import extract_mp_links
 
 
@@ -1749,7 +1751,9 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
     if not message or message.thread_id != thread_id or message.role != "assistant":
         raise HTTPException(status_code=404, detail="Candidate message not found")
 
-    meta = dict(message.metadata_json or {})
+    # 深拷贝理由同 board_write_candidates:浅拷贝下嵌套候选 dict 仍与原对象共享,
+    # 原地改完再赋值会被 SQLAlchemy 判为未变更而静默丢弃。
+    meta = copy.deepcopy(message.metadata_json or {})
     candidates = list(meta.get("candidates") or [])
     if not candidates:
         raise HTTPException(status_code=400, detail="该消息没有可入库的候选岗位")
@@ -1826,6 +1830,77 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
         "created": created,
         "updated": updated,
         "scored": scored,
+    }
+
+
+@app.post("/api/chat/threads/{thread_id}/candidates/board-write")
+async def board_write_candidates(thread_id: int, payload: CandidatesCommitRequest, session: SessionDep) -> dict:
+    """本人在已入库候选上点「写入看板」：把一行卡片插入个人操作仓库看板「收集箱」列。
+
+    每个 index 必须已 committed 且未 board_written，否则该条跳过并在响应里标注原因
+    （幂等，重复调用安全，不会重复写入）。上下文仓库未配置/不可用整体 503；单条写入
+    失败（例如看板缺「收集箱」列）只影响该条，不影响其它候选，也不改动 Job 表。
+    """
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    message = session.get(ChatMessage, payload.message_id)
+    if not message or message.thread_id != thread_id or message.role != "assistant":
+        raise HTTPException(status_code=404, detail="Candidate message not found")
+
+    # 深拷贝：避免和 message.metadata_json 共享嵌套 dict 引用。原地改共享对象会让
+    # SQLAlchemy 在没有中间 flush 的情况下把 old/new 值判等,从而认为该列未变更、
+    # 静默丢弃这次写入(纯 dict()/list() 浅拷贝挡不住这个坑)。
+    meta = copy.deepcopy(message.metadata_json or {})
+    candidates = meta.get("candidates") or []
+    if not candidates:
+        raise HTTPException(status_code=400, detail="该消息没有候选岗位")
+
+    indexes = sorted({int(i) for i in payload.indexes if isinstance(i, int) or str(i).isdigit()})
+    if not indexes:
+        raise HTTPException(status_code=400, detail="请至少选择一个候选")
+    for idx in indexes:
+        if idx < 0 or idx >= len(candidates):
+            raise HTTPException(status_code=400, detail=f"候选索引越界：{idx}")
+
+    try:
+        ContextRepository(settings.context_repo_path).read_document("board")
+    except ContextRepositoryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    results: list[dict] = []
+    for idx in indexes:
+        item = candidates[idx]
+        if item.get("status") != "committed" or not item.get("job_id"):
+            results.append({"index": idx, "ok": False, "reason": "候选尚未入库，无法写回看板"})
+            continue
+        if item.get("board_written"):
+            results.append({"index": idx, "ok": True, "reason": "已写入看板", "skipped": True})
+            continue
+        job = session.get(Job, item["job_id"])
+        if not job:
+            results.append({"index": idx, "ok": False, "reason": "对应岗位不存在"})
+            continue
+        try:
+            write_candidate_to_board(settings, job)
+        except ContextRepositoryError as exc:
+            results.append({"index": idx, "ok": False, "reason": str(exc)})
+            continue
+        item["board_written"] = True
+        results.append({"index": idx, "ok": True, "reason": "已写入看板"})
+
+    meta["candidates"] = candidates
+    message.metadata_json = meta
+    session.add(message)
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(message)
+    session.refresh(thread)
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "assistant_message": message,
+        "results": results,
     }
 
 

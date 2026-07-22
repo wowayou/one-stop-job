@@ -45,6 +45,8 @@ scripts/app.sh backup  # 备份 SQLite + 聊天附件到 data/backups/
 
 配置完 Telegram/AI 后,按 [docs/p0-device-checklist.md](p0-device-checklist.md) 走一遍真机联调(手机发链接/文本/截图 → Web 聊天出候选 → 勾选入库,约 20 分钟),确认全链路符合预期,尤其是「零自动入库」「回执只发本人」这两条红线。
 
+配置了 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 后,聊天里确认入库的候选岗位卡上会多一个「写入看板」按钮:点击前先看到将要写入的那一行预览,点击后才把这一行追加到个人看板的「收集箱」列,不点不写一字节。
+
 ## Docker 试用数据怎么办
 
 Docker 模式的数据存在独立 volume `job_one_stop_data` 里,与本地(单进程部署 / 本地开发模式使用的 `./data/job_one_stop/`)**不互通**。

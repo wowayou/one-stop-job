@@ -208,6 +208,21 @@ export type IngestCandidate = {
   status?: "pending" | "committed" | "skipped";
   job_id?: number | null;
   description?: string | null;
+  board_written?: boolean;
+};
+
+export type ContextRepoStatus = {
+  configured: boolean;
+  available: boolean;
+  documents: Record<string, boolean>;
+  message: string;
+};
+
+export type BoardWriteResult = {
+  index: number;
+  ok: boolean;
+  reason: string;
+  skipped?: boolean;
 };
 
 export type ChatThreadDetail = {

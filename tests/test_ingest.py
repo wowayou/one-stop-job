@@ -8,7 +8,7 @@ import importlib
 
 import httpx
 
-from backend.app.services import bebee, ingest, telegram, wechat
+from backend.app.services import ai, bebee, collectors, importer, ingest, telegram, wechat
 from backend.app.services.wechat import ArticleFetch
 
 
@@ -469,3 +469,43 @@ def test_persist_ingest_and_poll_loop_write_chat_only():
         source = inspect.getsource(func)
         assert "upsert" not in source, f"{func.__name__} 不得出现 upsert 调用"
         assert "Job(" not in source, f"{func.__name__} 不得直接构造 Job"
+
+
+# ==================== 红线绊线：写回看板只能走 ContextWriter，且只能由确认后的按钮触发 ====================
+
+
+def test_pipeline_modules_never_reference_context_writer():
+    """红线绊线（CLAUDE.md §3.10）：采集/管线模块不得引用写回能力。
+
+    只有 board_write.py（经 main.py 的 board_write_candidates 端点）能触发写入，
+    任何人往采集/解析/传输模块里塞 ContextWriter 或 insert_line_in_section，这里立即翻红。
+    """
+    import inspect
+
+    for module in (ingest, telegram, collectors, importer, wechat, bebee, ai):
+        imported = _imported_names(module)
+        assert "ContextWriter" not in imported, f"{module.__name__} 不得 import ContextWriter"
+        source = inspect.getsource(module)
+        assert "ContextWriter" not in source, f"{module.__name__} 不得引用 ContextWriter"
+        assert "insert_line_in_section" not in source, f"{module.__name__} 不得调用看板写入方法"
+
+
+def test_context_writer_reference_allowlist():
+    """`ContextWriter` 的引用只允许出现在 context_repository.py（自身）、board_write.py、
+    main.py 与测试；任何其它源码文件引用它都说明写入口被绕过了白名单。"""
+    import pathlib
+
+    backend_app = pathlib.Path(__file__).resolve().parents[1] / "backend" / "app"
+    allowed = {
+        backend_app / "services" / "context_repository.py",
+        backend_app / "services" / "board_write.py",
+        backend_app / "main.py",
+    }
+    offenders = []
+    for path in backend_app.rglob("*.py"):
+        if path in allowed or "__pycache__" in path.parts:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "ContextWriter" in text:
+            offenders.append(str(path))
+    assert not offenders, f"以下文件不应引用 ContextWriter：{offenders}"
