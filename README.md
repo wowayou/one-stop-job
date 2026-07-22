@@ -15,29 +15,17 @@
 
 ## 🚀 快速开始
 
-**Windows 普通使用 / 一键部署：**先启动 Docker Desktop。首次或代码更新后双击 `rebuild_app.bat`，以后双击 `start_app.bat`；健康检查通过后会自动打开 `http://127.0.0.1:8000/`。停止时双击 `stop_app.bat`。
-
-> Docker 与本地开发默认使用不同数据库；不要同时启动两种模式。当前已经在 `5173` 测试时，继续使用下面的本地开发方式即可。
-
-**本地开发（热更新，启动仅需 5-10 秒）：**
+**单进程部署（推荐，日常使用，Linux/WSL/macOS）：**
 
 ```bash
-# 1. 安装依赖（首次约 2-3 分钟）
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
-cd frontend && npm install && cd ..
-cp .env.template .env
-
-# 2. 启动后端（终端1）
-.venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-
-# 3. 启动前端（终端2）
-cd frontend && npm run dev
+scripts/app.sh start
 ```
 
-**访问：** `http://127.0.0.1:5173`
+首次运行会自动装依赖、建虚拟环境、构建前端，然后启动一个后端进程同时提供页面与 API。访问 `http://127.0.0.1:8000/`；查看状态用 `scripts/app.sh status`，停止用 `scripts/app.sh stop`。
 
-**详细说明（包括 Windows/Docker 方式）：** 见 [QUICKSTART.md](QUICKSTART.md)
+**备用（Windows 无 WSL 环境时）：** 用 Docker 一键脚本，先启动 Docker Desktop，双击 `start_app.bat`（首次或代码更新后用 `rebuild_app.bat`）。
+
+**详细说明（含本地开发热更新模式、Docker 命令行方式）：** 见 [QUICKSTART.md](QUICKSTART.md)
 
 ## 📖 主要文档
 

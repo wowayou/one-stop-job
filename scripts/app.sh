@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 单进程部署模式:前端构建产物由后端直接挂载(frontend/dist),只跑一个 uvicorn 进程。
+# 运行时文件放 data/app/,与 scripts/dev_wsl.sh 的 data/dev/ 互不干扰,可以各自独立启停。
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUNTIME_DIR="$ROOT_DIR/data/app"
+BACKEND_PID_FILE="$RUNTIME_DIR/backend.pid"
+BACKEND_LOG="$RUNTIME_DIR/backend.log"
+PORT="${PORT:-8000}"
+
+mkdir -p "$RUNTIME_DIR"
+touch "$BACKEND_LOG"
+
+is_running() {
+  local pid_file="$1"
+  [[ -f "$pid_file" ]] || return 1
+  local pid
+  pid="$(cat "$pid_file" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
+stop_children() {
+  local parent_pid="$1"
+  local signal="$2"
+  local child
+  while read -r child; do
+    [[ -n "$child" ]] || continue
+    stop_children "$child" "$signal"
+    kill "-$signal" "$child" 2>/dev/null || true
+  done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
+}
+
+ensure_backend_deps() {
+  if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
+    echo "缺少 .venv,首次安装依赖(约 2-3 分钟)..."
+    (cd "$ROOT_DIR" && python3 -m venv --clear .venv)
+    (cd "$ROOT_DIR" && .venv/bin/python -m pip install -r requirements.txt)
+  fi
+}
+
+ensure_frontend_deps() {
+  if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
+    echo "缺少 frontend/node_modules,安装前端依赖..."
+    (cd "$ROOT_DIR/frontend" && npm install)
+  fi
+}
+
+ensure_frontend_build() {
+  if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
+    echo "缺少 frontend/dist,构建前端..."
+    (cd "$ROOT_DIR/frontend" && npm run build)
+  fi
+}
+
+# 端口占用检查:如果端口已被本脚本以外的进程占用,拒绝启动并给出明确提示。
+check_port_free_or_owned() {
+  local port="$1"
+  local listener_pid=""
+  if command -v lsof >/dev/null 2>&1; then
+    listener_pid="$(lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | head -n1 || true)"
+  elif command -v fuser >/dev/null 2>&1; then
+    listener_pid="$(fuser "${port}/tcp" 2>/dev/null | tr -d ' ' || true)"
+  fi
+  [[ -n "$listener_pid" ]] || return 0
+
+  if is_running "$BACKEND_PID_FILE" && [[ "$listener_pid" == "$(cat "$BACKEND_PID_FILE")" ]]; then
+    return 0
+  fi
+
+  echo "端口 $port 已被 pid $listener_pid 占用,不是本脚本(scripts/app.sh)管理的进程。" >&2
+  echo "可能是本地开发模式后端(scripts/dev_wsl.sh)或 Docker(docker compose)在运行,请先停掉再启动单进程模式。" >&2
+  exit 1
+}
+
+wait_for_health() {
+  local port="$1"
+  local tries=30 # 约 15 秒(0.5s * 30)
+  local i
+  for ((i = 0; i < tries; i++)); do
+    if curl -fsS "http://127.0.0.1:${port}/api/health" >/dev/null 2>&1; then
+      return 0
+    fi
+    if ! is_running "$BACKEND_PID_FILE"; then
+      return 1
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+do_start() {
+  if is_running "$BACKEND_PID_FILE"; then
+    echo "已在运行,pid $(cat "$BACKEND_PID_FILE"),http://127.0.0.1:${PORT}/"
+    return 0
+  fi
+
+  ensure_backend_deps
+  ensure_frontend_deps
+  ensure_frontend_build
+  check_port_free_or_owned "$PORT"
+
+  (
+    cd "$ROOT_DIR"
+    nohup .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >>"$BACKEND_LOG" 2>&1 &
+    echo "$!" >"$BACKEND_PID_FILE"
+  )
+
+  echo "启动中,等待健康检查..."
+  if wait_for_health "$PORT"; then
+    echo "已启动: http://127.0.0.1:${PORT}/"
+  else
+    echo "启动失败或健康检查超时,最近日志:" >&2
+    tail -n 40 "$BACKEND_LOG" >&2
+    exit 1
+  fi
+}
+
+do_stop() {
+  if ! is_running "$BACKEND_PID_FILE"; then
+    rm -f "$BACKEND_PID_FILE"
+    echo "未运行。"
+    return 0
+  fi
+  local pid
+  pid="$(cat "$BACKEND_PID_FILE")"
+  stop_children "$pid" TERM
+  kill "$pid" 2>/dev/null || true
+  for _ in {1..20}; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f "$BACKEND_PID_FILE"
+      echo "已停止。"
+      return 0
+    fi
+    sleep 0.2
+  done
+  stop_children "$pid" KILL
+  kill -9 "$pid" 2>/dev/null || true
+  rm -f "$BACKEND_PID_FILE"
+  echo "已强制停止。"
+}
+
+do_status() {
+  if is_running "$BACKEND_PID_FILE"; then
+    echo "进程: running, pid $(cat "$BACKEND_PID_FILE")"
+  else
+    echo "进程: stopped"
+  fi
+  if curl -fsS "http://127.0.0.1:${PORT}/api/health" 2>/dev/null; then
+    echo
+  else
+    echo "健康检查: 无响应 (http://127.0.0.1:${PORT}/api/health)"
+  fi
+  echo "日志: $BACKEND_LOG"
+}
+
+do_logs() {
+  tail -n 80 -f "$BACKEND_LOG"
+}
+
+do_update() {
+  echo "更新依赖并重新构建前端..."
+  ensure_backend_deps
+  (cd "$ROOT_DIR" && .venv/bin/python -m pip install -r requirements.txt)
+  (cd "$ROOT_DIR/frontend" && npm install && npm run build)
+
+  if is_running "$BACKEND_PID_FILE"; then
+    echo "检测到正在运行,重启..."
+    do_stop
+    do_start
+  else
+    echo "当前未运行,更新完成。运行 'scripts/app.sh start' 启动。"
+  fi
+}
+
+usage() {
+  echo "Usage: $0 {start|stop|status|logs|update}"
+  echo
+  echo "单进程部署模式:构建后仅需一个 uvicorn 进程(端口 \$PORT,默认 8000),"
+  echo "同时提供前端页面与 API。运行时文件在 data/app/。"
+}
+
+case "${1:-}" in
+  start)
+    do_start
+    ;;
+  stop)
+    do_stop
+    ;;
+  status)
+    do_status
+    ;;
+  logs)
+    do_logs
+    ;;
+  update)
+    do_update
+    ;;
+  "")
+    do_status
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

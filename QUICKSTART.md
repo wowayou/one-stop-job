@@ -1,23 +1,48 @@
 # 快速开始
 
-> 普通使用优先走 Windows 一键部署；改代码和调试时使用本地开发。两种模式默认使用不同数据库，不要同时启动。
+> 日常使用优先走单进程部署；改代码和调试时使用本地开发；Docker 作为备用方案。
+> 三种模式默认都用端口 `8000`(本地开发的前端另占 `5173`),**不要同时启动两种模式**。
 
 ---
 
-## 🚀 方式一：Windows 一键部署（普通使用）
+## 🚀 方式一：单进程部署（推荐，日常使用）
 
-前置条件：已安装并启动 Docker Desktop。
+适用于 Linux / WSL / macOS。构建一次前端产物后,后端直接挂载它并对外提供完整应用,全程只需要一个进程。
 
-1. 首次启动或代码更新后：双击 `rebuild_app.bat`。
-2. 以后日常启动：双击 `start_app.bat`。
-3. 健康检查通过后，浏览器会自动打开 `http://127.0.0.1:8000/`。
-4. 查看状态：双击 `status_app.bat`；停止：双击 `stop_app.bat`。
+### 前置条件
 
-如果浏览器没有自动打开，手动访问 `http://127.0.0.1:8000/`。首次构建需要下载依赖，耗时取决于网络；排障见 [docs/docker-optimization.md](docs/docker-optimization.md)。
+- Python 3.10+
+- Node.js 18+
+
+### 首次启动
+
+```bash
+scripts/app.sh start
+```
+
+首次运行会自动:创建虚拟环境并安装后端依赖 → 安装前端依赖 → 构建前端产物(`frontend/dist`)→ 启动后端。整个过程约 2-5 分钟,取决于网络。
+
+### 访问
+
+`http://127.0.0.1:8000/`
+
+### 日常操作
+
+```bash
+scripts/app.sh start   # 启动(已在运行则提示并跳过)
+scripts/app.sh status  # 查看进程与健康检查状态
+scripts/app.sh logs    # 跟踪日志(Ctrl+C 退出)
+scripts/app.sh stop    # 停止
+scripts/app.sh update  # 代码更新后：装依赖 + 重新构建前端 + 若在运行则重启
+```
+
+运行时文件(pid、日志)在 `data/app/`,与本地开发模式的 `data/dev/` 互不干扰,可各自独立启停,但**两者共用同一个数据库** `./data/job_one_stop/`,且都监听 `8000` 端口,所以不能同时启动。如果 `scripts/app.sh start` 报端口被占用,先确认没有本地开发后端或 Docker 容器在跑。
+
+首次配置 AI / Telegram 等可选能力,见 [docs/setup-checklist.md](docs/setup-checklist.md)。
 
 ---
 
-## 🛠️ 方式二：本地开发（推荐用于改代码）
+## 🛠️ 方式二：本地开发（改代码/调试）
 
 ### 前置条件
 
@@ -80,21 +105,34 @@ npm run dev
 
 **访问：** `http://127.0.0.1:5173`
 
+WSL/Linux/macOS 也可以用 `scripts/dev_wsl.sh start`(前后端一起起,日志在 `data/dev/`),用法见脚本内 `usage`。
+
 ### 停止
 
-按 `Ctrl+C` 停止两个终端即可。
+按 `Ctrl+C` 停止两个终端即可;用了 `scripts/dev_wsl.sh start` 则运行 `scripts/dev_wsl.sh stop`。
 
 ---
 
-## 🐳 方式三：Docker Compose 命令行（适合 Linux/macOS/WSL）
+## 🐳 方式三：Docker（备用方案）
 
-### 前置条件
+> 备用场景：Windows 上没有装 WSL,又不想手动装 Python/Node 环境时用一键脚本;或者需要环境完全隔离的部署。日常使用优先方式一。
 
-- Docker Desktop（Windows）或 Docker Engine（Linux）
+### Windows 一键脚本
 
-### 首次构建（约 3-5 分钟）
+前置条件：已安装并启动 Docker Desktop。
 
-**重要**：首次构建前配置镜像源，避免超时：
+1. 首次启动或代码更新后：双击 `rebuild_app.bat`。
+2. 以后日常启动：双击 `start_app.bat`。
+3. 健康检查通过后，浏览器会自动打开 `http://127.0.0.1:8000/`。
+4. 查看状态：双击 `status_app.bat`；停止：双击 `stop_app.bat`。
+
+如果浏览器没有自动打开，手动访问 `http://127.0.0.1:8000/`。首次构建需要下载依赖，耗时取决于网络；排障见 [docs/docker-optimization.md](docs/docker-optimization.md)。
+
+### Docker Compose 命令行（Linux/macOS/WSL）
+
+前置条件：Docker Desktop（Windows）或 Docker Engine（Linux）。
+
+首次构建前配置镜像源，避免超时：
 
 ```bash
 # 1. 复制配置模板
@@ -108,9 +146,7 @@ cp .env.template .env
 docker compose up -d --build
 ```
 
-**如果遇到 `Read timed out` 错误**：
-
-编辑 `.env`，尝试切换镜像源：
+**如果遇到 `Read timed out` 错误**：编辑 `.env`，尝试切换镜像源：
 
 ```bash
 # 方案 1: 清华镜像
@@ -128,19 +164,15 @@ docker compose up -d --build
 
 **详细构建优化**：见 [docs/docker-optimization.md](docs/docker-optimization.md)
 
-### 日常启动（秒级）
-
-**Linux/macOS/WSL：**
+**日常启动（秒级）：**
 
 ```bash
 docker compose up -d
 ```
 
-**Windows：** 优先使用文首的一键脚本。
-
 **访问：** `http://127.0.0.1:8000`
 
-### 停止
+**停止：**
 
 ```bash
 docker compose down
@@ -148,13 +180,15 @@ docker compose down
 # 或 Windows 双击：stop_app.bat
 ```
 
-### 查看日志
+**查看日志：**
 
 ```bash
 docker compose logs -f
 
 # 或 Windows 双击：run_backend.bat
 ```
+
+**FAQ：Docker 与本地数据库不互通吗？** 是的,默认不互通。本地(单进程部署 / 本地开发)使用 `./data/job_one_stop/job_one_stop.sqlite3`,Docker 使用独立 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库,但也意味着 Docker 试用期间录入的数据不会自动出现在单进程/本地开发模式里,反之亦然。迁移方法见 [docs/setup-checklist.md](docs/setup-checklist.md)。
 
 ---
 
@@ -201,16 +235,21 @@ ai:
   enabled: true
 ```
 
+### 更多可选配置（Telegram、个人上下文仓库等）
+
+见 [docs/setup-checklist.md](docs/setup-checklist.md)。
+
 ---
 
 ## 🔧 环境选择建议
 
 | 场景 | 推荐方式 | 原因 |
 |------|---------|------|
-| **日常开发/调试** | 本地开发 | 启动快、热更新、方便调试 |
-| **初次试用** | 本地开发 | 无需等待 Docker 构建 |
-| **多人协作/部署** | Docker | 环境一致、一键启动 |
-| **云端部署** | Docker | 标准化、易于管理 |
+| **日常使用** | 单进程部署 | 一条命令、一个进程、无需常驻两个终端 |
+| **日常开发/调试** | 本地开发 | 热更新、方便调试 |
+| **初次试用** | 单进程部署 或 本地开发 | 无需等待 Docker 构建 |
+| **Windows 无 WSL** | Docker（备用） | 一键脚本、无需手装 Python/Node |
+| **环境完全隔离部署** | Docker（备用） | 标准化、易于管理 |
 
 ---
 
@@ -250,11 +289,11 @@ PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple docker compose up -d --buil
 
 ### Q5: 数据库被锁 "database is locked"
 
-不要同时运行本地开发和 Docker。选择其中一种方式运行。
+不要同时运行多种模式。`scripts/app.sh`(单进程部署)、本地开发(`--reload` 后端 / `scripts/dev_wsl.sh`)和 Docker 三者选其一运行；单进程部署与本地开发还共用同一个 SQLite 文件,即使端口不同也不要同时启动。
 
-### Q6: 本地开发和 Docker 的数据互通吗？
+### Q6: 本地（单进程部署/本地开发）和 Docker 的数据互通吗？
 
-默认不互通。本地开发使用 `./data/job_one_stop/job_one_stop.sqlite3`，Docker 使用 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库。
+默认不互通。本地使用 `./data/job_one_stop/job_one_stop.sqlite3`，Docker 使用 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库。
 
 ### Q7: `No module named uvicorn`
 
@@ -283,3 +322,4 @@ python3 -m venv --clear .venv
 4. **生成冲刺包：** 点击顶栏「生成今日求职冲刺包」
 
 **详细使用流程：** 见 [docs/maintenance-guide.md](docs/maintenance-guide.md)
+**待补的个人配置清单：** 见 [docs/setup-checklist.md](docs/setup-checklist.md)

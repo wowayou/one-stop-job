@@ -103,6 +103,8 @@ cd frontend && npm install && npm run dev               # 前端 http://127.0.0.
 ```
 Windows 宿主机可用 `run_backend.bat` / `run_frontend.bat`。**不要混用宿主机与 WSL 的环境**:venv 必须在运行所在的系统里创建。`opencli`(BOSS 采集)是 Windows 工具;公众号 / beBee 等纯 Python 来源在 WSL 即可运行。
 
+日常使用(非改代码)优先单进程部署模式:`scripts/app.sh start`——构建一次 `frontend/dist` 后只跑 `uvicorn` 一个进程(:8000,前端由后端挂载),`stop`/`status`/`logs`/`update` 见脚本;与上面的开发模式共用 `./data/job_one_stop/` 数据库,两者不要同时启动。
+
 ---
 
 ## 7. 当前数据源
