@@ -114,6 +114,109 @@ def test_run_ingest_freeform_when_ai_enabled(monkeypatch):
     assert result["candidates"][0]["status"] == "pending"
 
 
+# ==================== 修复 1：AI 抽取异常不得被静默吞成「未识别」 ====================
+
+
+def test_run_ingest_ai_exception_surfaces_reason_without_leaking_key(monkeypatch):
+    """视觉/文本抽取抛异常时，run_ingest 必须把可读原因带出来，且不泄露密钥。"""
+    from backend.app.services import ai
+
+    def boom(text, image_data_url=None):
+        raise RuntimeError(
+            "model does not support image input; Authorization: Bearer sk-liveTESTKEY1234567890 rejected"
+        )
+
+    monkeypatch.setattr(ai, "extract_jobs_freeform", boom)
+
+    result = ingest.run_ingest(
+        "这是一段没有可识别链接的招聘正文，请帮忙识别岗位。",
+        wechat_cfg={"source_label": "公众号", "fetch": {}},
+        bebee_cfg={"source_label": "beBee"},
+        ai_enabled=True,
+    )
+
+    assert result["candidate_count"] == 0
+    assert result["ai_error"]
+    assert "RuntimeError" in result["ai_error"]
+    assert "sk-liveTESTKEY1234567890" not in result["ai_error"]
+    assert "Bearer [key]" in result["ai_error"] or "[key]" in result["ai_error"]
+    assert any("AI 抽取失败" in (item.get("error") or "") for item in result["sources_report"])
+
+
+def test_run_ingest_ai_disabled_has_no_ai_error():
+    """AI 未启用时是 needs_ai，不是 ai_error——两种「没候选」的原因不能混。"""
+    result = ingest.run_ingest(
+        "只是随便聊聊 https://example.com/foo",
+        wechat_cfg={"source_label": "公众号", "fetch": {}},
+        bebee_cfg={"source_label": "beBee"},
+        ai_enabled=False,
+    )
+    assert result["ai_error"] is None
+    assert result["needs_ai"] is True
+
+
+def test_run_ingest_ai_enabled_zero_candidates_has_no_ai_error(monkeypatch):
+    """AI 正常调用但没认出岗位：ai_error 必须是 None，不能被误判为调用失败。"""
+    from backend.app.services import ai
+
+    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None: [])
+    result = ingest.run_ingest(
+        "一段随便的文本，认不出岗位。",
+        wechat_cfg={"source_label": "公众号", "fetch": {}},
+        bebee_cfg={"source_label": "beBee"},
+        ai_enabled=True,
+    )
+    assert result["ai_error"] is None
+    assert result["candidate_count"] == 0
+
+
+# ==================== 修复 2：BOSS/智联链接给出针对性提示 ====================
+
+
+def test_run_ingest_flags_known_uncrawlable_link_hint():
+    result = ingest.run_ingest(
+        "内推一个岗位 https://www.zhipin.com/job_detail/abc123.html 感兴趣的看看",
+        wechat_cfg={"source_label": "公众号", "fetch": {}},
+        bebee_cfg={"source_label": "beBee"},
+        ai_enabled=False,
+    )
+    assert result["known_uncrawlable_hint"] is True
+    assert any("zhipin.com" in link for link in result["known_uncrawlable_links"])
+
+
+def test_run_ingest_zhipin_link_with_jd_text_still_extracts_normally(monkeypatch):
+    """zhipin 链接 + JD 文本同发：AI 抽取正常进行，不受链接识别影响。"""
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [
+            {"title": "资深BI工程师", "company_name": "示例科技", "salary_text": "20-30K", "city": "上海"}
+        ],
+    )
+    result = ingest.run_ingest(
+        "岗位详情 https://www.zhipin.com/job_detail/abc123.html\n"
+        "资深BI工程师 20-30K 上海 负责数据看板建设",
+        wechat_cfg={"source_label": "公众号", "fetch": {}},
+        bebee_cfg={"source_label": "beBee"},
+        ai_enabled=True,
+        manual_source="manual",
+    )
+    assert result["candidate_count"] >= 1
+    assert result["candidates"][0]["title"] == "资深BI工程师"
+    # 设计取舍：提示是否出现只看这一轮有没有 wechat/bebee 专用链接，与 AI 是否认出其它岗位无关——
+    # 即便正文里的 JD 被 AI 认出，zhipin 链接本身依旧抓不到，提示仍然有意义，因此这里应为 True。
+    assert result["known_uncrawlable_hint"] is True
+
+
+def test_classify_links_recognizes_zhipin_and_zhaopin():
+    classified = ingest.classify_links(
+        "https://www.zhipin.com/job_detail/abc.html 和 https://www.zhaopin.com/job/xyz.html"
+    )
+    assert len(classified["known_uncrawlable"]) == 2
+
+
 # ==================== HTTP：写聊天不写 Job；commit 才入库 ====================
 
 
@@ -200,6 +303,127 @@ def test_commit_empty_indexes_skips_all(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_ingest_endpoint_surfaces_ai_failure_reason_distinct_from_unmatched(monkeypatch, tmp_path):
+    """修复 1：AI 已配置但调用失败时，聊天消息必须明确说「AI 抽取失败」，不能和「未认出」混在一起，
+    也不能泄露密钥或裸 traceback；AI 正常返回 0 候选时仍是原来的「未认出」文案。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-liveTESTKEY1234567890")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-ai-fail-http.sqlite3")
+    from backend.app.services import ai
+
+    def boom(text, image_data_url=None):
+        raise RuntimeError("vision model rejected request (key=sk-liveTESTKEY1234567890)")
+
+    monkeypatch.setattr(ai, "extract_jobs_freeform", boom)
+
+    async def scenario():
+        async for client in _client(main.app):
+            resp = await client.post(
+                "/api/ingest",
+                json={"image_data_url": "data:image/png;base64,iVBORw0KGgo="},
+            )
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            content = payload["assistant_message"]["content"]
+            assert "AI 抽取失败" in content
+            assert "sk-liveTESTKEY1234567890" not in content
+            assert "Traceback" not in content
+            assert payload["assistant_message"]["metadata_json"]["ai_error"]
+            assert payload["candidate_count"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_ingest_endpoint_unmatched_text_still_says_not_recognized(monkeypatch, tmp_path):
+    """AI 正常调用（未抛异常）但没识别出岗位时，回执必须仍是原来的「未认出」文案，不能被误判成 AI 失败。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-unmatched-http.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None: [])
+
+    async def scenario():
+        async for client in _client(main.app):
+            resp = await client.post("/api/ingest", json={"text": "随便聊聊，没有岗位信息"})
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            content = payload["assistant_message"]["content"]
+            assert "未从链接、文本或截图中认出岗位" in content
+            assert "AI 抽取失败" not in content
+
+    asyncio.run(scenario())
+
+
+def test_ingest_endpoint_zhipin_link_hint_appended(monkeypatch, tmp_path):
+    """修复 2：只发 zhipin 链接时，回执要额外提示改发文本/截图。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-zhipin-http.sqlite3")
+
+    async def scenario():
+        async for client in _client(main.app):
+            resp = await client.post(
+                "/api/ingest",
+                json={"text": "帮忙看看这个 https://www.zhipin.com/job_detail/abc123.html"},
+            )
+            assert resp.status_code == 200, resp.text
+            content = resp.json()["assistant_message"]["content"]
+            assert "BOSS/智联" in content
+            assert "风控" in content
+
+    asyncio.run(scenario())
+
+
+def test_ingest_endpoint_flags_existing_job_and_commit_reuses_job(monkeypatch, tmp_path):
+    """修复 3：候选命中岗位池里已有岗位时打 existing_job_id；勾选提交只应合并，不新建 Job。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-existing-job.sqlite3")
+    from backend.app.services import ai
+    from backend.app.models import Job
+    from sqlmodel import select
+
+    async def scenario():
+        async for client in _client(main.app):
+            created = await client.post(
+                "/api/jobs",
+                json={"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"},
+            )
+            assert created.status_code == 200, created.text
+            existing_job_id = created.json()["id"]
+
+            monkeypatch.setattr(
+                ai,
+                "extract_jobs_freeform",
+                lambda text, image_data_url=None: [
+                    {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海", "salary_text": "25-35K"}
+                ],
+            )
+            resp = await client.post("/api/ingest", json={"text": "看看这个岗位靠不靠谱"})
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            assert payload["candidate_count"] >= 1
+            candidate = payload["assistant_message"]["metadata_json"]["candidates"][0]
+            assert candidate["existing_job_id"] == existing_job_id
+
+            with db.Session(db.engine) as session:
+                assert len(session.exec(select(Job)).all()) == 1
+
+            thread_id = payload["thread"]["id"]
+            assistant_id = payload["assistant_message"]["id"]
+            commit = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": [0]},
+            )
+            assert commit.status_code == 200, commit.text
+            body = commit.json()
+            assert body["created"] == 0
+            assert body["updated"] >= 1
+
+            with db.Session(db.engine) as session:
+                jobs = session.exec(select(Job)).all()
+                assert len(jobs) == 1
+                assert jobs[0].id == existing_job_id
+
+    asyncio.run(scenario())
+
+
 # ==================== Telegram ====================
 
 
@@ -225,6 +449,89 @@ def test_summarize_ingest_pending_not_committed():
     msg = telegram.summarize_ingest({"candidate_count": 2, "unmatched": False})
     assert "候选" in msg
     assert "未入库" in msg or "确认" in msg
+
+
+def test_summarize_ingest_ai_failure_distinct_from_other_states():
+    """修复 1：三种「没有候选」的原因必须能区分——AI 失败 / AI 未启用 / 正常没认出。"""
+    failed = telegram.summarize_ingest({"candidate_count": 0, "unmatched": True, "ai_error": "RuntimeError：连接超时"})
+    assert "AI 抽取失败" in failed
+    assert "RuntimeError" in failed
+
+    disabled = telegram.summarize_ingest({"candidate_count": 0, "unmatched": True, "needs_ai": True})
+    assert "未启用" in disabled
+    assert "AI 抽取失败" not in disabled
+
+    not_found = telegram.summarize_ingest({"candidate_count": 0, "unmatched": True})
+    assert "未从链接、文本或截图中认出岗位" in not_found
+    assert "AI 抽取失败" not in not_found
+    assert "未启用" not in not_found
+
+
+def test_summarize_ingest_appends_uncrawlable_hint():
+    msg = telegram.summarize_ingest({"candidate_count": 0, "unmatched": True, "known_uncrawlable_hint": True})
+    assert "BOSS/智联" in msg
+    assert "风控" in msg
+
+
+def test_summarize_ingest_reports_existing_job_count():
+    msg = telegram.summarize_ingest(
+        {
+            "candidate_count": 2,
+            "unmatched": False,
+            "candidates": [{"existing_job_id": 7}, {"existing_job_id": None}],
+        }
+    )
+    assert "已在岗位池" in msg
+    assert "1" in msg
+
+
+def test_poll_loop_start_command_sends_usage_and_skips_ingest(monkeypatch, tmp_path):
+    """修复 5：/start 直接回使用说明，不建 ingest 线程。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-start.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [[{"update_id": 30, "message": {"chat": {"id": 42}, "text": "/start"}}]]
+    calls = {"sent": [], "persisted": []}
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    def fail_persist(*args, **kwargs):
+        calls["persisted"].append(True)
+        raise AssertionError("/start 不应触发 ingest 落盘")
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: calls["sent"].append((chat_id, text)))
+    monkeypatch.setattr(main, "_persist_ingest_to_chat", fail_persist)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+
+    assert calls["persisted"] == []
+    assert len(calls["sent"]) == 1
+    assert calls["sent"][0][0] == 42
+    reply_text = calls["sent"][0][1]
+    assert "链接" in reply_text and "截图" in reply_text
+
+    from backend.app.models import ChatThread
+    from sqlmodel import select
+
+    with db.Session(db.engine) as session:
+        assert session.exec(select(ChatThread)).first() is None
 
 
 def test_poll_loop_persists_chat_not_jobs(monkeypatch, tmp_path):
@@ -294,6 +601,50 @@ def test_download_photo_data_url_builds_data_url(monkeypatch):
     data_url = telegram.download_photo_data_url("tok", "fid")
     assert data_url == "data:image/jpeg;base64," + base64.b64encode(b"\xff\xd8\xff").decode()
     assert any("getFile" in u for u in calls["urls"])
+
+
+# ==================== 修复 4：线程标题压缩空白 / 剔除 URL / 截断 ====================
+
+
+def test_ingest_thread_title_truncates_long_text():
+    import backend.app.main as main
+
+    text = "这是一段很长很长很长很长很长很长很长很长很长的招聘正文，超过二十四个字就应该被截断加省略号"
+    title = main._ingest_thread_title(text, has_image=False)
+    assert title.startswith("入库候选 · ")
+    snippet = title.removeprefix("入库候选 · ")
+    assert snippet.endswith("…")
+    assert len(snippet) == 25  # 24 字 + 省略号
+
+
+def test_ingest_thread_title_strips_urls_and_collapses_whitespace():
+    import backend.app.main as main
+
+    text = "  看看这个 \n\n https://mp.weixin.qq.com/s/AbC123   岗位怎么样  "
+    title = main._ingest_thread_title(text, has_image=False)
+    assert "https://" not in title
+    assert title == "入库候选 · 看看这个 岗位怎么样"
+
+
+def test_ingest_thread_title_falls_back_to_timestamp_when_all_urls():
+    import backend.app.main as main
+    from datetime import datetime, timezone
+
+    text = "https://www.zhipin.com/job_detail/abc123.html"
+    before = datetime.now(timezone.utc)
+    title = main._ingest_thread_title(text, has_image=False)
+    after = datetime.now(timezone.utc)
+    assert "https://" not in title
+    assert title.startswith("入库候选 · ")
+    stamp = title.removeprefix("入库候选 · ")
+    # 时间戳兜底格式 MMDD HH:MM；只校验落在测试执行的分钟窗口内，容忍跨分钟边界的极小概率抖动。
+    assert stamp in {before.strftime("%m%d %H:%M"), after.strftime("%m%d %H:%M")}
+
+
+def test_ingest_thread_title_pure_image_no_text():
+    import backend.app.main as main
+
+    assert main._ingest_thread_title("", has_image=True) == "入库候选 · 截图入库"
 
 
 # ==================== 路径自检 ====================

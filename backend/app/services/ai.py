@@ -187,7 +187,11 @@ def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -
     """把一段自由文本和/或一张截图抽成岗位 dict 列表（键与 normalizer 兼容）。
 
     text 与 image_data_url 至少给一个；两者都给时一起送模型（文本 + 图像）。
-    不可用（无 key）/无输入/调用或解析失败时返回 []，由调用方回退（不抛异常）。
+    不可用（无 key）/无输入时返回 []；模型正常返回但解析不出岗位时也返回 []。
+
+    **调用异常不在此吞掉**：网络/鉴权/模型不支持图片输入等失败会原样向上抛出，
+    由调用方（`ingest.run_ingest`）捕获并转成可读原因写回用户，避免「AI 已配置但
+    调用失败」被静默呈现成「未识别到岗位」（CLAUDE.md 红线：不静默丢数据/不误导用户）。
     """
     if not is_ai_available():
         return []
@@ -204,17 +208,44 @@ def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -
     else:
         user_content = user_text
 
-    try:
-        content = _chat(_client(), _FREEFORM_SYSTEM, user_content)
-    except Exception:
-        logger.warning("AI 自由文本/截图抽取失败", exc_info=True)
-        return []
+    content = _chat(_client(), _FREEFORM_SYSTEM, user_content)
 
     out: list[dict] = []
     for job in _parse_jobs(content):
         if str(job.get("title") or "").strip():
             out.append(job)
     return out
+
+
+_SENSITIVE_INLINE_PATTERNS = [
+    (re.compile(r"sk-[A-Za-z0-9_-]{6,}"), "[key]"),
+    (re.compile(r"Bearer\s+\S+", re.IGNORECASE), "Bearer [key]"),
+    (re.compile(r"(api[_-]?key\S*[:=]\s*)\S+", re.IGNORECASE), r"\1[key]"),
+]
+
+
+def _redact(message: str) -> str:
+    """粗粒度脱敏：把消息里长得像密钥 / Authorization 头的子串替换掉。
+
+    SDK 异常的 message 里偶尔会带上请求头或 URL query，里面可能含 OPENAI_API_KEY；
+    在写进聊天/回执前统一过一遍，绝不把裸密钥吐给用户可见的文案。
+    """
+    redacted = message
+    for pattern, replacement in _SENSITIVE_INLINE_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
+
+
+def describe_extraction_error(exc: Exception) -> str:
+    """把抽取异常转成简短、脱敏的原因文案：异常类型 + message 前 ~120 字。
+
+    供 ingest 结果 / Telegram 回执展示；不含裸 traceback，也不含密钥。
+    """
+    name = type(exc).__name__
+    message = _redact(str(exc) or "").strip()
+    if len(message) > 120:
+        message = message[:120].rstrip() + "…"
+    return f"{name}：{message}" if message else name
 
 
 # ==================== 面试材料按 JD 定制（可选 AI） ====================

@@ -41,6 +41,19 @@ def source_links_map(session: Session, job_ids: list[int]) -> dict[int, list[Job
     return grouped
 
 
+def job_ids_by_canonical_key(session: Session, keys: list[str | None]) -> dict[str, int]:
+    """按 canonical_key 批量查已入库岗位 id；用于 ingest 候选标注「已在岗位池」，只读不写。"""
+    unique_keys = list({key for key in keys if key})
+    if not unique_keys:
+        return {}
+    rows = session.exec(select(Job.id, Job.canonical_key).where(Job.canonical_key.in_(unique_keys))).all()
+    result: dict[str, int] = {}
+    for job_id, key in rows:
+        if key and job_id is not None:
+            result.setdefault(key, job_id)
+    return result
+
+
 def company_map(session: Session, company_ids: list[int]) -> dict[int, Company]:
     if not company_ids:
         return {}

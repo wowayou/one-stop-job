@@ -1949,7 +1949,7 @@ function ChatView({
         {activeThread ? (
           <>
             <header className="chat-head">
-              <div>
+              <div className="chat-head-info">
                 <div className="chat-title-line">
                   <span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : activeThread.kind === "ingest" ? "入库候选" : "通用聊天"}</span>
                   {renaming ? (
@@ -2183,7 +2183,8 @@ function CandidateListCard({
   onError: (message: string) => void;
 }) {
   const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
-  const [selected, setSelected] = useState<number[]>(pendingIndexes);
+  // 已在岗位池的候选默认不勾选（避免误触重复合并），但仍保留在待处理列表里，用户可主动勾上。
+  const [selected, setSelected] = useState<number[]>(pendingIndexes.filter((i) => !candidates[i]?.existing_job_id));
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
 
@@ -2201,7 +2202,8 @@ function CandidateListCard({
       });
       onUpdated(reply.assistant_message);
       const next = reply.assistant_message.metadata_json?.candidates ?? [];
-      setSelected(next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0));
+      const nextPending = next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
+      setSelected(nextPending.filter((i) => !next[i]?.existing_job_id));
     } catch (err) {
       onError(errorMessage(err, "入库失败"));
     } finally {
@@ -2248,7 +2250,14 @@ function CandidateListCard({
                   onChange={() => toggle(index)}
                 />
                 <span className="candidate-body">
-                  <strong>{item.title || "未命名岗位"}</strong>
+                  <span className="candidate-title-row">
+                    <strong>{item.title || "未命名岗位"}</strong>
+                    {item.existing_job_id != null && (
+                      <span className="candidate-existing-badge" title={`已在岗位池 · #${item.existing_job_id}`}>
+                        已在岗位池
+                      </span>
+                    )}
+                  </span>
                   <small>
                     {[item.company_name, item.salary_text, [item.city, item.area].filter(Boolean).join(" · "), item.source]
                       .filter(Boolean)

@@ -209,6 +209,8 @@ export type IngestCandidate = {
   job_id?: number | null;
   description?: string | null;
   board_written?: boolean;
+  /** 命中岗位池里已有岗位的 canonical_key 时后端会带上；仅用于展示，提交时会被后端剔除。 */
+  existing_job_id?: number | null;
 };
 
 export type ContextRepoStatus = {

@@ -2176,6 +2176,14 @@ meter {
   background: #fff;
 }
 
+/* .chat-head 是 flex 容器；这个包裹 div 是它的直接 flex item，不加 min-width:0 时
+   浏览器按内容自动最小宽度撑开，长标题会顶破整个聊天头部（连带把 .chat-main 挤宽），
+   下游的 .chat-title-line/h2 即使自己设了 ellipsis 也救不了——必须每一层 flex item 都断链。 */
+.chat-head-info {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
 .chat-head h2,
 .chat-head p,
 .chat-welcome h3,
@@ -2481,8 +2489,25 @@ meter {
   min-width: 0;
 }
 
+.candidate-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .candidate-body strong {
   font-size: 14px;
+}
+
+.candidate-existing-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #eef1ee;
+  color: #566259;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
 }
 
 .candidate-body small,

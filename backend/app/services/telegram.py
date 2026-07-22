@@ -113,13 +113,37 @@ def download_photo_data_url(token: str, file_id: str) -> str | None:
 
 
 def summarize_ingest(result: dict) -> str:
-    """把 ingest→聊天 的结果转成机主回执。默认不入库，只提示去 Web 确认。"""
+    """把 ingest→聊天 的结果转成机主回执。默认不入库，只提示去 Web 确认。
+
+    三种「没有可入库候选」的原因必须能区分开，否则「AI 已配置但调用失败」会被误读成
+    「AI 未启用」或「内容认不出岗位」：
+    - AI 调用异常（ai_error 非空）→ 明确说“调用失败”，不是「未认出」。
+    - AI 未启用（needs_ai）→ 明确说「未启用」，提示去配置。
+    - 前两种都不是 → 才是「规则/AI 都跑了，确实没认出岗位」。
+    """
     n = int(result.get("candidate_count") or 0)
+    candidates = result.get("candidates") or []
+    existing = sum(1 for c in candidates if isinstance(c, dict) and c.get("existing_job_id"))
+    ai_error = result.get("ai_error")
+
+    parts: list[str] = []
     if n > 0:
-        return (
+        parts.append(
             f"识别到 {n} 个候选岗位，已写入本地聊天（未入库）。"
             "打开 Web「聊天」勾选要入库的项；原文和截图已保留。"
         )
-    if result.get("needs_ai"):
-        return "未认出可抓取链接，且 AI 未启用，无法从文本/截图抽取。原料已保留；启用 AI 后可重发。"
-    return "未从链接、文本或截图中认出岗位。原料已保留，可补充更完整的 JD 或更清晰的截图后重发。"
+        if existing:
+            parts.append(f"其中 {existing} 个已在岗位池。")
+    elif ai_error:
+        parts.append(f"AI 抽取失败：{ai_error}。若发送的是截图，请确认所配模型支持图片输入（OPENAI_MODEL）。原料已保留。")
+    elif result.get("needs_ai"):
+        parts.append("未认出可抓取链接，且 AI 未启用，无法从文本/截图抽取。原料已保留；启用 AI 后可重发。")
+    else:
+        parts.append("未从链接、文本或截图中认出岗位。原料已保留，可补充更完整的 JD 或更清晰的截图后重发。")
+
+    if result.get("known_uncrawlable_hint"):
+        parts.append(
+            "检测到 BOSS/智联链接：该平台受风控无法直接抓取公开页，"
+            "请复制 JD 文本或随手发一张截图（可与链接同一条消息）。链接已随原料保留。"
+        )
+    return " ".join(parts)

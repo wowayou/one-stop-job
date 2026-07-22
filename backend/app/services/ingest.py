@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 from sqlmodel import Session
 
@@ -22,12 +23,39 @@ from .scoring import score_job
 
 logger = logging.getLogger(__name__)
 
+# BOSS 直聘 / 智联：识别到但受风控无法直接抓取的招聘站域名（CLAUDE.md §3.3 红线：不破解风控）。
+# 这里只做“识别 + 提示用户改发文本/截图”，绝不为它们新建采集器或发起请求。
+_KNOWN_UNCRAWLABLE_LINK_RE = re.compile(
+    r"https?://(?:[a-z0-9-]+\.)*(?:zhipin|zhaopin)\.com(?:/[^\s\)\]\}\"'<>，。、；;）】]*)?",
+    re.IGNORECASE,
+)
+_TRAILING_PUNCT = "）)】」』,，。.;；、!！?？\"'>》"
+
+
+def extract_known_uncrawlable_links(blob: str) -> list[str]:
+    """识别 BOSS(zhipin.com)/智联(zhaopin.com)链接：只用于回执提示，不抓取、不去重跨来源。"""
+    if not blob:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in _KNOWN_UNCRAWLABLE_LINK_RE.findall(blob):
+        cleaned = raw.rstrip(_TRAILING_PUNCT)
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            out.append(cleaned)
+    return out
+
 
 def classify_links(text: str) -> dict[str, list[str]]:
-    """把一段文本里的链接按来源归类。返回 {"wechat": [...], "bebee": [...]}。"""
+    """把一段文本里的链接按来源归类。
+
+    返回 {"wechat": [...], "bebee": [...], "known_uncrawlable": [...]}；
+    `known_uncrawlable` 是识别到但受风控无法直接抓取的招聘站链接（如 BOSS/智联），仅用于回执提示。
+    """
     return {
         "wechat": wechat.extract_mp_links(text),
         "bebee": bebee.extract_bebee_links(text),
+        "known_uncrawlable": extract_known_uncrawlable_links(text),
     }
 
 
@@ -98,7 +126,9 @@ def run_ingest(
     {
       candidates: [normalized_dict + status=pending ...],
       sources_report: [{source, jobs, skipped, error?}],
-      links_total, unmatched, needs_ai
+      links_total, unmatched, needs_ai,
+      ai_error: AI 调用异常时的简短原因（None 表示没失败）,
+      known_uncrawlable_links / known_uncrawlable_hint: 识别到的 BOSS/智联链接与是否需要提示,
     }
     """
     text = text or ""
@@ -107,6 +137,7 @@ def run_ingest(
     candidates: list[dict] = []
     sources_report: list[dict] = []
     seen_external: set[str] = set()
+    ai_error: str | None = None
 
     def _append_records(source_label: str, records: list[dict], report: dict) -> None:
         added = 0
@@ -153,14 +184,16 @@ def run_ingest(
     residual = _residual_text(text, classified)
     needs_ai = bool((residual or image_data_url) and not ai_enabled)
     if (residual or image_data_url) and ai_enabled:
-        from .ai import extract_jobs_freeform
+        from .ai import describe_extraction_error, extract_jobs_freeform
 
         try:
             raw_jobs = extract_jobs_freeform(residual, image_data_url)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 异常本身已在 ai.py 内不吞，这里是唯一捕获点
             logger.warning("freeform 抽取失败", exc_info=True)
             raw_jobs = []
-            report = {"skipped": [{"url": None, "reason": "AI 抽取失败"}], "error": "AI 抽取失败"}
+            ai_error = describe_extraction_error(exc)
+            reason = f"AI 抽取失败：{ai_error}"
+            report = {"skipped": [{"url": None, "reason": reason}], "error": reason}
         else:
             report = {"skipped": []} if raw_jobs else {"skipped": [{"url": None, "reason": "AI 未从文本/截图中认出岗位"}]}
         records = []
@@ -170,6 +203,11 @@ def run_ingest(
             records.append(normalize_record(raw, source=manual_source))
         _append_records(manual_source, records, report)
 
+    known_uncrawlable_links = classified.get("known_uncrawlable") or []
+    # “本次无其它可抓链接”＝这一轮没有识别到 wechat/bebee 专用采集器能处理的链接；
+    # 与 AI 是否成功抽取到候选无关——即便正文里另有 JD 文本被 AI 认出，BOSS/智联链接本身依旧没法抓，提示仍然有意义。
+    known_uncrawlable_hint = bool(known_uncrawlable_links) and not classified["wechat"] and not classified["bebee"]
+
     return {
         "candidates": candidates,
         "sources_report": sources_report,
@@ -177,4 +215,7 @@ def run_ingest(
         "candidate_count": len(candidates),
         "unmatched": len(candidates) == 0,
         "needs_ai": needs_ai and len(candidates) == 0,
+        "ai_error": ai_error,
+        "known_uncrawlable_links": known_uncrawlable_links,
+        "known_uncrawlable_hint": known_uncrawlable_hint,
     }

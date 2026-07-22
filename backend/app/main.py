@@ -85,7 +85,15 @@ from .services.exporter import (
 from .services.followup import find_stale_jobs
 from .services.importer import get_or_create_company, upsert_job_record, upsert_job_records, upsert_job_records_with_ids
 from .services.ingest import run_ingest, score_job_ids
-from .services.jobs import company_map, job_payload, latest_prep_map, latest_score_map, research_items_map, source_links_map
+from .services.jobs import (
+    company_map,
+    job_ids_by_canonical_key,
+    job_payload,
+    latest_prep_map,
+    latest_score_map,
+    research_items_map,
+    source_links_map,
+)
 from .services.normalizer import canonical_job_key, normalize_record, parse_recruiter, parse_salary
 from .services.prep import build_interview_prep
 from .services.scoring import DEFAULT_WEIGHTS, score_job
@@ -146,6 +154,16 @@ async def _telegram_poll_loop() -> None:
             offset = int(update.get("update_id", 0)) + 1
             chat_id, text, photo_file_id = telegram.extract_message(update)
             if chat_id != allowed_chat_id:
+                continue
+            if text.strip() == "/start":
+                # 使用说明：不建 ingest 线程，只回一条本机→本人的操作提示（§2 机主回执豁免）。
+                await run_in_threadpool(
+                    telegram.send_message,
+                    token,
+                    chat_id,
+                    "发送岗位链接、复制的 JD 文本或一张招聘截图即可；BOSS/智联链接请配上文本或截图。"
+                    "识别结果需在 Web 聊天确认后才入库。",
+                )
                 continue
             image_data_url: str | None = None
             if photo_file_id:
@@ -1656,6 +1674,29 @@ async def collect_wechat(payload: WeChatCollectRequest, session: SessionDep) -> 
     return _run_wechat_collection(session, links, bodies, source_label)
 
 
+def _ingest_thread_title(text: str, has_image: bool) -> str:
+    """压缩空白、剔除 URL 后取前 24 字生成线程标题；全是链接/空文本时回退到可辨识占位。
+
+    原文可能是几百字的招聘文案或裸链接；不截断会把整段文字怼进线程标题，在聊天头部
+    （`.chat-head` / 侧栏 `.chat-thread`）撑出超宽内容，真机上表现为标题被撑破、
+    聊天区出现异常留白（前端另配 CSS 截断兜底，见 styles.css）。
+    """
+    collapsed = re.sub(r"\s+", " ", text or "").strip()
+    without_urls = re.sub(r"https?://\S+", "", collapsed)
+    without_urls = re.sub(r"\s+", " ", without_urls).strip()
+    if without_urls:
+        snippet = without_urls[:24]
+        if len(without_urls) > 24:
+            snippet += "…"
+        return f"入库候选 · {snippet}"
+    if collapsed:
+        # 原文非空但全是链接：没有可读文字可截取，用时间戳兜底，避免标题变成裸链接或空字符串。
+        return f"入库候选 · {utc_now().strftime('%m%d %H:%M')}"
+    if has_image:
+        return "入库候选 · 截图入库"
+    return "入库候选"
+
+
 def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: str | None = None) -> dict:
     """抽取候选 → 写入 kind=ingest 聊天线程（**不写 Job 表**）。HTTP 与 Telegram 共用。
 
@@ -1675,8 +1716,16 @@ def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: 
         manual_source=str(settings.ingest_config.get("manual_source") or "manual"),
     )
 
-    title_src = text.replace("\n", " ").strip() or ("截图入库" if image_data_url else "入库候选")
-    title = f"入库候选 · {title_src}"[:120]
+    candidates = extract["candidates"]
+    # 只读标注：命中已入库岗位的 canonical_key 就打上 existing_job_id，供前端标「已在岗位池」
+    # 并默认不勾选；仍允许勾选提交（commit 端点走 importer 合并已有记录，不重复建 Job，这里只读不写）。
+    existing_by_key = job_ids_by_canonical_key(session, [c.get("canonical_key") for c in candidates])
+    for candidate in candidates:
+        key = candidate.get("canonical_key")
+        if key and key in existing_by_key:
+            candidate["existing_job_id"] = existing_by_key[key]
+
+    title = _ingest_thread_title(text, bool(image_data_url))
     thread = ChatThread(kind="ingest", job_id=None, title=title)
     session.add(thread)
     session.commit()
@@ -1693,23 +1742,38 @@ def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: 
     session.add(user_message)
 
     n = extract["candidate_count"]
+    ai_error = extract.get("ai_error")
     if n:
         assistant_text = f"识别到 {n} 个候选岗位。请在下方勾选要入库的项；原文和截图已保留在本对话。"
+    elif ai_error:
+        # AI 已启用且理应能连通，但本次调用真的失败了：必须跟「AI 未启用」「AI 正常但没识别出岗位」区分开，
+        # 否则用户只会看到「未认出」，误以为是内容问题而反复重试（真实场景常是模型不支持图片输入）。
+        assistant_text = f"AI 抽取失败：{ai_error}。若发送的是截图，请确认所配模型支持图片输入（OPENAI_MODEL）。原料已保留。"
     elif extract.get("needs_ai"):
         assistant_text = "未认出可抓取链接，且 AI 未启用，无法从文本/截图抽取岗位。原料已保留；启用 AI 后可重发。"
     else:
         assistant_text = "未从链接、文本或截图中认出岗位。原料已保留，可补充更完整的 JD 或更清晰的截图后重发。"
+
+    if extract.get("known_uncrawlable_hint"):
+        assistant_text += (
+            "\n检测到 BOSS/智联链接：该平台受风控无法直接抓取公开页，"
+            "请复制 JD 文本或随手发一张截图（可与链接同一条消息）。链接已随原料保留。"
+        )
 
     assistant_message = ChatMessage(
         thread_id=thread.id or 0,
         role="assistant",
         content=assistant_text,
         metadata_json={
-            "candidates": extract["candidates"],
+            "candidates": candidates,
             "sources_report": extract["sources_report"],
             "unmatched": extract["unmatched"],
             "needs_ai": extract.get("needs_ai", False),
-            "run_status": "rules_only" if not ai_enabled else ("completed" if n else "fallback"),
+            "ai_error": ai_error,
+            "known_uncrawlable_hint": extract.get("known_uncrawlable_hint", False),
+            "run_status": (
+                "rules_only" if not ai_enabled else "ai_failed" if ai_error else "completed" if n else "fallback"
+            ),
         },
     )
     session.add(assistant_message)
@@ -1727,8 +1791,10 @@ def _persist_ingest_to_chat(session: Session, text: str | None, image_data_url: 
         "candidate_count": n,
         "unmatched": extract["unmatched"],
         "needs_ai": extract.get("needs_ai", False),
+        "ai_error": ai_error,
+        "known_uncrawlable_hint": extract.get("known_uncrawlable_hint", False),
         "sources_report": extract["sources_report"],
-        "candidates": extract["candidates"],
+        "candidates": candidates,
     }
 
 
@@ -1786,7 +1852,8 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
         item = candidates[idx]
         if item.get("status") == "committed" and item.get("job_id"):
             continue
-        record = {k: v for k, v in item.items() if k not in {"status", "job_id"}}
+        # existing_job_id 只是「已在岗位池」的只读标注，不是 Job 表字段，upsert 前必须剔除。
+        record = {k: v for k, v in item.items() if k not in {"status", "job_id", "existing_job_id"}}
         to_upsert.append(record)
         selected_positions.append(idx)
 
