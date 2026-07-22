@@ -14,6 +14,9 @@ body,
 
 * {
   box-sizing: border-box;
+  /* Firefox 滚动条：细条 + 灰绿 thumb，配色和下面 webkit 版本用同一对颜色。 */
+  scrollbar-width: thin;
+  scrollbar-color: #d8ded8 transparent;
 }
 
 body {
@@ -21,6 +24,33 @@ body {
   min-width: 320px;
   overflow: hidden;
   overscroll-behavior: none;
+}
+
+/* 全局滚动条（webkit）：Windows Chrome 默认样式带上下箭头、方角，和页面风格脱节。
+   统一收成 8px 细条、圆角 thumb，配色取页面里已有的灰绿中性色（边框 #d8ded8 / 次要文字
+   #8a978e），不引入新色相；track 透明，箭头按钮直接清零尺寸去掉。 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #d8ded8;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8a978e;
+}
+
+::-webkit-scrollbar-button {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 button,
@@ -44,26 +74,37 @@ button:disabled,
   pointer-events: none;
 }
 
+/* 侧边栏折叠是唯一的「签名动作」：rail 宽度用一个注册过语法的自定义属性驱动 grid 列宽。
+   直接 `transition: grid-template-columns` 在混合轨道（定长 + minmax(0,1fr)）下各浏览器插值
+   支持不一致，实测会瞬间跳变；把宽度收进一个 `<length>` 自定义属性再过渡这个属性本身，
+   grid-template-columns 每帧读到的都是插值后的中间值，宽度变化因此必然平滑。 */
+@property --sidebar-w {
+  syntax: "<length>";
+  inherits: true;
+  initial-value: 248px;
+}
+
 .app-shell {
   display: grid;
-  grid-template-columns: 248px minmax(0, 1fr);
+  --sidebar-w: 248px;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
-  transition: grid-template-columns 0.18s ease;
+  transition: --sidebar-w 0.2s ease-out;
 }
 
 .app-shell.sidebar-collapsed {
-  grid-template-columns: 76px minmax(0, 1fr);
+  --sidebar-w: 76px;
 }
 
 .app-shell.chat-active {
-  grid-template-columns: 208px minmax(0, 1fr);
+  --sidebar-w: 208px;
 }
 
 .app-shell.chat-active.sidebar-collapsed {
-  grid-template-columns: 76px minmax(0, 1fr);
+  --sidebar-w: 76px;
 }
 
 .sidebar {
@@ -77,6 +118,7 @@ button:disabled,
   scrollbar-gutter: stable;
   background: #17201b;
   color: #f8faf7;
+  transition: gap 0.2s ease-out, padding 0.2s ease-out;
 }
 
 .brand {
@@ -105,6 +147,10 @@ button:disabled,
 
 .brand-copy {
   min-width: 0;
+  max-width: 160px;
+  opacity: 1;
+  overflow: hidden;
+  transition: opacity 0.2s ease-out, max-width 0.2s ease-out;
 }
 
 .brand span,
@@ -143,8 +189,17 @@ nav {
   width: 100%;
   min-height: 42px;
   padding: 0 12px;
+  /* 图标和标签的间距挪到 .nav-label 自己的 margin-left 上（见下）而不是这里的 gap：
+     gap 在 flex 子项之间是固定值，就算标签宽度收到 0 也不会跟着让出来，图标会被
+     那截残留间距顶得偏移。折叠时只让 margin-left 一起过渡到 0，图标位置才真正不动。
+     水平内边距在折叠态改成 17px（覆盖下面 .sidebar-collapsed .nav-item），让 18px 图标
+     刚好占满内容区、天然居中——不再靠不可过渡的 justify-content 翻转来强行居中，图标
+     全程只是随 padding 平滑挪动，不会有瞬间跳变。这个 17px 和图标 size=18 是配套的，
+     改图标尺寸时要一起调（(52 - 图标宽) / 2，52 = 折叠后 rail 76px 减侧栏左右内边距 24px）。 */
+  gap: 0;
   background: transparent;
   color: #dce3df;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, padding 0.2s ease-out;
 }
 
 .nav-item.active,
@@ -155,9 +210,13 @@ nav {
 
 .nav-label {
   min-width: 0;
+  max-width: 160px;
+  margin-left: 8px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  opacity: 1;
+  transition: opacity 0.2s ease-out, max-width 0.2s ease-out, margin-left 0.2s ease-out;
 }
 
 .sidebar-toggle {
@@ -190,10 +249,24 @@ nav {
   gap: 10px;
 }
 
+/* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
+   宽度还要再花 ~200ms 才收完，中间那几帧就是一个「宽壳子、空内容」的闪帧。改成和宽度
+   同一个 200ms ease-out 一起收缩到 0（opacity + max-width/max-height）。 */
 .sidebar-collapsed .brand-copy,
-.sidebar-collapsed .nav-label,
+.sidebar-collapsed .nav-label {
+  opacity: 0;
+  max-width: 0;
+  margin-left: 0;
+  pointer-events: none;
+}
+
 .sidebar-collapsed .run-strip {
-  display: none;
+  opacity: 0;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  border-width: 0;
+  pointer-events: none;
 }
 
 .sidebar-collapsed nav {
@@ -201,8 +274,7 @@ nav {
 }
 
 .sidebar-collapsed .nav-item {
-  justify-content: center;
-  padding: 0;
+  padding: 0 17px;
 }
 
 .sidebar-collapsed .sidebar-toggle {
@@ -214,13 +286,29 @@ nav {
   gap: 5px;
   margin-top: 0;
   padding: 14px;
+  max-height: 120px;
+  opacity: 1;
+  overflow: hidden;
   border: 1px solid #314139;
   border-radius: 8px;
   background: #202c26;
+  transition: opacity 0.2s ease-out, max-height 0.2s ease-out, padding 0.2s ease-out, border-width 0.2s ease-out;
 }
 
 .sidebar nav + .run-strip {
   margin-top: auto;
+}
+
+/* Quality floor：侧边栏折叠是本次唯一的动效签名，减弱动态偏好下必须整体关闭，不只是变快。 */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .sidebar,
+  .brand-copy,
+  .nav-label,
+  .nav-item,
+  .run-strip {
+    transition: none;
+  }
 }
 
 .ai-status {
@@ -2934,6 +3022,15 @@ meter {
   .sidebar-collapsed .brand-copy,
   .sidebar-collapsed .nav-label {
     display: block;
+    /* 桌面端折叠态把这两个收到 opacity:0/max-width:0；窄屏没有折叠按钮，桌面态的收起值
+       不该带过来，否则文字会在移动端布局里变透明消失。 */
+    opacity: 1;
+    max-width: none;
+    pointer-events: auto;
+  }
+
+  .sidebar-collapsed .nav-label {
+    margin-left: 8px;
   }
 
   .sidebar nav {
