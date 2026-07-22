@@ -48,11 +48,30 @@ ensure_frontend_deps() {
   fi
 }
 
-ensure_frontend_build() {
-  if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
-    echo "缺少 frontend/dist,构建前端..."
-    (cd "$ROOT_DIR/frontend" && npm run build)
+build_frontend() {
+  (cd "$ROOT_DIR/frontend" && npm run build)
+  local head_commit
+  head_commit="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$head_commit" ]]; then
+    echo "$head_commit" >"$ROOT_DIR/frontend/dist/.build-commit"
   fi
+}
+
+# dist/ 不进 git,git pull 后残留的旧构建会让页面缺新功能;用构建时的 commit 指纹判断新旧。
+ensure_frontend_build() {
+  local dist_index="$ROOT_DIR/frontend/dist/index.html"
+  local stamp_file="$ROOT_DIR/frontend/dist/.build-commit"
+  local head_commit
+  head_commit="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -f "$dist_index" ]]; then
+    if [[ -z "$head_commit" || "$(cat "$stamp_file" 2>/dev/null || true)" == "$head_commit" ]]; then
+      return
+    fi
+    echo "前端构建来自其它代码版本(git pull 后常见),重新构建..."
+  else
+    echo "缺少 frontend/dist,构建前端..."
+  fi
+  build_frontend
 }
 
 # 端口占用检查:如果端口已被本脚本以外的进程占用,拒绝启动并给出明确提示。
@@ -170,7 +189,8 @@ do_update() {
   echo "更新依赖并重新构建前端..."
   ensure_backend_deps
   (cd "$ROOT_DIR" && .venv/bin/python -m pip install -r requirements.txt)
-  (cd "$ROOT_DIR/frontend" && npm install && npm run build)
+  (cd "$ROOT_DIR/frontend" && npm install)
+  build_frontend
 
   if is_running "$BACKEND_PID_FILE"; then
     echo "检测到正在运行,重启..."
