@@ -57,6 +57,33 @@ export type Job = {
   source_links?: JobSourceLink[];
 };
 
+export type ManualJob = {
+  title: string;
+  company_name: string;
+  salary_text: string;
+  city: string;
+  area: string;
+  skills: string;
+  description: string;
+};
+
+export type JobEditForm = ManualJob & {
+  url: string;
+  experience: string;
+  degree: string;
+  recruiter: string;
+  published_at: string;
+  recruitment_status: string;
+};
+
+export type NoticeKind = "info" | "success" | "warning" | "error";
+
+export type Notice = {
+  kind: NoticeKind;
+  message: string;
+  details?: string[];
+};
+
 export type ApplicationEvent = {
   id: number;
   job_id: number;
@@ -136,6 +163,8 @@ export type DecisionRuleCheck = {
   status: "pass" | "warn" | "fail" | "unknown";
   detail: string;
 };
+
+export type RunStatus = "completed" | "fallback" | "rules_only";
 
 export type DecisionAnalysis = {
   summary: string;
