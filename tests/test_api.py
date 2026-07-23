@@ -140,7 +140,7 @@ def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_fai
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-ai.sqlite3")
 
-    import backend.app.main as main
+    import backend.app.routers.chat as chat_router
 
     def fake_analysis(**_kwargs):
         return {
@@ -152,7 +152,7 @@ def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_fai
             "reply_draft": "你好，方便补充一下岗位的核心目标吗？",
         }
 
-    monkeypatch.setattr(main, "analyze_decision_chat_llm", fake_analysis)
+    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", fake_analysis)
 
     async def scenario():
         async for client in _client(app):
@@ -177,10 +177,10 @@ def test_decision_chat_marks_fallback_when_ai_enabled_but_call_fails(monkeypatch
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-fallback.sqlite3")
 
-    import backend.app.main as main
+    import backend.app.routers.chat as chat_router
 
     # 模拟坏 key / 端点不通：analyze 返回 None，端点应回退规则但标记 fallback。
-    monkeypatch.setattr(main, "analyze_decision_chat_llm", lambda **_kwargs: None)
+    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", lambda **_kwargs: None)
 
     async def scenario():
         async for client in _client(app):
@@ -205,7 +205,7 @@ def test_decision_chat_use_ai_false_skips_model_call(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-use-ai-false.sqlite3")
 
-    import backend.app.main as main
+    import backend.app.routers.chat as chat_router
 
     calls: list[dict] = []
 
@@ -220,7 +220,7 @@ def test_decision_chat_use_ai_false_skips_model_call(monkeypatch, tmp_path):
             "reply_draft": "你好。",
         }
 
-    monkeypatch.setattr(main, "analyze_decision_chat_llm", fake_analysis)
+    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", fake_analysis)
 
     async def scenario():
         async for client in _client(app):
@@ -387,13 +387,11 @@ def test_chat_context_preview_shows_what_would_be_sent_without_leaking_path(monk
 
 def test_decision_chat_stores_supported_screenshot_locally(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f'general:\n  data_dir: "{tmp_path / "chat-data"}"\n', encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-image.sqlite3")
     image_data_url = "data:image/png;base64,iVBORw0KGgo="
-
-    import backend.app.main as main
-    from dataclasses import replace
-
-    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
 
     async def scenario():
         async for client in _client(app):
@@ -443,13 +441,13 @@ def test_save_chat_image_rejects_unknown_mime_defensively(monkeypatch, tmp_path)
 
 def test_delete_chat_thread_removes_messages_and_attachment_file(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f'general:\n  data_dir: "{tmp_path / "chat-data"}"\n', encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
     app = _fresh_app(monkeypatch, tmp_path, "chat-delete.sqlite3")
     image_data_url = "data:image/png;base64,iVBORw0KGgo="
 
     import backend.app.main as main
-    from dataclasses import replace
-
-    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
 
     async def scenario():
         async for client in _client(app):
@@ -496,13 +494,13 @@ def test_delete_chat_thread_404_for_missing_thread(monkeypatch, tmp_path):
 
 def test_delete_chat_thread_does_not_affect_other_threads(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f'general:\n  data_dir: "{tmp_path / "chat-data"}"\n', encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
     app = _fresh_app(monkeypatch, tmp_path, "chat-delete-isolated.sqlite3")
     image_data_url = "data:image/png;base64,iVBORw0KGgo="
 
     import backend.app.main as main
-    from dataclasses import replace
-
-    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
 
     async def scenario():
         async for client in _client(app):
@@ -538,13 +536,13 @@ def test_delete_chat_thread_does_not_affect_other_threads(monkeypatch, tmp_path)
 
 def test_batch_delete_chat_threads_removes_messages_and_attachments(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f'general:\n  data_dir: "{tmp_path / "chat-data"}"\n', encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
     app = _fresh_app(monkeypatch, tmp_path, "chat-batch-delete.sqlite3")
     image_data_url = "data:image/png;base64,iVBORw0KGgo="
 
     import backend.app.main as main
-    from dataclasses import replace
-
-    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
 
     async def scenario():
         async for client in _client(app):
@@ -1791,13 +1789,13 @@ def test_prep_uses_ai_when_ready_and_respects_ai_false(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "prep-ai.sqlite3")
 
-    import backend.app.main as main
+    import backend.app.services.prep_ops as prep_ops
 
     def fake_tailor(context, base):
         # 模拟 LLM：只覆盖两个字段，其余沿用模板基线（验证逐键合并）。
         return {**base, "communication_draft": "AI定制：" + context["title"], "core_pitch": "AI定制pitch"}
 
-    monkeypatch.setattr(main, "tailor_interview_prep_llm", fake_tailor)
+    monkeypatch.setattr(prep_ops, "tailor_interview_prep_llm", fake_tailor)
 
     async def scenario():
         async for client in _client(app):

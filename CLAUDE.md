@@ -34,9 +34,12 @@
 - `backend/app/services/importer.py` — `upsert_job_records` / `get_or_create_company`
 - `backend/app/services/<source>.py` — 单来源的抓取/解析细节(如 `wechat.py` / `bebee.py` / `ai.py` / `yuanbao.py`)
 - `backend/app/services/context_repository.py` — 外部个人操作仓库的只读白名单适配器；不得绕过它读取任意路径
-- `backend/app/main.py` — 薄路由 + `_run_collector` / `_run_wechat_collection` 生命周期封装 + Telegram 轮询循环（Phase R 重构中，路由逐步迁往 `routers/`）
-- `backend/app/services/chat_ingest.py` — ingest→chat 落盘/线程查找/删除的中立模块（`_persist_ingest_to_chat` 等），被 chat 路由与 Telegram 轮询共享；**绝不 import importer / upsert（绊线测试锁定）**
-- `backend/app/deps.py` — 共享 FastAPI 依赖（`get_session` / `SessionDep`），供拆分后的路由模块统一 import
+- `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
+- `backend/app/routers/<域>.py` — 按域拆分的 `APIRouter`（jobs/chat/collect/scoring/misc/companies/drafts/followups/interviews），main.py `include_router` 挂载。路由只依赖 `deps/models/schemas/services/config`，**绝不 import main**（循环）。
+- `backend/app/services/queries.py` — 跨路由共享的查询/落盘 helper（`query_jobs`/`get_profile`/`score_job_into_db`/`application_events`/`download_response`/`job_response`/`validate_weights`）。
+- `backend/app/services/{job_ops,collect_ops,prep_ops,sprint_ops,chat_support}.py` — 各域从 main 下沉的专属 helper（岗位状态重算/删除、采集运行、面试准备、冲刺包、聊天上下文）。
+- `backend/app/services/chat_ingest.py` — ingest→chat 落盘/线程查找/删除的中立模块（`_persist_ingest_to_chat` 等），被 chat 路由与 Telegram 轮询共享；**绝不 import importer / upsert（绊线测试锁定）**。注意：`commit`/`board-write`/采集的 upsert 是允许的用户触发入库，放在 `routers/` 或 `collect_ops` 里，**不得塞进本模块**。
+- `backend/app/deps.py` — 共享 FastAPI 依赖（`get_session` / `SessionDep`），供路由模块统一 import
 - `backend/app/models.py` — 表结构(见红线 §3.5)，含 `JobSourceLink` 来源证据表
 
 ---
@@ -46,9 +49,9 @@
 1. **解析细节放 `services/<source>.py`**:抓取(统一用 `httpx`,带超时/UA/限速)+ 解析成 dict 列表。键用规范化器认识的名字:`title / company_name / url / salary_text / city / area / experience / degree / skills / description / recruiter`(其余字段交给 `normalize_record`)。
 2. **在 `collectors.py` 加 `<Source>Collector`**(`@dataclass`,实现 `collect() -> list[dict]`):取数 → 解析 → 逐条 `normalize_record(raw, source="<中文来源名>")` →(一文多岗时覆写 `external_id`)→ 去重。维护 `self.report = {urls_total, urls_ok, jobs, skipped:[{url,reason}]}`。
 3. **配置放 `config.yaml` 的 `<source>:` 段**,在 `config.py` 加 `<source>_config` 属性读取;**密钥只进 `.env`**。
-4. **加端点**:
-   - 配置驱动(类似 BOSS/beBee):用 `_run_collector(session, source_label, collector)`。
-   - 粘贴/外部输入驱动(类似公众号):参考 `_run_wechat_collection`。
+4. **加端点**（放 `routers/collect.py`，不要加到 main.py）:
+   - 配置驱动(类似 BOSS/beBee):用 `services/collect_ops.py` 的 `run_collector(session, source_label, collector)`。
+   - 粘贴/外部输入驱动(类似公众号):参考 `collect_ops.run_wechat_collection`。
    - 端点负责建 `SourceRun`、跑采集器、`upsert_job_records`、把 `collector.report` 写进 `SourceRun.raw_config`。失败置 `status="failed"` + `error`,**绝不抛裸异常给前端**。
 5. **前端**:岗位带上新 `source` 会自动出现在表格「来源」列与来源筛选;如需主动触发,在 topbar 加一个按钮调用对应端点(照搬 `runBossCollection` / `collectWeChat` 模式)。视图层不得写来源特判逻辑。
 6. **测试必须有**(见 §4):解析器纯函数测试 + 端点流程测试(`monkeypatch` 掉网络抓取,不联网)。
@@ -86,7 +89,7 @@
 
 ## 5. 目录与约定
 
-- 后端:FastAPI + SQLModel;逻辑在 `services/`,`main.py` 只放薄路由 + 生命周期封装。
+- 后端:FastAPI + SQLModel;逻辑在 `services/`,端点按域放 `routers/`,`main.py` 只放 app 装配 + 生命周期 + meta 组。
 - 前端:React + Vite + TS;复用 `src/api.ts` 的 `api()/jsonBody()` 与既有 CSS 类(`modal`/`primary-action`/`icon-button`/`source-select` 等),不引重组件库。
 - 配置:`config.yaml`(每来源一段 + `scoring`/`followup` 等功能段)+ `.env`(密钥)。AI 走 OpenAI 兼容协议(`OPENAI_API_KEY`/`OPENAI_BASE_URL`),`ai.enabled` 默认关;启用后既做公众号 LLM 兜底抽取,也做面试准备按 JD 定制(`ai.tailor_interview_prep_llm`),不可用/失败时逐键回退 `prep.py` 模板。`followup.stale_days` 控制 fit/interview 岗位多少天无活动算「需跟进」(`services/followup.py`,source-agnostic)。
 - 外部个人上下文路径只进环境变量 `JOB_ONE_STOP_CONTEXT_REPO_PATH`；应用通过只读 `ContextRepository` 检查入口、决策规则、画像、看板和岗位卡，不在 `config.yaml` 保存宿主机绝对路径。
