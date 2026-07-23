@@ -26,7 +26,7 @@ need_command() {
 }
 
 section "Project Files"
-for path in Dockerfile docker-compose.yml config.yaml frontend/package-lock.json requirements-runtime.txt; do
+for path in Dockerfile docker-compose.yml config.example.yaml frontend/package-lock.json requirements-runtime.txt; do
   [[ -e "$path" ]] || fail "Missing $path"
   echo "ok: $path"
 done
@@ -38,10 +38,10 @@ bash -n scripts/system_smoke.sh
 echo "ok: shell scripts parse"
 
 section "Config Guard"
-if grep -RInE "(api_key|apikey|authorization|password|secret|token)[[:space:]]*:" config.yaml; then
-  fail "config.yaml contains a sensitive-looking key. Move secrets to .env or environment variables."
+if grep -RInE "(api_key|apikey|authorization|password|secret|token)[[:space:]]*:" config.example.yaml; then
+  fail "config.example.yaml contains a sensitive-looking key. Move secrets to .env or environment variables."
 fi
-echo "ok: no sensitive key names found in config.yaml"
+echo "ok: no sensitive key names found in config.example.yaml"
 
 if command -v python3 >/dev/null 2>&1; then
   python3 - <<'PY'
@@ -53,15 +53,15 @@ try:
 except Exception:
     sys.exit(0)
 
-path = Path("config.yaml")
+path = Path("config.example.yaml")
 try:
     loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
 except Exception as exc:
-    raise SystemExit(f"config.yaml YAML parse failed: {exc}") from exc
+    raise SystemExit(f"config.example.yaml YAML parse failed: {exc}") from exc
 if not isinstance(loaded, dict):
-    raise SystemExit("config.yaml root must be an object")
+    raise SystemExit("config.example.yaml root must be an object")
 PY
-  echo "ok: config.yaml parses"
+  echo "ok: config.example.yaml parses"
 else
   warn "python3 not found; skipped YAML parse check"
 fi

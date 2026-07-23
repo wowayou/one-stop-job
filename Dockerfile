@@ -48,7 +48,10 @@ RUN --mount=type=cache,target=/root/.cache/pip \
     -r requirements-large.txt
 
 COPY backend ./backend
-COPY config.yaml ./config.yaml
+# config.yaml 是本地 gitignore 文件；镜像用跟踪的模板生成一份默认配置。
+# 运行时 docker-compose 会用宿主机的 ./config.yaml 覆盖挂载（若存在）。
+COPY config.example.yaml ./config.example.yaml
+RUN cp config.example.yaml config.yaml
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 EXPOSE 8000

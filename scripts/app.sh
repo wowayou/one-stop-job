@@ -33,6 +33,15 @@ stop_children() {
   done < <(pgrep -P "$parent_pid" 2>/dev/null || true)
 }
 
+# config.yaml 是本地个人配置（gitignore），首次运行从 config.example.yaml 生成一份，
+# 之后你的改动不再和 git pull 冲突（模板更新只影响 config.example.yaml）。
+ensure_config() {
+  if [[ ! -f "$ROOT_DIR/config.yaml" && -f "$ROOT_DIR/config.example.yaml" ]]; then
+    cp "$ROOT_DIR/config.example.yaml" "$ROOT_DIR/config.yaml"
+    echo "已从 config.example.yaml 生成 config.yaml（本地配置，不入 Git）。"
+  fi
+}
+
 ensure_backend_deps() {
   if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
     echo "缺少 .venv,首次安装依赖(约 2-3 分钟)..."
@@ -116,6 +125,7 @@ do_start() {
     return 0
   fi
 
+  ensure_config
   ensure_backend_deps
   ensure_frontend_deps
   ensure_frontend_build
@@ -187,6 +197,7 @@ do_logs() {
 
 do_update() {
   echo "更新依赖并重新构建前端..."
+  ensure_config
   ensure_backend_deps
   (cd "$ROOT_DIR" && .venv/bin/python -m pip install -r requirements.txt)
   (cd "$ROOT_DIR/frontend" && npm install)
