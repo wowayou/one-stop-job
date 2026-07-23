@@ -21,6 +21,13 @@ from fastapi.responses import FileResponse
 from sqlmodel import select
 from starlette.concurrency import run_in_threadpool
 
+from ..candidates import (
+    CANDIDATE_COMMITTED,
+    CANDIDATE_PENDING,
+    CANDIDATE_SKIPPED,
+    Candidate,
+    strip_ui_only_fields,
+)
 from ..config import get_settings
 from ..deps import SessionDep
 from ..models import AnalysisRun, ChatMessage, ChatThread, Job, SourceRun, utc_now
@@ -314,7 +321,7 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
     # 深拷贝理由同 board_write_candidates:浅拷贝下嵌套候选 dict 仍与原对象共享,
     # 原地改完再赋值会被 SQLAlchemy 判为未变更而静默丢弃。
     meta = copy.deepcopy(message.metadata_json or {})
-    candidates = list(meta.get("candidates") or [])
+    candidates: list[Candidate] = list(meta.get("candidates") or [])
     if not candidates:
         raise HTTPException(status_code=400, detail="该消息没有可入库的候选岗位")
 
@@ -322,8 +329,8 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
     if not indexes:
         # 空 indexes = 全部跳过
         for item in candidates:
-            if item.get("status") == "pending":
-                item["status"] = "skipped"
+            if item.get("status") == CANDIDATE_PENDING:
+                item["status"] = CANDIDATE_SKIPPED
         meta["candidates"] = candidates
         message.metadata_json = meta
         session.add(message)
@@ -344,15 +351,14 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
         if idx < 0 or idx >= len(candidates):
             raise HTTPException(status_code=400, detail=f"候选索引越界：{idx}")
         item = candidates[idx]
-        if item.get("status") == "committed" and item.get("job_id"):
+        if item.get("status") == CANDIDATE_COMMITTED and item.get("job_id"):
             continue
-        # existing_job_id / duplicate_in_thread_id 只是只读标注（分别是「已在岗位池」「与近期候选重复」），
-        # 不是 Job 表字段，upsert 前必须剔除。
-        record = {
-            k: v
-            for k, v in item.items()
-            if k not in {"status", "job_id", "existing_job_id", "duplicate_in_thread_id"}
-        }
+        # existing_job_id / duplicate_in_thread_id 是纯 UI 字段（分别是「已在岗位池」「与近期候选
+        # 重复」），统一交给 strip_ui_only_fields 剔除；status/job_id 是候选自身的生命周期记账
+        # 字段（不是 Job 表字段，且 Job.status 语义完全不同），upsert 前单独剔除。
+        record = strip_ui_only_fields(item)
+        record.pop("status", None)
+        record.pop("job_id", None)
         to_upsert.append(record)
         selected_positions.append(idx)
 
@@ -365,7 +371,7 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
             created += result["created"]
             updated += result["updated"]
             job_id = (result.get("job_ids") or [None])[0]
-            candidates[pos]["status"] = "committed"
+            candidates[pos]["status"] = CANDIDATE_COMMITTED
             candidates[pos]["job_id"] = job_id
             created_ids.extend(result.get("created_ids") or [])
 
@@ -416,7 +422,7 @@ async def restore_candidates(thread_id: int, payload: CandidatesCommitRequest, s
     # 深拷贝原因同 commit_candidates/board_write_candidates：浅拷贝下嵌套候选 dict 仍与原对象
     # 共享引用，原地改完再整体赋值会被 SQLAlchemy 判为未变更而静默丢弃。
     meta = copy.deepcopy(message.metadata_json or {})
-    candidates = meta.get("candidates") or []
+    candidates: list[Candidate] = meta.get("candidates") or []
     if not candidates:
         raise HTTPException(status_code=400, detail="该消息没有候选岗位")
 
@@ -430,14 +436,14 @@ async def restore_candidates(thread_id: int, payload: CandidatesCommitRequest, s
     results: list[dict] = []
     for idx in indexes:
         item = candidates[idx]
-        status = item.get("status") or "pending"
-        if status == "committed":
+        status = item.get("status") or CANDIDATE_PENDING
+        if status == CANDIDATE_COMMITTED:
             results.append({"index": idx, "ok": False, "reason": "已入库无法恢复为待选"})
             continue
-        if status == "pending":
+        if status == CANDIDATE_PENDING:
             results.append({"index": idx, "ok": True, "reason": "已是待选", "skipped": True})
             continue
-        item["status"] = "pending"
+        item["status"] = CANDIDATE_PENDING
         results.append({"index": idx, "ok": True, "reason": "已恢复为待选"})
 
     meta["candidates"] = candidates
@@ -474,7 +480,7 @@ async def board_write_candidates(thread_id: int, payload: CandidatesCommitReques
     # SQLAlchemy 在没有中间 flush 的情况下把 old/new 值判等,从而认为该列未变更、
     # 静默丢弃这次写入(纯 dict()/list() 浅拷贝挡不住这个坑)。
     meta = copy.deepcopy(message.metadata_json or {})
-    candidates = meta.get("candidates") or []
+    candidates: list[Candidate] = meta.get("candidates") or []
     if not candidates:
         raise HTTPException(status_code=400, detail="该消息没有候选岗位")
 
@@ -494,7 +500,7 @@ async def board_write_candidates(thread_id: int, payload: CandidatesCommitReques
     results: list[dict] = []
     for idx in indexes:
         item = candidates[idx]
-        if item.get("status") != "committed" or not item.get("job_id"):
+        if item.get("status") != CANDIDATE_COMMITTED or not item.get("job_id"):
             results.append({"index": idx, "ok": False, "reason": "候选尚未入库，无法写回看板"})
             continue
         if item.get("board_written"):

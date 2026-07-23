@@ -32,6 +32,7 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
 from sqlmodel import Session, select
 
+from ..candidates import Candidate
 from ..config import Settings, get_settings
 from ..models import ChatMessage, ChatThread, Job, utc_now
 from .ai import is_ai_available
@@ -243,7 +244,7 @@ def _persist_ingest_to_chat(
         manual_source=str(settings.ingest_config.get("manual_source") or "manual"),
     )
 
-    candidates = extract["candidates"]
+    candidates: list[Candidate] = extract["candidates"]
     # 只读标注：命中已入库岗位的 canonical_key 就打上 existing_job_id，供前端标「已在岗位池」
     # 并默认不勾选；仍允许勾选提交（commit 端点走 importer 合并已有记录，不重复建 Job，这里只读不写）。
     existing_by_key = job_ids_by_canonical_key(session, [c.get("canonical_key") for c in candidates])

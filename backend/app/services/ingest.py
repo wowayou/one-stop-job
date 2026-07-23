@@ -14,6 +14,7 @@ import re
 
 from sqlmodel import Session, select
 
+from ..candidates import CANDIDATE_PENDING
 from ..models import ChatMessage, ChatThread, FitScore, Job, UserProfile
 from . import bebee, wechat
 from .collectors import BeBeeCollector, WeChatPasteCollector
@@ -228,7 +229,7 @@ def run_ingest(
                 continue
             if ext:
                 seen_external.add(ext)
-            candidates.append({**rec, "status": "pending", "job_id": None})
+            candidates.append({**rec, "status": CANDIDATE_PENDING, "job_id": None})
             added += 1
         sources_report.append(
             {

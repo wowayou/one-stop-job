@@ -8,6 +8,13 @@ import importlib
 
 import httpx
 
+from backend.app.candidates import (
+    CANDIDATE_COMMITTED,
+    CANDIDATE_PENDING,
+    CANDIDATE_SKIPPED,
+    CANDIDATE_UI_ONLY_FIELDS,
+    strip_ui_only_fields,
+)
 from backend.app.services import ai, bebee, chat_ingest, collectors, importer, ingest, telegram, wechat
 from backend.app.services.wechat import ArticleFetch
 
@@ -28,6 +35,34 @@ def test_classify_links_splits_by_source():
     assert len(classified["wechat"]) == 1
     assert len(classified["bebee"]) == 1
     assert all("example.com" not in link for links in classified.values() for link in links)
+
+
+def test_candidate_status_constants_match_expected_literals():
+    """R5：状态常量值必须和历史上散落各处的字符串字面量一致，否则替换会悄悄改变行为。"""
+    assert (CANDIDATE_PENDING, CANDIDATE_COMMITTED, CANDIDATE_SKIPPED) == ("pending", "committed", "skipped")
+
+
+def test_strip_ui_only_fields_removes_only_ui_only_keys():
+    """R5：strip_ui_only_fields 只剔除 existing_job_id/duplicate_in_thread_id，其余字段原样保留。"""
+    candidate = {
+        "title": "资深BI工程师",
+        "company_name": "示例科技",
+        "status": CANDIDATE_PENDING,
+        "job_id": None,
+        "existing_job_id": 7,
+        "duplicate_in_thread_id": 3,
+    }
+    stripped = strip_ui_only_fields(candidate)
+    assert stripped == {
+        "title": "资深BI工程师",
+        "company_name": "示例科技",
+        "status": CANDIDATE_PENDING,
+        "job_id": None,
+    }
+    # 浅拷贝：不原地修改传入的候选 dict。
+    assert "existing_job_id" in candidate
+    assert "duplicate_in_thread_id" in candidate
+    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id"}
 
 
 def _fresh_modules(monkeypatch, tmp_path, name):
@@ -547,6 +582,13 @@ def test_ingest_endpoint_flags_existing_job_and_commit_reuses_job(monkeypatch, t
                 jobs = session.exec(select(Job)).all()
                 assert len(jobs) == 1
                 assert jobs[0].id == existing_job_id
+                # R5 回归：strip_ui_only_fields 剔除的字段绝不能泄漏进 Job 表；
+                # Job 模型压根没有这两列，一旦 upsert 收到它们就会直接抛异常而不是静默污染。
+                assert not hasattr(jobs[0], "existing_job_id")
+                assert not hasattr(jobs[0], "duplicate_in_thread_id")
+                assert jobs[0].title == "资深BI工程师"
+                assert jobs[0].company_name == "示例科技"
+                assert jobs[0].salary_text == "25-35K"
 
     asyncio.run(scenario())
 
