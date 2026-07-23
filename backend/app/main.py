@@ -58,8 +58,6 @@ from .schemas import (
     ChatThreadUpdate,
     CompanyUpdate,
     DraftCreate,
-    FollowUpTaskCreate,
-    FollowUpTaskUpdate,
     InterviewLogCreate,
     InterviewLogUpdate,
     JobBulkUpdate,
@@ -72,6 +70,7 @@ from .schemas import (
 )
 from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, probe_ai_connection, tailor_interview_prep_llm
 from .services.analytics import build_funnel_payload
+from .routers import followups
 from .services.chat_ingest import (
     _chat_attachment_path,
     _chat_thread_payload,
@@ -323,6 +322,9 @@ app.add_middleware(
 
 if (FRONTEND_DIST / "assets").is_dir():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="frontend-assets")
+
+# 按域拆分的路由（Phase R · R2）：逐组从 main.py 迁往 routers/，此处统一挂载。
+app.include_router(followups.router)
 
 
 CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram"}
@@ -2207,62 +2209,6 @@ async def create_draft(payload: DraftCreate, session: SessionDep) -> Draft:
     session.commit()
     session.refresh(draft)
     return draft
-
-
-@app.get("/api/follow-ups")
-async def list_follow_ups(session: SessionDep) -> list[FollowUpTask]:
-    return session.exec(select(FollowUpTask).order_by(FollowUpTask.due_date.asc(), FollowUpTask.created_at.desc())).all()
-
-
-@app.get("/api/follow-ups/stale")
-async def list_stale_follow_ups(session: SessionDep) -> list[dict]:
-    """需跟进岗位：fit/interview 超过 stale_days 天无活动。只提醒，不自动联系。"""
-    return find_stale_jobs(session, now=utc_now(), stale_days=settings.followup_stale_days)
-
-
-@app.post("/api/follow-ups")
-async def create_follow_up(payload: FollowUpTaskCreate, session: SessionDep) -> dict:
-    """新增待办；同一 job_id + 相同标题（去首尾空白）+ 状态未完成的待办已存在时不再新建，
-    直接把已有记录原样返回并带 duplicate=True，供前端提示「已存在」——避免用户手滑连点
-    （或前端重复提交）在待办清单里堆出一串重复项。已完成（status="done"）的旧待办不算重复，
-    允许针对同一件事再开一条新的跟进。"""
-    title = payload.title.strip()
-    existing_tasks = session.exec(
-        select(FollowUpTask).where(FollowUpTask.job_id == payload.job_id, FollowUpTask.status != "done")
-    ).all()
-    duplicate = next((t for t in existing_tasks if t.title.strip() == title), None)
-    if duplicate is not None:
-        return {**jsonable_encoder(duplicate), "duplicate": True}
-
-    task = FollowUpTask(**payload.model_dump())
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return {**jsonable_encoder(task), "duplicate": False}
-
-
-@app.patch("/api/follow-ups/{task_id}")
-async def update_follow_up(task_id: int, payload: FollowUpTaskUpdate, session: SessionDep) -> FollowUpTask:
-    task = session.get(FollowUpTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(task, key, value)
-    task.updated_at = utc_now()
-    session.add(task)
-    session.commit()
-    session.refresh(task)
-    return task
-
-
-@app.delete("/api/follow-ups/{task_id}")
-async def delete_follow_up(task_id: int, session: SessionDep) -> dict:
-    task = session.get(FollowUpTask, task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    session.delete(task)
-    session.commit()
-    return {"deleted": True, "id": task_id}
 
 
 @app.get("/api/jobs/{job_id}/events")
