@@ -1080,7 +1080,7 @@ function App() {
         </div>
       </aside>
 
-      <main className={activeNav === "chat" ? "workspace chat-workspace" : "workspace"}>
+      <main className="workspace">
         {activeNav !== "chat" && <header className="topbar">
           <div>
             <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
@@ -1885,6 +1885,7 @@ function ChatView({
   const stageTimers = useRef<number[]>([]);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const selectAllThreadsRef = useRef<HTMLInputElement>(null);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
   const activeJob = activeThread?.job_id ? jobs.find((job) => job.id === activeThread.job_id) ?? null : null;
@@ -2086,6 +2087,19 @@ function ChatView({
     });
   }
 
+  // 全选控件的三态：全选 / 半选(indeterminate) / 未选，随 selectedThreadIds 与 threads 派生，
+  // 和逐行 checkbox 天然双向同步——任何一边变化都会触发重渲染重新算出这三个值。
+  const allThreadsSelected = threads.length > 0 && threads.every((thread) => selectedThreadIds.has(thread.id));
+  const someThreadsSelected = selectedThreadIds.size > 0 && !allThreadsSelected;
+
+  useEffect(() => {
+    if (selectAllThreadsRef.current) selectAllThreadsRef.current.indeterminate = someThreadsSelected;
+  }, [someThreadsSelected]);
+
+  function toggleAllThreads(checked: boolean) {
+    setSelectedThreadIds(checked ? new Set(threads.map((thread) => thread.id)) : new Set());
+  }
+
   async function batchDeleteThreads() {
     const ids = Array.from(selectedThreadIds);
     if (!ids.length || batchDeleting) return;
@@ -2201,10 +2215,23 @@ function ChatView({
           ))}
           {!loading && !threads.length && <p className="muted chat-empty-copy">先创建一个通用聊天，或者给某个岗位开专属聊天。</p>}
         </div>
-        {manageMode && selectedThreadIds.size > 0 && (
+        {manageMode && (
           <div className="chat-thread-batch-bar">
-            <span>已选 {selectedThreadIds.size} 个</span>
-            <button className="primary-action" type="button" disabled={batchDeleting} onClick={() => void batchDeleteThreads()}>
+            <div className="chat-thread-batch-top">
+              <label className="chat-select-all">
+                <input
+                  ref={selectAllThreadsRef}
+                  type="checkbox"
+                  checked={allThreadsSelected}
+                  onChange={(event) => toggleAllThreads(event.target.checked)}
+                  disabled={!threads.length}
+                  aria-label="全选对话"
+                />
+                全选
+              </label>
+              <span>已选 {selectedThreadIds.size} 个</span>
+            </div>
+            <button className="primary-action" type="button" disabled={!selectedThreadIds.size || batchDeleting} onClick={() => void batchDeleteThreads()}>
               {batchDeleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
               删除选中（{selectedThreadIds.size}）
             </button>

@@ -358,11 +358,6 @@ nav {
   overflow: hidden;
 }
 
-.chat-workspace {
-  gap: 10px;
-  padding: 12px;
-}
-
 .chat-active .sidebar {
   gap: 16px;
   padding: 16px 14px;
@@ -2188,16 +2183,18 @@ meter {
   white-space: pre;
 }
 
-/* 决策聊天：左侧会话、右侧证据化建议。 */
+/* 决策聊天：左侧会话、右侧证据化建议。外框 border/radius/background 与 .content-panel
+   （岗位池等其它视图的卡片容器）取同一套 token，让聊天视图和其它视图坐落在同一种
+   「灰底 gutter + 圆角白卡」框架里，四周留白视觉一致。 */
 .chat-shell {
   display: grid;
   grid-template-columns: minmax(230px, 290px) minmax(0, 1fr);
   min-height: 0;
   height: 100%;
   overflow: hidden;
-  border: 1px solid #d9e1da;
-  border-radius: 12px;
-  background: #fff;
+  border: 1px solid #dde3dd;
+  border-radius: 8px;
+  background: #ffffff;
 }
 
 .chat-sidebar {
@@ -2359,6 +2356,10 @@ meter {
   align-content: start;
   gap: 7px;
   min-height: 0;
+  /* flex:1 让线程列表撑满 .chat-sidebar 剩余高度（列表本身内部滚动），这样管理模式下面的
+     .chat-thread-batch-bar 才会始终贴在侧栏最底部，读起来是面板的 footer，而不是随线程条数
+     多少浮动在列表下方某处、和左侧主导航 rail 底部的 .run-strip 高度对不齐。 */
+  flex: 1 1 auto;
   /* 水平内边距和 .chat-sidebar-head / .chat-job-create 的 14px 对齐，让线程行与上面
      搜索框/按钮共用同一条左右边线，不是自成一列的窄内边距。 */
   padding: 10px 14px;
@@ -2390,16 +2391,46 @@ meter {
   height: 30px;
 }
 
+/* 管理模式下的固定 footer：只要进入管理模式就渲染（不再等有勾选才出现），配合上面
+   .chat-thread-list 的 flex:1 始终贴在「对话」面板最底部，读起来是这一列自己的操作栏，
+   和主导航 rail 底部的 .run-strip（不同列）划清视觉边界。分隔线/底色沿用侧栏其它分区
+   （.chat-sidebar-head / .chat-job-create）已有的 border-top #e1e7e1 + 背景 #f7faf7。 */
 .chat-thread-batch-bar {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  flex-direction: column;
+  gap: 8px;
+  flex: 0 0 auto;
   padding: 10px 14px;
   border-top: 1px solid #e1e7e1;
   background: #f7faf7;
   color: #445048;
   font-size: 13px;
+}
+
+.chat-thread-batch-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.chat-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  color: #26332b;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat-select-all input {
+  width: auto;
+  min-height: 0;
+}
+
+.chat-thread-batch-bar > .primary-action {
+  width: 100%;
 }
 
 .chat-thread {
