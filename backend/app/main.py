@@ -161,6 +161,62 @@ async def _telegram_poll_loop() -> None:
             if chat_id != allowed_chat_id:
                 continue
             text = extracted.text
+
+            if extracted.is_edit:
+                # 编辑消息：本质是"改了内容的老消息"，不是新线索。只有能在本机找到当初落盘的
+                # 那条 user 消息时才处理(归入原线程，见 _find_ingest_message_by_tg_id)；找不到
+                # (太久远/不是本 bot 处理过的消息)就静默忽略——不回执、不建线程，避免"手滑改
+                # 个错别字"刷出一堆新线索(用户抱怨的核心，现状确认：之前 message/edited_message
+                # 被 `or` 到一起不加区分，编辑等同于收到一条全新消息)。
+                original_thread_id: int | None = None
+                if extracted.message_id is not None:
+                    with Session(engine) as session:
+                        original_message = await run_in_threadpool(
+                            _find_ingest_message_by_tg_id, session, extracted.message_id
+                        )
+                        original_thread_id = original_message.thread_id if original_message else None
+                if original_thread_id is None:
+                    continue
+
+                edit_image_data_url: str | None = None
+                if extracted.photo_file_id:
+                    edit_image_data_url = await run_in_threadpool(
+                        telegram.download_photo_data_url, token, extracted.photo_file_id
+                    )
+                elif extracted.document_file_id:
+                    edit_image_error = telegram.classify_document_image(
+                        extracted.document_mime_type, extracted.document_file_size
+                    )
+                    if edit_image_error is None:
+                        edit_image_data_url = await run_in_threadpool(
+                            telegram.download_photo_data_url, token, extracted.document_file_id
+                        )
+
+                edit_result: dict | None = None
+                try:
+                    with Session(engine) as session:
+                        edit_result = await run_in_threadpool(
+                            _persist_ingest_to_chat,
+                            session,
+                            text,
+                            edit_image_data_url,
+                            original_thread_id,
+                            None,
+                            extracted.message_id,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.warning("Telegram 编辑消息处理失败", exc_info=True)
+                    continue
+
+                if edit_result is not None:
+                    thread_title = (edit_result.get("thread") or {}).get("title") or ""
+                    await run_in_threadpool(
+                        telegram.send_message, token, chat_id, f"已按编辑更新归入『{thread_title}』。"
+                    )
+                continue
+
             if text.strip() == "/start":
                 # 使用说明：不建 ingest 线程，只回一条本机→本人的操作提示（§2 机主回执豁免）。
                 await run_in_threadpool(
@@ -205,7 +261,12 @@ async def _telegram_poll_loop() -> None:
                             _find_ingest_thread_by_receipt, session, extracted.reply_to_message_id
                         )
                     result = await run_in_threadpool(
-                        _persist_ingest_to_chat, session, text, image_data_url, target_thread_id
+                        _persist_ingest_to_chat,
+                        session,
+                        text,
+                        image_data_url,
+                        target_thread_id,
+                        extracted.message_id,
                     )
                 reply = telegram.summarize_ingest(result)
             except asyncio.CancelledError:
@@ -1770,6 +1831,30 @@ def _find_ingest_thread_by_receipt(session: Session, reply_to_message_id: int) -
     return None
 
 
+def _find_ingest_message_by_tg_id(session: Session, tg_message_id: int) -> ChatMessage | None:
+    """按 Telegram 消息自身的 message_id 找回当初落盘的那条 user 消息（`source_tg_message_id`）。
+
+    用于处理「编辑消息」：Telegram 编辑事件的 message_id 和被编辑的原消息完全一致，据此判断
+    「这是不是在编辑本 bot 处理过的某条消息」，而不是一条全新消息。只看最近 ~50 个 ingest
+    线程，和 `_find_ingest_thread_by_receipt` 同样的取舍：单用户、量小，足够覆盖实际场景。
+    """
+    threads = session.exec(
+        select(ChatThread).where(ChatThread.kind == "ingest").order_by(ChatThread.updated_at.desc()).limit(50)
+    ).all()
+    thread_ids = [t.id for t in threads if t.id is not None]
+    if not thread_ids:
+        return None
+    messages = session.exec(
+        select(ChatMessage)
+        .where(ChatMessage.thread_id.in_(thread_ids), ChatMessage.role == "user")
+        .order_by(ChatMessage.created_at.desc())
+    ).all()
+    for message in messages:
+        if (message.metadata_json or {}).get("source_tg_message_id") == tg_message_id:
+            return message
+    return None
+
+
 def _record_telegram_receipt(chat_message_id: int, tg_message_id: int) -> None:
     """把这次回执的 Telegram message_id 记到对应 assistant 消息 metadata，供下次「回复回执」关联。
 
@@ -1796,6 +1881,8 @@ def _persist_ingest_to_chat(
     text: str | None,
     image_data_url: str | None = None,
     target_thread_id: int | None = None,
+    source_tg_message_id: int | None = None,
+    edited_from_tg_message_id: int | None = None,
 ) -> dict:
     """抽取候选 → 写入 kind=ingest 聊天线程（**不写 Job 表**）。HTTP 与 Telegram 共用。
 
@@ -1805,6 +1892,12 @@ def _persist_ingest_to_chat(
     消息追加进该线程而不是新建（用于 Telegram「回复回执」把补充材料关联回同一条线索，或
     同一相册的多张图片归到一起）；线程不存在或不是 ingest 类型时静默回退到新建线程——
     对应「回复的不是回执/太久远」的现状行为不变。
+
+    `source_tg_message_id`：仅 Telegram 路径传入，记到这条 user 消息的 metadata 里，供以后
+    「这条消息在 Telegram 上被编辑了」时反查回同一条线索（见 `_find_ingest_message_by_tg_id`）。
+    `edited_from_tg_message_id`：这条 user 消息本身就是某次编辑事件追加的内容时传入，标注它
+    源自哪条 Telegram 消息的编辑——和 `source_tg_message_id` 分开存，避免同一个 tg message_id
+    在同一线程里对应两条 user 消息时查找结果有歧义。
     """
     ai_cfg = settings.config.get("ai", {})
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
@@ -1859,11 +1952,18 @@ def _persist_ingest_to_chat(
 
     attachment = _save_chat_image(image_data_url, None) if image_data_url else None
     user_content = text or ("[截图]" if attachment else "")
+    user_metadata: dict = {}
+    if attachment:
+        user_metadata["attachment"] = attachment
+    if source_tg_message_id is not None:
+        user_metadata["source_tg_message_id"] = source_tg_message_id
+    if edited_from_tg_message_id is not None:
+        user_metadata["edited_from_tg_message_id"] = edited_from_tg_message_id
     user_message = ChatMessage(
         thread_id=thread.id or 0,
         role="user",
         content=user_content,
-        metadata_json={"attachment": attachment} if attachment else {},
+        metadata_json=user_metadata,
     )
     session.add(user_message)
 

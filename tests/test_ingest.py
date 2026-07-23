@@ -681,7 +681,7 @@ def test_poll_loop_persists_chat_not_jobs(monkeypatch, tmp_path):
     def fake_send(token, chat_id, text):
         calls["sent"].append((chat_id, text))
 
-    def fake_persist(session, text, image_data_url=None, target_thread_id=None):
+    def fake_persist(session, text, image_data_url=None, target_thread_id=None, source_tg_message_id=None, edited_from_tg_message_id=None):
         calls["persisted"].append((text, image_data_url))
         return {"candidate_count": 1, "unmatched": False, "needs_ai": False}
 
@@ -774,6 +774,27 @@ def test_extract_message_picks_document_reply_and_media_group():
     assert extracted.document_file_size == 2048
     assert extracted.reply_to_message_id == 30
     assert extracted.media_group_id == "grp-1"
+
+
+def test_extract_message_distinguishes_edited_message_from_new_message():
+    """现状确认的核心 bug：过去 `message = update.get("message") or update.get("edited_message") or {}`
+    把两者不加区分地合并，编辑事件被当成全新消息。这里断言 is_edit 标记和 message_id 都正确。"""
+    fresh = telegram.extract_message(
+        {"update_id": 1, "message": {"message_id": 800, "chat": {"id": 42}, "text": "原始文本"}}
+    )
+    assert fresh.is_edit is False
+    assert fresh.message_id == 800
+
+    edited = telegram.extract_message(
+        {
+            "update_id": 2,
+            "edited_message": {"message_id": 800, "chat": {"id": 42}, "text": "编辑后的文本"},
+        }
+    )
+    assert edited.is_edit is True
+    assert edited.message_id == 800  # Telegram 编辑不分配新 id，和原消息完全一致
+    assert edited.text == "编辑后的文本"
+    assert edited.chat_id == 42
 
 
 def test_classify_document_image_rules():
@@ -870,6 +891,130 @@ def test_poll_loop_reply_to_receipt_appends_to_same_thread(monkeypatch, tmp_path
         assert len(user_msgs) == 2
 
     assert any("已补充到" in text for text in sent_texts[1:])
+
+
+def test_poll_loop_edited_message_updates_original_thread(monkeypatch, tmp_path):
+    """编辑一条本 bot 处理过的消息：归入原线程（不新建），回执明确说「已按编辑更新归入」，
+    不是像回复回执那样说「已补充到」——两者语义不同，编辑是修正内容，不是追加新材料。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-edit-known.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [{"update_id": 50, "message": {"message_id": 800, "chat": {"id": 42}, "text": "第一条线索，没有可识别链接"}}],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent_texts: list[str] = []
+
+    def fake_send(token, chat_id, text):
+        sent_texts.append(text)
+        return 9001
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", fake_send)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1
+        thread_id = threads[0].id
+        user_msgs = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == thread_id, ChatMessage.role == "user")
+        ).all()
+        assert len(user_msgs) == 1
+        assert user_msgs[0].metadata_json.get("source_tg_message_id") == 800
+
+    # 第二批：编辑同一条消息。Telegram 编辑事件的 message_id 和原消息完全一致。
+    batches.append(
+        [
+            {
+                "update_id": 51,
+                "edited_message": {
+                    "message_id": 800,
+                    "chat": {"id": 42},
+                    "text": "第一条线索，改了个错别字",
+                },
+            }
+        ]
+    )
+    batches.append([])
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1  # 没有新建线程
+        user_msgs = session.exec(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id, ChatMessage.role == "user")
+            .order_by(ChatMessage.created_at.asc())
+        ).all()
+        assert len(user_msgs) == 2
+        assert user_msgs[1].content == "第一条线索，改了个错别字"
+        assert user_msgs[1].metadata_json.get("edited_from_tg_message_id") == 800
+
+    assert any("已按编辑更新归入" in text for text in sent_texts)
+
+
+def test_poll_loop_edited_unknown_message_is_silently_ignored(monkeypatch, tmp_path):
+    """编辑一条本机没处理过的消息（太久远/不是本 bot 落盘的）：零线程零回执，静默忽略——
+    这是用户抱怨的核心场景：手滑改个错别字不应该刷出新线索或打扰机主。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-edit-unknown.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    from backend.app.models import ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [
+            {
+                "update_id": 60,
+                "edited_message": {
+                    "message_id": 999999,
+                    "chat": {"id": 42},
+                    "text": "编辑了一条本机不认识的老消息",
+                },
+            }
+        ],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent_texts: list[str] = []
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: sent_texts.append(text))
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    assert sent_texts == []
+    with db.Session(db.engine) as session:
+        assert session.exec(select(ChatThread)).all() == []
 
 
 def test_poll_loop_reply_to_unknown_message_falls_back_to_new_thread(monkeypatch, tmp_path):
@@ -1179,7 +1324,9 @@ def test_poll_loop_accepts_numeric_string_chat_id(monkeypatch, tmp_path):
     monkeypatch.setattr(
         main,
         "_persist_ingest_to_chat",
-        lambda session, text, image_data_url=None, target_thread_id=None: calls["persisted"].append(text)
+        lambda session, text, image_data_url=None, target_thread_id=None, source_tg_message_id=None, edited_from_tg_message_id=None: calls[
+            "persisted"
+        ].append(text)
         or {"candidate_count": 1, "unmatched": False, "needs_ai": False},
     )
     main.settings = replace(

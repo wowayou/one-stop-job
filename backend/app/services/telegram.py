@@ -89,6 +89,11 @@ class ExtractedMessage:
     reply_to_message_id: int | None = None
     # 同一相册（多图一次发送）里的分组 id；同批次内相同 id 的后续消息应追加到同一线程。
     media_group_id: str | None = None
+    # 这条消息自身的 Telegram message_id；编辑事件的 message_id 和被编辑的原消息完全一致
+    # （Telegram 编辑不会分配新 id），因此可以用它反查「这是不是在编辑本 bot 处理过的消息」。
+    message_id: int | None = None
+    # True 表示这条 update 来自 edited_message（用户编辑了一条老消息），不是全新消息。
+    is_edit: bool = False
 
 
 def extract_message(update: dict) -> ExtractedMessage:
@@ -97,11 +102,19 @@ def extract_message(update: dict) -> ExtractedMessage:
     链接不是唯一事实源：用户常直接发一张招聘截图，或「以文件发送」一张图片（document）。
     同时取出 reply_to_message_id（用户回复了哪条消息）和 media_group_id（相册分组），
     供轮询循环判断「这次材料应该追加到哪条已有线索」。
+
+    `message` 和 `edited_message` 必须分开处理，不能简单 `or` 到一起：过去两者被当成同一件事，
+    结果是用户编辑一条老消息（哪怕只是改个错别字）会被当成全新消息重新走一遍完整 ingest，
+    刷出一堆多余的新线程/新回执——这正是本次要修的问题，见 main.py 里对 is_edit 的处理。
     """
-    message = update.get("message") or update.get("edited_message") or {}
+    edited = update.get("edited_message")
+    is_edit = isinstance(edited, dict)
+    message = edited if is_edit else (update.get("message") or {})
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
     text = message.get("text") or message.get("caption") or ""
+    raw_message_id = message.get("message_id")
+    message_id = raw_message_id if isinstance(raw_message_id, int) else None
 
     photo_file_id: str | None = None
     photos = message.get("photo")
@@ -141,6 +154,8 @@ def extract_message(update: dict) -> ExtractedMessage:
         document_file_size=document_file_size,
         reply_to_message_id=reply_to_message_id,
         media_group_id=media_group_id,
+        message_id=message_id,
+        is_edit=is_edit,
     )
 
 
