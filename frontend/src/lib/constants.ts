@@ -18,6 +18,20 @@ export const TOUR_STEPS: TourStep[] = [
 
 export const statuses = ["all", "new", "researching", "fit", "applied", "interview", "offer", "rejected", "archived"];
 
+export const jobStatuses = statuses.filter((item) => item !== "all");
+
+export const statusLabels: Record<string, string> = {
+  all: "全部",
+  new: "新增",
+  researching: "待调研",
+  fit: "合适",
+  applied: "已投递",
+  interview: "面试",
+  offer: "Offer",
+  rejected: "拒绝",
+  archived: "归档"
+};
+
 export const draftKindLabels: Record<string, string> = {
   boss_message: "沟通草稿",
   communication_draft: "沟通草稿",
