@@ -244,9 +244,23 @@ nav {
   overflow-x: hidden;
 }
 
+/* 折叠态下 logo 方块(.brand-mark)、隐藏的文案(.brand-copy)、折叠按钮(.sidebar-toggle)三者
+   要和下面 nav 里的图标共用同一条垂直中线。nav 已经用 width:100% 撑满侧栏内容区宽度，
+   再让 nav-item 用左右等宽 padding 把图标居中在这条宽度中间；.brand 之前没有对应的
+   width:100%，缺了这条尺寸基准，会导致 shrink-to-fit 后的宽度不等于 nav 的宽度，
+   子项各自居中出来的中线因此和 nav 图标错开。这里补上同宽度基准 + 双重居中保险：
+   align-items:center 处理常规布局，brand-mark/sidebar-toggle 各自的 margin:0 auto
+   是即使前者因为某些边界情况失效也依然生效的兜底（auto 外边距在 flex 交叉轴上的
+   居中优先级高于 align-items）。 */
 .sidebar-collapsed .brand {
   flex-direction: column;
+  align-items: center;
   gap: 10px;
+  width: 100%;
+}
+
+.sidebar-collapsed .brand-mark {
+  margin: 0 auto;
 }
 
 /* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
@@ -278,7 +292,7 @@ nav {
 }
 
 .sidebar-collapsed .sidebar-toggle {
-  margin-left: 0;
+  margin: 0 auto;
 }
 
 .run-strip {
@@ -2250,8 +2264,9 @@ meter {
   gap: 8px;
   width: 100%;
   min-width: 0;
-  height: 36px;
-  padding: 0 10px;
+  /* 高度/内边距对齐 .searchbox（岗位池搜索框），让新加的聊天选项和页面其它输入框是同一套规格。 */
+  min-height: 40px;
+  padding: 0 12px;
   border: 1px solid #d8ded8;
   border-radius: 8px;
   background: #fbfcfa;
@@ -2344,7 +2359,9 @@ meter {
   align-content: start;
   gap: 7px;
   min-height: 0;
-  padding: 10px;
+  /* 水平内边距和 .chat-sidebar-head / .chat-job-create 的 14px 对齐，让线程行与上面
+     搜索框/按钮共用同一条左右边线，不是自成一列的窄内边距。 */
+  padding: 10px 14px;
   overflow-y: auto;
 }
 
@@ -2359,9 +2376,30 @@ meter {
   min-width: 0;
 }
 
-.chat-thread-delete {
+.chat-thread-delete,
+.chat-thread-select {
   align-self: center;
   flex-shrink: 0;
+}
+
+.chat-thread-select {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+}
+
+.chat-thread-batch-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid #e1e7e1;
+  background: #f7faf7;
+  color: #445048;
+  font-size: 13px;
 }
 
 .chat-thread {
@@ -2846,6 +2884,15 @@ meter {
   white-space: pre-wrap;
 }
 
+.candidate-restore {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px 10px;
+  color: #68766c;
+  font-size: 12px;
+}
+
 .decision-head {
   justify-content: flex-start;
 }
@@ -3084,6 +3131,14 @@ meter {
 
   .sidebar-collapsed .brand {
     flex-direction: row;
+    /* 窄屏没有折叠 rail，.brand 要和 nav 并排挤在同一行里；desktop 折叠态给 .brand 加的
+       width:100%/margin:0 auto 是 rail 内居中专用的，这里必须还原，否则会把 brand-mark
+       挤成一整行居中，和右边的 nav 抢位置。 */
+    width: auto;
+  }
+
+  .sidebar-collapsed .brand-mark {
+    margin: 0;
   }
 
   .sidebar-collapsed .brand-copy,

@@ -235,6 +235,17 @@ export type ChatThreadDetail = {
   messages: ChatMessage[];
 };
 
+export type ChatThreadBatchDeleteResult = {
+  id: number;
+  ok: boolean;
+  reason?: string;
+};
+
+export type ChatThreadBatchDeleteReply = {
+  results: ChatThreadBatchDeleteResult[];
+  deleted: number;
+};
+
 export type ChatReply = {
   thread: ChatThread;
   user_message: ChatMessage;

@@ -16,6 +16,7 @@ import {
   Inbox,
   Info,
   ImagePlus,
+  ListChecks,
   Loader2,
   MessageSquareText,
   NotebookPen,
@@ -40,7 +41,7 @@ import { api, apiUrl, copyToClipboard, downloadApiFile, errorMessage, jsonBody }
 import { hasAnyBusy, hasBusy, type BusyState, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour, { TourStep } from "./Tour";
-import type { AiProbeResult, AiStatus, AppConfig, ApplicationEvent, BoardWriteResult, ChatContextPreview, ChatMessage, ChatReply, ChatThread, ChatThreadDetail, Company, ContextRepoStatus, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, IngestCandidate, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
+import type { AiProbeResult, AiStatus, AppConfig, ApplicationEvent, BoardWriteResult, ChatContextPreview, ChatMessage, ChatReply, ChatThread, ChatThreadBatchDeleteReply, ChatThreadDetail, Company, ContextRepoStatus, DecisionAnalysis, Draft, FitScore, FollowUpTask, FunnelAnalytics, IngestCandidate, InterviewLog, InterviewPrep, Job, JobBulkUpdateResult, JobSourceStatus, ResearchItem, SourceRun, SprintBrief, StaleJob, UserProfile } from "./types";
 
 // 聚光灯引导步骤：只指向首屏稳定存在的元素，避免切视图编排，保持简单稳健。
 const TOUR_STEPS: TourStep[] = [
@@ -1864,6 +1865,9 @@ function ChatView({
   const [renaming, setRenaming] = useState(false);
   const [renameDraft, setRenameDraft] = useState("");
   const [deletingThreadId, setDeletingThreadId] = useState<number | null>(null);
+  const [manageMode, setManageMode] = useState(false);
+  const [selectedThreadIds, setSelectedThreadIds] = useState<Set<number>>(new Set());
+  const [batchDeleting, setBatchDeleting] = useState(false);
   const [error, setError] = useState("");
   const [preview, setPreview] = useState<ChatContextPreview | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
@@ -2068,6 +2072,46 @@ function ChatView({
     }
   }
 
+  function toggleManageMode() {
+    setManageMode((value) => !value);
+    setSelectedThreadIds(new Set());
+  }
+
+  function toggleThreadSelected(threadId: number, checked: boolean) {
+    setSelectedThreadIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(threadId);
+      else next.delete(threadId);
+      return next;
+    });
+  }
+
+  async function batchDeleteThreads() {
+    const ids = Array.from(selectedThreadIds);
+    if (!ids.length || batchDeleting) return;
+    if (!window.confirm(`将永久删除 ${ids.length} 个对话及其消息、截图附件，不可恢复。`)) return;
+    setBatchDeleting(true);
+    setError("");
+    try {
+      await api<ChatThreadBatchDeleteReply>("/api/chat/threads/batch-delete", {
+        method: "POST",
+        ...jsonBody({ ids }),
+      });
+      const deletedIds = new Set(ids);
+      setThreads((items) => items.filter((item) => !deletedIds.has(item.id)));
+      if (activeThreadId != null && deletedIds.has(activeThreadId)) {
+        setActiveThreadId(null);
+        setMessages([]);
+      }
+      setManageMode(false);
+      setSelectedThreadIds(new Set());
+    } catch (err) {
+      setError(errorMessage(err, "批量删除失败"));
+    } finally {
+      setBatchDeleting(false);
+    }
+  }
+
   function chooseImage(file?: File) {
     if (!file) return;
     if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
@@ -2106,7 +2150,19 @@ function ChatView({
       <aside className="chat-sidebar">
         <div className="chat-sidebar-head">
           <div><strong>对话</strong><small>刷新页面后仍会保留</small></div>
-          <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
+          <div className="row-actions">
+            <button
+              type="button"
+              className={manageMode ? "icon-button compact marked" : "icon-button compact"}
+              title={manageMode ? "退出管理" : "管理对话"}
+              aria-label={manageMode ? "退出管理" : "管理对话"}
+              onClick={toggleManageMode}
+              disabled={sending}
+            >
+              <ListChecks size={15} />
+            </button>
+            <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
+          </div>
         </div>
         <div className="chat-job-create">
           <JobPickerCombobox jobs={jobs} value={jobId} onChange={setJobId} disabled={sending} />
@@ -2120,20 +2176,40 @@ function ChatView({
                 <strong>{thread.title}</strong>
                 <small>{thread.last_message || "还没有消息"}</small>
               </button>
-              <button
-                type="button"
-                className="icon-button compact chat-thread-delete"
-                title="删除聊天"
-                aria-label={`删除聊天 ${thread.title}`}
-                onClick={() => deleteThread(thread)}
-                disabled={sending || deletingThreadId === thread.id}
-              >
-                {deletingThreadId === thread.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}
-              </button>
+              {manageMode ? (
+                <span className="chat-thread-select">
+                  <input
+                    type="checkbox"
+                    checked={selectedThreadIds.has(thread.id)}
+                    onChange={(event) => toggleThreadSelected(thread.id, event.target.checked)}
+                    aria-label={`选择聊天 ${thread.title}`}
+                  />
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="icon-button compact chat-thread-delete"
+                  title="删除聊天"
+                  aria-label={`删除聊天 ${thread.title}`}
+                  onClick={() => deleteThread(thread)}
+                  disabled={sending || deletingThreadId === thread.id}
+                >
+                  {deletingThreadId === thread.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}
+                </button>
+              )}
             </div>
           ))}
           {!loading && !threads.length && <p className="muted chat-empty-copy">先创建一个通用聊天，或者给某个岗位开专属聊天。</p>}
         </div>
+        {manageMode && selectedThreadIds.size > 0 && (
+          <div className="chat-thread-batch-bar">
+            <span>已选 {selectedThreadIds.size} 个</span>
+            <button className="primary-action" type="button" disabled={batchDeleting} onClick={() => void batchDeleteThreads()}>
+              {batchDeleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+              删除选中（{selectedThreadIds.size}）
+            </button>
+          </div>
+        )}
       </aside>
 
       <div className="chat-main">
@@ -2403,6 +2479,7 @@ function CandidateListCard({
   );
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
+  const [restoreBusyIndex, setRestoreBusyIndex] = useState<number | null>(null);
 
   function toggle(index: number) {
     if (candidates[index]?.status === "committed" || candidates[index]?.status === "skipped") return;
@@ -2443,6 +2520,28 @@ function CandidateListCard({
       onError(errorMessage(err, "写入看板失败"));
     } finally {
       setBoardWriteBusyIndex(null);
+    }
+  }
+
+  async function restore(index: number) {
+    setRestoreBusyIndex(index);
+    try {
+      const reply = await api<{ assistant_message: ChatMessage; results: BoardWriteResult[] }>(
+        `/api/chat/threads/${threadId}/candidates/restore`,
+        { method: "POST", ...jsonBody({ message_id: messageId, indexes: [index] }) }
+      );
+      onUpdated(reply.assistant_message);
+      const result = reply.results.find((item) => item.index === index);
+      if (result && !result.ok) {
+        onError(result.reason);
+        return;
+      }
+      // 恢复成功后并入待勾选集合，免得用户还要再手动勾一次。
+      setSelected((prev) => (prev.includes(index) ? prev : [...prev, index]));
+    } catch (err) {
+      onError(errorMessage(err, "恢复失败"));
+    } finally {
+      setRestoreBusyIndex(null);
     }
   }
 
@@ -2514,6 +2613,21 @@ function CandidateListCard({
                       "写入看板"
                     )}
                   </button>
+                </div>
+              )}
+              {status === "skipped" && (
+                <div className="candidate-restore">
+                  <button
+                    type="button"
+                    className="icon-button compact"
+                    title="恢复为待选"
+                    aria-label={`恢复候选 ${item.title || "未命名岗位"} 为待选`}
+                    disabled={restoreBusyIndex === index}
+                    onClick={() => void restore(index)}
+                  >
+                    {restoreBusyIndex === index ? <Loader2 className="spin" size={14} /> : <RotateCcw size={14} />}
+                  </button>
+                  <span>恢复为待选</span>
                 </div>
               )}
             </li>

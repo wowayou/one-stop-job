@@ -303,6 +303,133 @@ def test_commit_empty_indexes_skips_all(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+# ==================== 候选「跳过」可恢复：restore ====================
+
+
+def test_restore_skipped_candidate_becomes_pending_and_recommittable(monkeypatch, tmp_path):
+    """commit 一条 -> 跳过另一条 -> restore 跳过的 -> 它变 pending 且能再次 commit。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-restore.sqlite3")
+    from backend.app.models import Job
+    from backend.app.services import ai
+    from sqlmodel import select
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [
+            {"title": "岗位甲", "company_name": "甲司"},
+            {"title": "岗位乙", "company_name": "乙司"},
+        ],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            payload = (await client.post("/api/ingest", json={"text": "一段 JD 文本足够长"})).json()
+            thread_id = payload["thread"]["id"]
+            assistant_id = payload["assistant_message"]["id"]
+
+            # 提交第 0 个，第 1 个先按「全部跳过」处理（此时只影响仍是 pending 的第 1 个）。
+            commit0 = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": [0]},
+            )
+            assert commit0.status_code == 200, commit0.text
+            skip_rest = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": []},
+            )
+            assert skip_rest.status_code == 200, skip_rest.text
+            candidates = skip_rest.json()["assistant_message"]["metadata_json"]["candidates"]
+            assert candidates[0]["status"] == "committed"
+            assert candidates[1]["status"] == "skipped"
+
+            restore = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/restore",
+                json={"message_id": assistant_id, "indexes": [1]},
+            )
+            assert restore.status_code == 200, restore.text
+            restore_body = restore.json()
+            assert restore_body["results"] == [{"index": 1, "ok": True, "reason": "已恢复为待选"}]
+            restored_candidate = restore_body["assistant_message"]["metadata_json"]["candidates"][1]
+            assert restored_candidate["status"] == "pending"
+
+            commit1 = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": [1]},
+            )
+            assert commit1.status_code == 200, commit1.text
+            assert commit1.json()["created"] == 1
+
+            with db.Session(db.engine) as session:
+                jobs = session.exec(select(Job)).all()
+                assert len(jobs) == 2
+
+    asyncio.run(scenario())
+
+
+def test_restore_rejects_committed_candidate(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-restore-committed.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [{"title": "岗位甲", "company_name": "甲司"}],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            payload = (await client.post("/api/ingest", json={"text": "一段 JD 文本足够长"})).json()
+            thread_id = payload["thread"]["id"]
+            assistant_id = payload["assistant_message"]["id"]
+
+            commit = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": [0]},
+            )
+            assert commit.status_code == 200, commit.text
+
+            restore = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/restore",
+                json={"message_id": assistant_id, "indexes": [0]},
+            )
+            assert restore.status_code == 200, restore.text
+            body = restore.json()
+            assert body["results"] == [{"index": 0, "ok": False, "reason": "已入库无法恢复为待选"}]
+            candidate = body["assistant_message"]["metadata_json"]["candidates"][0]
+            assert candidate["status"] == "committed"  # 仍然入库状态，未被改动
+
+    asyncio.run(scenario())
+
+
+def test_restore_out_of_range_index_returns_400(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-restore-oob.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None: [{"title": "岗位甲", "company_name": "甲司"}],
+    )
+
+    async def scenario():
+        async for client in _client(main.app):
+            payload = (await client.post("/api/ingest", json={"text": "一段 JD 文本足够长"})).json()
+            thread_id = payload["thread"]["id"]
+            assistant_id = payload["assistant_message"]["id"]
+
+            restore = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/restore",
+                json={"message_id": assistant_id, "indexes": [5]},
+            )
+            assert restore.status_code == 400
+
+    asyncio.run(scenario())
+
+
 def test_ingest_endpoint_surfaces_ai_failure_reason_distinct_from_unmatched(monkeypatch, tmp_path):
     """修复 1：AI 已配置但调用失败时，聊天消息必须明确说「AI 抽取失败」，不能和「未认出」混在一起，
     也不能泄露密钥或裸 traceback；AI 正常返回 0 候选时仍是原来的「未认出」文案。"""

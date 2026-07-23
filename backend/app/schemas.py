@@ -225,6 +225,12 @@ class ChatThreadUpdate(SQLModel):
     )
 
 
+class ChatThreadBatchDeleteRequest(SQLModel):
+    """批量删除聊天线程（连同消息与截图附件），一次最多 100 个。"""
+
+    ids: list[int] = Field(default_factory=list)
+
+
 class ChatMessageCreate(SQLModel):
     content: str = Field(max_length=12000)
     image_data_url: Optional[str] = Field(default=None, max_length=6_000_000)

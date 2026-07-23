@@ -54,6 +54,7 @@ from .schemas import (
     ApplicationEventCreate,
     CandidatesCommitRequest,
     ChatMessageCreate,
+    ChatThreadBatchDeleteRequest,
     ChatThreadCreate,
     ChatThreadUpdate,
     CompanyUpdate,
@@ -1339,14 +1340,12 @@ async def update_chat_thread(thread_id: int, payload: ChatThreadUpdate, session:
     return _chat_thread_payload(session, thread)
 
 
-@app.delete("/api/chat/threads/{thread_id}")
-async def delete_chat_thread(thread_id: int, session: SessionDep) -> dict:
-    """删除整个聊天线程:连同全部消息与消息里引用的截图附件一起清理,不可恢复。"""
-    thread = session.get(ChatThread, thread_id)
-    if not thread:
-        raise HTTPException(status_code=404, detail="Chat thread not found")
+def _delete_chat_thread(session: Session, thread: ChatThread) -> None:
+    """删除单个线程连同全部消息与消息里引用的截图附件；调用方负责 `session.commit()`。
 
-    messages = session.exec(select(ChatMessage).where(ChatMessage.thread_id == thread_id)).all()
+    抽成内部函数供单删端点与批量删除端点共用，行为完全一致(消息+线程+附件文件都清)。
+    """
+    messages = session.exec(select(ChatMessage).where(ChatMessage.thread_id == thread.id)).all()
     attachment_ids = [
         message.metadata_json.get("attachment", {}).get("id")
         for message in messages
@@ -1356,12 +1355,46 @@ async def delete_chat_thread(thread_id: int, session: SessionDep) -> dict:
     for message in messages:
         session.delete(message)
     session.delete(thread)
-    session.commit()
 
     for attachment_id in attachment_ids:
         _remove_chat_attachment(attachment_id)
 
+
+@app.delete("/api/chat/threads/{thread_id}")
+async def delete_chat_thread(thread_id: int, session: SessionDep) -> dict:
+    """删除整个聊天线程:连同全部消息与消息里引用的截图附件一起清理,不可恢复。"""
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+
+    _delete_chat_thread(session, thread)
+    session.commit()
+
     return {"deleted": True, "id": thread_id}
+
+
+@app.post("/api/chat/threads/batch-delete")
+async def batch_delete_chat_threads(payload: ChatThreadBatchDeleteRequest, session: SessionDep) -> dict:
+    """批量删除聊天线程：逐个复用 `_delete_chat_thread`，整批只 commit 一次。
+
+    不存在的 id 只在响应里标注 `not_found`,不影响其余 id 的删除,也不会让整个请求失败。
+    """
+    if len(payload.ids) > 100:
+        raise HTTPException(status_code=400, detail="一次最多删除 100 个线程")
+
+    ids = list(dict.fromkeys(payload.ids))  # 去重且保持提交顺序
+    results: list[dict] = []
+    for thread_id in ids:
+        thread = session.get(ChatThread, thread_id)
+        if not thread:
+            results.append({"id": thread_id, "ok": False, "reason": "not_found"})
+            continue
+        _delete_chat_thread(session, thread)
+        results.append({"id": thread_id, "ok": True})
+
+    session.commit()
+
+    return {"results": results, "deleted": sum(1 for item in results if item["ok"])}
 
 
 @app.post("/api/chat/threads/{thread_id}/messages")
@@ -2138,6 +2171,62 @@ async def commit_candidates(thread_id: int, payload: CandidatesCommitRequest, se
         "created": created,
         "updated": updated,
         "scored": scored,
+    }
+
+
+@app.post("/api/chat/threads/{thread_id}/candidates/restore")
+async def restore_candidates(thread_id: int, payload: CandidatesCommitRequest, session: SessionDep) -> dict:
+    """把之前「跳过」的候选恢复成待选(pending),让用户能再次勾选入库。
+
+    已入库(committed)的候选拒绝恢复(要撤销入库应去岗位池处理,这里不做反向 upsert)；
+    已经是 pending 的幂等跳过。索引校验与 commit_candidates/board_write_candidates 一致。
+    """
+    thread = session.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Chat thread not found")
+    message = session.get(ChatMessage, payload.message_id)
+    if not message or message.thread_id != thread_id or message.role != "assistant":
+        raise HTTPException(status_code=404, detail="Candidate message not found")
+
+    # 深拷贝原因同 commit_candidates/board_write_candidates：浅拷贝下嵌套候选 dict 仍与原对象
+    # 共享引用，原地改完再整体赋值会被 SQLAlchemy 判为未变更而静默丢弃。
+    meta = copy.deepcopy(message.metadata_json or {})
+    candidates = meta.get("candidates") or []
+    if not candidates:
+        raise HTTPException(status_code=400, detail="该消息没有候选岗位")
+
+    indexes = sorted({int(i) for i in payload.indexes if isinstance(i, int) or str(i).isdigit()})
+    if not indexes:
+        raise HTTPException(status_code=400, detail="请至少选择一个候选")
+    for idx in indexes:
+        if idx < 0 or idx >= len(candidates):
+            raise HTTPException(status_code=400, detail=f"候选索引越界：{idx}")
+
+    results: list[dict] = []
+    for idx in indexes:
+        item = candidates[idx]
+        status = item.get("status") or "pending"
+        if status == "committed":
+            results.append({"index": idx, "ok": False, "reason": "已入库无法恢复为待选"})
+            continue
+        if status == "pending":
+            results.append({"index": idx, "ok": True, "reason": "已是待选", "skipped": True})
+            continue
+        item["status"] = "pending"
+        results.append({"index": idx, "ok": True, "reason": "已恢复为待选"})
+
+    meta["candidates"] = candidates
+    message.metadata_json = meta
+    session.add(message)
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(message)
+    session.refresh(thread)
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "assistant_message": message,
+        "results": results,
     }
 
 

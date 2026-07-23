@@ -536,6 +536,96 @@ def test_delete_chat_thread_does_not_affect_other_threads(monkeypatch, tmp_path)
     asyncio.run(scenario())
 
 
+def test_batch_delete_chat_threads_removes_messages_and_attachments(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "chat-batch-delete.sqlite3")
+    image_data_url = "data:image/png;base64,iVBORw0KGgo="
+
+    import backend.app.main as main
+    from dataclasses import replace
+
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
+
+    async def scenario():
+        async for client in _client(app):
+            thread_a = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            thread_b = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+            thread_c = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+
+            reply_a = await client.post(
+                f"/api/chat/threads/{thread_a['id']}/messages",
+                json={"content": "线程 A 截图", "image_data_url": image_data_url, "image_name": "a.png"},
+            )
+            attachment_a = reply_a.json()["user_message"]["metadata_json"]["attachment"]
+            path_a = main.settings.data_dir / "chat_attachments" / attachment_a["id"]
+            assert path_a.is_file()
+
+            resp = await client.post(
+                "/api/chat/threads/batch-delete",
+                json={"ids": [thread_a["id"], thread_b["id"], thread_c["id"]]},
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["deleted"] == 3
+            assert {r["id"]: r["ok"] for r in body["results"]} == {
+                thread_a["id"]: True,
+                thread_b["id"]: True,
+                thread_c["id"]: True,
+            }
+
+            assert not path_a.exists()
+            for thread in (thread_a, thread_b, thread_c):
+                missing = await client.get(f"/api/chat/threads/{thread['id']}")
+                assert missing.status_code == 404
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(str(tmp_path / "chat-batch-delete.sqlite3"))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM chat_threads").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_batch_delete_chat_threads_reports_not_found_without_failing_others(monkeypatch, tmp_path):
+    app = _fresh_app(monkeypatch, tmp_path, "chat-batch-delete-partial.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            thread = (await client.post("/api/chat/threads", json={"kind": "general"})).json()
+
+            resp = await client.post(
+                "/api/chat/threads/batch-delete",
+                json={"ids": [thread["id"], 999999]},
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["deleted"] == 1
+            results_by_id = {r["id"]: r for r in body["results"]}
+            assert results_by_id[thread["id"]]["ok"] is True
+            assert results_by_id[999999] == {"id": 999999, "ok": False, "reason": "not_found"}
+
+            missing = await client.get(f"/api/chat/threads/{thread['id']}")
+            assert missing.status_code == 404
+
+    asyncio.run(scenario())
+
+
+def test_batch_delete_chat_threads_rejects_over_limit(monkeypatch, tmp_path):
+    app = _fresh_app(monkeypatch, tmp_path, "chat-batch-delete-over-limit.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post(
+                "/api/chat/threads/batch-delete",
+                json={"ids": list(range(1, 102))},
+            )
+            assert resp.status_code == 400
+
+    asyncio.run(scenario())
+
+
 def _create_pre_resume_schema_db(db_path):
     conn = sqlite3.connect(db_path)
     conn.execute(
