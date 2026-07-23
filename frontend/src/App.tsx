@@ -42,6 +42,7 @@ import { TasksView } from "./views/TasksView";
 import {
   applicationEventLabels,
   GLOBAL_BUSY_KEYS,
+  SIDEBAR_COLLAPSED_KEY,
   TOUR_STEPS,
   USAGE_GUIDE_SEEN_KEY,
   YUANBAO_PROMPT
@@ -94,7 +95,13 @@ const navItems = [
 
 function App() {
   const [activeNav, setActiveNav] = useState<(typeof navItems)[number]["id"]>("chat");
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return window.localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
   const { busy, runBusy } = useBusyState();
   const [jobs, setJobs] = useState<Job[]>([]);
   const [companies, setCompanies] = useState<Company[]>([]);
@@ -772,7 +779,17 @@ function App() {
           <button
             type="button"
             className="sidebar-toggle"
-            onClick={() => setSidebarCollapsed((value) => !value)}
+            onClick={() =>
+              setSidebarCollapsed((value) => {
+                const next = !value;
+                try {
+                  window.localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next));
+                } catch {
+                  // localStorage 不可用时忽略，仅本次会话生效。
+                }
+                return next;
+              })
+            }
             title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
             aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
           >

@@ -92,6 +92,7 @@ export const JOB_PAGE_SIZE = 20;
 export const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v1";
 export const ACTIVE_CHAT_THREAD_KEY = "job-one-stop.active-chat-thread.v1";
 export const CHAT_USE_AI_KEY = "job-one-stop.chat-use-ai.v1";
+export const SIDEBAR_COLLAPSED_KEY = "job-one-stop.sidebar-collapsed.v1";
 export const GLOBAL_BUSY_KEYS = ["source-boss", "source-bebee", "upload", "wechat", "sprint", "manual", "profile", "export"] as const;
 
 export const PREVIEW_SECTION_LABELS: Record<string, string> = {
