@@ -56,19 +56,16 @@ from .schemas import (
     ChatThreadBatchDeleteRequest,
     ChatThreadCreate,
     ChatThreadUpdate,
-    CompanyUpdate,
-    DraftCreate,
     JobBulkUpdate,
     JobCreate,
     JobUpdate,
     IngestRequest,
     ProfileUpdate,
-    ResearchItemCreate,
     WeChatCollectRequest,
 )
 from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, probe_ai_connection, tailor_interview_prep_llm
 from .services.analytics import build_funnel_payload
-from .routers import followups, interviews
+from .routers import companies, drafts, followups, interviews
 from .services.chat_ingest import (
     _chat_attachment_path,
     _chat_thread_payload,
@@ -79,7 +76,6 @@ from .services.chat_ingest import (
     _persist_ingest_to_chat,
     _save_chat_image,
 )
-from .services.companies import company_list_payload
 from .services.context_repository import ContextRepository, ContextRepositoryError
 from .services.decision_chat import assistant_content, build_rule_analysis, mark_image_processed, merge_model_analysis
 from .services.collectors import TabularFileCollector, WeChatPasteCollector
@@ -324,6 +320,8 @@ if (FRONTEND_DIST / "assets").is_dir():
 # 按域拆分的路由（Phase R · R2）：逐组从 main.py 迁往 routers/，此处统一挂载。
 app.include_router(followups.router)
 app.include_router(interviews.router)
+app.include_router(companies.router)
+app.include_router(drafts.router)
 
 
 CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram"}
@@ -2024,59 +2022,6 @@ async def collect_yuanbao(session: SessionDep, prompt: str | None = None) -> dic
     return _run_wechat_collection(session, links, {}, source_label)
 
 
-@app.get("/api/companies")
-async def list_companies(session: SessionDep) -> list[dict]:
-    return company_list_payload(session)
-
-
-@app.get("/api/companies/{company_id}")
-async def get_company(company_id: int, session: SessionDep) -> dict:
-    company = session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    research = session.exec(select(ResearchItem).where(ResearchItem.company_id == company_id).order_by(ResearchItem.captured_at.desc())).all()
-    jobs = session.exec(select(Job).where(Job.company_id == company_id).order_by(Job.collected_at.desc())).all()
-    return {**company.model_dump(), "research_items": research, "jobs": jobs}
-
-
-@app.patch("/api/companies/{company_id}")
-async def update_company(company_id: int, payload: CompanyUpdate, session: SessionDep) -> Company:
-    company = session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    for key, value in payload.model_dump(exclude_unset=True).items():
-        setattr(company, key, value)
-    company.updated_at = utc_now()
-    session.add(company)
-    session.commit()
-    session.refresh(company)
-    return company
-
-
-@app.get("/api/companies/{company_id}/research")
-async def list_research(company_id: int, session: SessionDep) -> list[ResearchItem]:
-    return session.exec(select(ResearchItem).where(ResearchItem.company_id == company_id).order_by(ResearchItem.captured_at.desc())).all()
-
-
-@app.post("/api/companies/{company_id}/research")
-async def add_research(company_id: int, payload: ResearchItemCreate, session: SessionDep) -> ResearchItem:
-    if payload.source_type not in settings.research_sources:
-        raise HTTPException(status_code=400, detail=f"source_type must be one of: {', '.join(settings.research_sources)}")
-    company = session.get(Company, company_id)
-    if not company:
-        raise HTTPException(status_code=404, detail="Company not found")
-    item_payload = payload.model_dump(exclude_none=True)
-    if not item_payload.get("source_url"):
-        item_payload["source_url"] = "manual://local-note"
-    item = ResearchItem(company_id=company_id, **item_payload)
-    session.add(item)
-    company.updated_at = utc_now()
-    session.add(company)
-    session.commit()
-    session.refresh(item)
-    return item
-
-
 @app.get("/api/profile")
 async def get_profile(session: SessionDep) -> UserProfile:
     return _get_profile(session)
@@ -2196,18 +2141,6 @@ async def create_sprint_brief(
     return _create_sprint_payload(session, top_n=top_n, prep_n=prep_n, create_tasks=create_tasks, rescore=rescore)
 
 
-@app.get("/api/drafts")
-async def list_drafts(session: SessionDep) -> list[Draft]:
-    return session.exec(select(Draft).order_by(Draft.created_at.desc())).all()
-
-
-@app.post("/api/drafts")
-async def create_draft(payload: DraftCreate, session: SessionDep) -> Draft:
-    draft = Draft(**payload.model_dump())
-    session.add(draft)
-    session.commit()
-    session.refresh(draft)
-    return draft
 
 
 @app.get("/api/jobs/{job_id}/events")
