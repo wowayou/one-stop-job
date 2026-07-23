@@ -32,6 +32,8 @@ data/.yuanbao/
 
 # 本人材料/截图投递目录,绝不入库
 外部/
+外部截图/
+外部*/
 
 # 本地个人配置(从 config.example.yaml 生成);不入 Git,避免每次 pull 冲突
 config.yaml
