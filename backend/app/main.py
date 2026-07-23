@@ -66,6 +66,15 @@ from .schemas import (
 from .services.ai import analyze_decision_chat_llm, configured_model, is_ai_available, probe_ai_connection, tailor_interview_prep_llm
 from .services.analytics import build_funnel_payload
 from .routers import companies, drafts, followups, interviews
+from .services.queries import (
+    application_events as _application_events,
+    download_response as _download_response,
+    get_profile as _get_profile,
+    job_response as _job_response,
+    query_jobs as _query_jobs,
+    score_job_into_db as _score_job_into_db,
+    validate_weights as _validate_weights,
+)
 from .services.chat_ingest import (
     _chat_attachment_path,
     _chat_thread_payload,
@@ -483,31 +492,6 @@ def _safe_config_response(config: dict[str, Any]) -> dict:
     }
 
 
-def _validate_weights(weights: Any) -> None:
-    """校验一份 {维度: 权重} 字典：维度必须认识、权重必须是非负有限数字、合计不能超过 100。
-
-    两处调用：config.yaml 里 scoring.weights（首次建画像时的一次性种子默认值）和
-    `PUT /api/profile` 的 weights（scoring.py 实际读取、真正影响评分的那份）。
-    """
-    if not isinstance(weights, dict):
-        raise HTTPException(status_code=400, detail="scoring.weights must be an object")
-
-    unknown = sorted(str(key) for key in weights if key not in DEFAULT_WEIGHTS)
-    if unknown:
-        raise HTTPException(status_code=400, detail=f"评分权重包含未知维度：{', '.join(unknown)}")
-
-    total = 0.0
-    for key, value in weights.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-            raise HTTPException(status_code=400, detail=f"评分权重必须为非负数字：{key}")
-        if float(value) < 0:
-            raise HTTPException(status_code=400, detail=f"评分权重必须为非负数字：{key}")
-        total += float(value)
-
-    if total > 100:
-        raise HTTPException(status_code=400, detail=f"评分权重合计不能超过 100，当前为 {total:g}")
-
-
 def _validate_scoring_config(config: dict[str, Any]) -> None:
     scoring = config.get("scoring")
     if not isinstance(scoring, dict) or "weights" not in scoring:
@@ -764,73 +748,6 @@ def _job_payload(job: Job, latest: FitScore | None = None, source_links: list[Jo
     return job_payload(job, latest, source_links)
 
 
-def _job_response(session: Session, job: Job) -> dict:
-    latest = _latest_score_map(session, [job.id or 0]).get(job.id or 0)
-    links = _source_links_map(session, [job.id or 0]).get(job.id or 0, [])
-    return _job_payload(job, latest, links)
-
-
-def _query_jobs(
-    session: Session,
-    *,
-    search: str | None = None,
-    status: str | None = None,
-    source: str | None = None,
-    favorite: bool | None = None,
-) -> tuple[list[Job], dict[int, list[JobSourceLink]]]:
-    jobs = session.exec(select(Job).order_by(Job.favorite.desc(), Job.collected_at.desc())).all()
-    source_links = _source_links_map(session, [job.id for job in jobs if job.id])
-    if search:
-        needle = search.lower()
-        jobs = [job for job in jobs if needle in " ".join(filter(None, [job.title, job.company_name, job.skills, job.area])).lower()]
-    if status:
-        jobs = [job for job in jobs if job.status == status]
-    if source:
-        jobs = [
-            job
-            for job in jobs
-            if job.source == source or any(link.source == source for link in source_links.get(job.id or 0, []))
-        ]
-    if favorite is not None:
-        jobs = [job for job in jobs if job.favorite == favorite]
-    return jobs, source_links
-
-
-def _get_profile(session: Session) -> UserProfile:
-    profile = session.exec(select(UserProfile)).first()
-    if not profile:
-        profile = UserProfile(weights=settings.scoring_weights)
-        session.add(profile)
-        session.commit()
-        session.refresh(profile)
-    return profile
-
-
-def _score_job_into_db(session: Session, job: Job, profile: UserProfile) -> FitScore:
-    companies = company_map(session, [job.company_id] if job.company_id else [])
-    research_by_company = research_items_map(session, [job.company_id] if job.company_id else [])
-    company = companies.get(job.company_id or 0)
-    result = score_job(job, company, research_by_company.get(job.company_id or 0, []), profile)
-    score = FitScore(job_id=job.id or 0, total=result.total, hard_blocked=result.hard_blocked, details=result.details)
-    session.add(score)
-    session.commit()
-    session.refresh(score)
-    return score
-
-
-def _application_events(session: Session, *, job_id: int | None = None) -> list[ApplicationEvent]:
-    statement = select(ApplicationEvent).order_by(ApplicationEvent.event_date.desc(), ApplicationEvent.created_at.desc())
-    if job_id is not None:
-        statement = statement.where(ApplicationEvent.job_id == job_id)
-    return session.exec(statement).all()
-
-
-def _download_response(filename: str, content: str, media_type: str) -> Response:
-    return Response(
-        content=content,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
 
 
 def _delete_jobs_with_related(session: Session, job_ids: list[int]) -> int:
