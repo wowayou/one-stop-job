@@ -815,17 +815,15 @@ function App() {
             );
           })}
         </nav>
-        {activeNav !== "chat" && (
-          <div className="run-strip">
-            <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
-            <strong>{latestRun?.status ?? "未运行"}</strong>
-            <small>
-              {latestRun
-                ? `${latestRun.fetched_count} 抓取 / ${latestRun.created_count} 新增 / ${latestRun.updated_count} 更新${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
-                : "等待首次采集"}
-            </small>
-          </div>
-        )}
+        <div className="run-strip">
+          <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
+          <strong>{latestRun?.status ?? "未运行"}</strong>
+          <small>
+            {latestRun
+              ? `${latestRun.fetched_count} 抓取 / ${latestRun.created_count} 新增 / ${latestRun.updated_count} 更新${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
+              : "等待首次采集"}
+          </small>
+        </div>
         <div className="run-strip ai-status">
           <span>AI 配置</span>
           <strong>{aiStatusLabel(aiStatus)}</strong>

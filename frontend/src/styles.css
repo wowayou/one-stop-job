@@ -107,13 +107,20 @@ button:disabled,
   --sidebar-w: 76px;
 }
 
+/* 侧栏本身不再整体滚动：display:flex column + overflow:hidden 只当外壳。
+   会变长的是 nav（导航项多时），需要一直贴底可见的是后面的 run-strip 们
+   （「最近采集」+「AI 配置/测试连接」）。滚动职责下放给 nav 自己（见下），
+   这样无论 nav 多长，footer 都不会被挤出视口——细节见 nav 规则的注释。
+   overscroll-behavior/scrollbar-gutter 留在这里不删：桌面态 .sidebar 本身
+   不再滚动时它们是无操作的死权重，但 ≤980px 断点会把 .sidebar 自己重新变回
+   横向可滚动的容器（见文件底部媒体查询），到时候正是这两条在起作用。 */
 .sidebar {
   display: flex;
   flex-direction: column;
   gap: 24px;
   min-height: 0;
   padding: 22px 16px;
-  overflow-y: auto;
+  overflow: hidden;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   background: #17201b;
@@ -160,9 +167,21 @@ button:disabled,
   font-size: 12px;
 }
 
+/* nav 是侧栏里唯一允许内部滚动的区域：flex:1 让它吃掉 .sidebar 里
+   brand 和后面两个 run-strip 之外的全部剩余高度，min-height:0 允许它在
+   内容比可用空间高时收缩而不是把 .sidebar 撑爆；超出部分交给自己的
+   overflow-y:auto 处理。这样不管导航项有多少、视口有多矮，紧跟在 nav
+   后面的「最近采集」「AI 配置」永远贴着 .sidebar 的底部、永远在可见区内
+   ——常见的 7 个导航项在正常视口下高度够用，不会触发这里的滚动。 */
 nav {
   display: grid;
   gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 
 .nav-item,
@@ -192,10 +211,13 @@ nav {
   /* 图标和标签的间距挪到 .nav-label 自己的 margin-left 上（见下）而不是这里的 gap：
      gap 在 flex 子项之间是固定值，就算标签宽度收到 0 也不会跟着让出来，图标会被
      那截残留间距顶得偏移。折叠时只让 margin-left 一起过渡到 0，图标位置才真正不动。
-     水平内边距在折叠态改成 17px（覆盖下面 .sidebar-collapsed .nav-item），让 18px 图标
-     刚好占满内容区、天然居中——不再靠不可过渡的 justify-content 翻转来强行居中，图标
-     全程只是随 padding 平滑挪动，不会有瞬间跳变。这个 17px 和图标 size=18 是配套的，
-     改图标尺寸时要一起调（(52 - 图标宽) / 2，52 = 折叠后 rail 76px 减侧栏左右内边距 24px）。 */
+     这里的左右 padding（12px）展开/折叠两态**永远不变**、不被任何选择器覆盖——图标的
+     绝对水平位置 = .sidebar 自己的水平 padding + 这里的水平 padding，两层 padding 只要
+     在两态下各自都是常量，图标 x 坐标就是同一个值，是「压根没变」而不是「变了但过渡
+     得很平滑」。旧版本曾经让折叠态在这里改用 17px、把图标重新居中到变窄的 rail 里，
+     代价是图标左边缘真的挪动了位置（哪怕过渡再平滑，起点终点也不同，肉眼看是一跳）。
+     现在改为让 `.sidebar-collapsed .sidebar` 的水平 padding 和展开态对齐（16px），
+     变窄的只是 rail 总宽度本身，图标在其中的绝对坐标纹丝不动，折叠 rail 里自然居中。 */
   gap: 0;
   background: transparent;
   color: #dce3df;
@@ -240,7 +262,10 @@ nav {
 .sidebar-collapsed .sidebar {
   align-items: center;
   gap: 18px;
-  padding: 18px 12px;
+  /* 水平 padding 特意和展开态（16px）保持一致，不再收成 12px：这是「图标绝对位置
+     不位移」方案的另一半，见上面 .nav-item 内的详细注释。变窄的只是 rail 总宽度
+     （--sidebar-w 76px），不是这里的内边距。 */
+  padding: 18px 16px;
   overflow-x: hidden;
 }
 
@@ -287,10 +312,6 @@ nav {
   width: 100%;
 }
 
-.sidebar-collapsed .nav-item {
-  padding: 0 17px;
-}
-
 .sidebar-collapsed .sidebar-toggle {
   margin: 0 auto;
 }
@@ -307,10 +328,6 @@ nav {
   border-radius: 8px;
   background: #202c26;
   transition: opacity 0.2s ease-out, max-height 0.2s ease-out, padding 0.2s ease-out, border-width 0.2s ease-out;
-}
-
-.sidebar nav + .run-strip {
-  margin-top: auto;
 }
 
 /* Quality floor：侧边栏折叠是本次唯一的动效签名，减弱动态偏好下必须整体关闭，不只是变快。 */
@@ -3189,6 +3206,14 @@ meter {
   .sidebar nav {
     display: flex;
     width: auto;
+    /* 桌面态给 nav 加的 flex:1/min-height:0/overflow-y:auto 是为了在纵向排列的
+       侧栏里把「最近采集」「AI 配置」footer 挤到底部、需要时才内部滚动；窄屏这里
+       是横向排列的顶部条，没有 footer 溢出的问题（.run-strip 本来就整体隐藏），
+       这几条针对纵向滚动的属性在这里没有意义，显式还原成横向布局本来的默认值，
+       避免不必要的副作用。 */
+    flex: 0 1 auto;
+    min-height: auto;
+    overflow: visible;
   }
 
   .nav-item {
