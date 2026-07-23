@@ -32,16 +32,16 @@ _USER_TMPL = """从下文抽取所有岗位，返回严格 JSON 对象：{{"jobs
 >>>"""
 
 
-def is_ai_available() -> bool:
-    """是否具备调用条件（有 API key）。是否真正启用还取决于 config.yaml ai.enabled。"""
-    return bool(os.getenv("OPENAI_API_KEY"))
-
-
 def _model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
 def _client():
+    """现状的单一 provider 客户端：OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL。
+
+    未配置 `ai.providers` 时，`_providers()` 的默认项直接复用这个函数（保持向后兼容，
+    也保留测试里对 `_client` 的 monkeypatch 入口）。
+    """
     from openai import OpenAI
 
     from ..config import get_settings
@@ -54,6 +54,84 @@ def _client():
     if base:
         kwargs["base_url"] = base
     return OpenAI(**kwargs)
+
+
+# ==================== 多 provider 自动容错（可选） ====================
+# config.yaml `ai.providers` 给一个可选的候选列表，按顺序尝试，前面失败自动切下一个；
+# 每个 provider 内部还有限重试 + 指数退避。不配置 `ai.providers` 时完全回退现状
+# （单一 OPENAI_* 环境变量，见 `_client()`），对调用方零感知。
+_MAX_RETRIES_PER_PROVIDER = 2  # 每个 provider 除首次调用外，最多再重试这么多次
+_RETRY_BACKOFF_SECONDS = (1.0, 2.0)  # 相邻两次重试前的退避秒数；第 N 次重试取第 N-1 档（越界取最后一档）
+
+
+def _client_for(resolved: dict):
+    """按单个 provider 已解析好的 `{api_key, base_url, timeout}` 建一个独立客户端。"""
+    from openai import OpenAI
+
+    kwargs: dict = {"api_key": resolved["api_key"], "timeout": resolved["timeout"]}
+    if resolved.get("base_url"):
+        kwargs["base_url"] = resolved["base_url"]
+    return OpenAI(**kwargs)
+
+
+def _normalize_provider(entry: dict) -> dict | None:
+    """把 `ai.providers` 里一条配置规整成 `{"client_factory": ..., "model": ...}`。
+
+    api_key 只从 `api_key_env` 指向的环境变量读取（密钥绝不进 config.yaml）；读不到就
+    返回 None，由 `_providers()` 过滤掉这一项。base_url/model 优先从各自的 `*_env`
+    读，其次是字面量 `base_url`/`model`，model 兜底 `_model()` 默认值；timeout 兜底
+    顶层 `ai.timeout_seconds`。
+    """
+    if not isinstance(entry, dict):
+        return None
+    api_key_env = entry.get("api_key_env")
+    api_key = os.getenv(api_key_env) if api_key_env else None
+    if not api_key:
+        return None
+
+    base_url_env = entry.get("base_url_env")
+    base_url = (os.getenv(base_url_env) if base_url_env else None) or entry.get("base_url") or None
+
+    model_env = entry.get("model_env")
+    model = (os.getenv(model_env) if model_env else None) or entry.get("model") or _model()
+
+    timeout: float | None
+    try:
+        raw_timeout = entry.get("timeout_seconds")
+        timeout = float(raw_timeout) if raw_timeout is not None else None
+    except (TypeError, ValueError):
+        timeout = None
+    if not timeout or timeout <= 0:
+        from ..config import get_settings
+
+        timeout = get_settings().ai_timeout_seconds
+
+    resolved = {"api_key": api_key, "base_url": base_url, "timeout": timeout}
+    return {"client_factory": lambda resolved=resolved: _client_for(resolved), "model": model}
+
+
+def _providers() -> list[dict]:
+    """返回按顺序尝试的 provider 列表：`[{"client_factory": () -> client, "model": str}, ...]`。
+
+    配了非空的 `ai.providers` 列表就按其顺序规整，只保留能读到 api_key 的项（哪怕因此
+    得到空列表，也不再回退单一 provider——说明用户明确切到了多 provider 模式但配置有
+    误，不该悄悄换回旧行为）；完全没配 `ai.providers` 时回退现状——单一
+    OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL，`client_factory` 直接复用 `_client()`。
+    """
+    from ..config import get_settings
+
+    configured = get_settings().ai_config.get("providers")
+    if isinstance(configured, list) and configured:
+        return [p for p in (_normalize_provider(item) for item in configured) if p]
+
+    if not os.getenv("OPENAI_API_KEY"):
+        return []
+    return [{"client_factory": _client, "model": _model()}]
+
+
+def is_ai_available() -> bool:
+    """是否具备调用条件（至少一个 provider 能读到 api_key）。是否真正启用还取决于 config.yaml ai.enabled。"""
+    return bool(_providers())
 
 
 def _split_chunks(text: str, max_chars: int) -> list[str]:
@@ -73,26 +151,51 @@ def _split_chunks(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _chat(client, system: str, user) -> str:
+def _chat(system: str, user) -> str:
+    """按 `_providers()` 顺序尝试调用；单个 provider 失败按退避重试有限次数后换下一个。
+
+    全部 provider 都失败时抛出最后一个异常，交由调用方既有的 try/except 走规则/模板
+    降级（CLAUDE.md：AI 失败不改变现有降级语义）。没有任何可用 provider（无 key）时
+    同样抛出——调用方基本都已用 `is_ai_available()` 短路，正常不会走到这里。
+    """
+    providers = _providers()
+    if not providers:
+        raise RuntimeError("AI 未配置：没有可用的 provider（缺少 API key）")
+
     messages = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-    try:
-        resp = client.chat.completions.create(
-            model=_model(),
-            messages=messages,
-            temperature=0,
-            response_format={"type": "json_object"},
-        )
-    except Exception:
-        # 某些兼容端点不支持 response_format，退回普通调用
-        resp = client.chat.completions.create(model=_model(), messages=messages, temperature=0)
-    return resp.choices[0].message.content or ""
+
+    last_exc: Exception | None = None
+    for index, provider in enumerate(providers, start=1):
+        model = provider["model"]
+        for attempt in range(_MAX_RETRIES_PER_PROVIDER + 1):
+            try:
+                client = provider["client_factory"]()
+                try:
+                    resp = client.chat.completions.create(
+                        model=model,
+                        messages=messages,
+                        temperature=0,
+                        response_format={"type": "json_object"},
+                    )
+                except Exception:
+                    # 某些兼容端点不支持 response_format，退回普通调用
+                    resp = client.chat.completions.create(model=model, messages=messages, temperature=0)
+                return resp.choices[0].message.content or ""
+            except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常以便重试/切换
+                last_exc = exc
+                if attempt < _MAX_RETRIES_PER_PROVIDER:
+                    time.sleep(_RETRY_BACKOFF_SECONDS[min(attempt, len(_RETRY_BACKOFF_SECONDS) - 1)])
+        logger.warning("AI provider #%d 调用失败，切换下一个：%s", index, describe_extraction_error(last_exc))
+
+    assert last_exc is not None  # providers 非空时循环至少执行一次，必然留下最后一次异常
+    raise last_exc
 
 
-def _call(client, body_text: str) -> str:
-    return _chat(client, _SYSTEM, _USER_TMPL.format(body=body_text))
+def _call(body_text: str) -> str:
+    return _chat(_SYSTEM, _USER_TMPL.format(body=body_text))
 
 
 def _parse_jobs(content: str) -> list[dict]:
@@ -146,11 +249,10 @@ def extract_jobs_llm(body_text: str, url: str, og_title: str | None) -> list[dic
     from .wechat import _guess_company
 
     article_company = _guess_company(og_title)
-    client = _client()
 
     raw_jobs: list[dict] = []
     for chunk in _split_chunks(text, _MAX_CHARS):
-        raw_jobs.extend(_parse_jobs(_call(client, chunk)))
+        raw_jobs.extend(_parse_jobs(_call(chunk)))
 
     out: list[dict] = []
     for job in raw_jobs:
@@ -208,7 +310,7 @@ def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -
     else:
         user_content = user_text
 
-    content = _chat(_client(), _FREEFORM_SYSTEM, user_content)
+    content = _chat(_FREEFORM_SYSTEM, user_content)
 
     out: list[dict] = []
     for job in _parse_jobs(content):
@@ -302,7 +404,6 @@ def tailor_interview_prep_llm(context: dict[str, str], base: dict[str, str]) -> 
     if not is_ai_available():
         return None
     try:
-        client = _client()
         user = _TAILOR_USER_TMPL.format(
             title=context.get("title", ""),
             company_name=context.get("company_name", ""),
@@ -316,7 +417,7 @@ def tailor_interview_prep_llm(context: dict[str, str], base: dict[str, str]) -> 
             dealbreakers=context.get("dealbreakers", ""),
             base_json=json.dumps(base, ensure_ascii=False),
         )
-        content = _chat(client, _TAILOR_SYSTEM, user)
+        content = _chat(_TAILOR_SYSTEM, user)
     except Exception:
         logger.warning("AI 面试材料定制失败，回退模板", exc_info=True)
         return None
@@ -392,7 +493,7 @@ def analyze_decision_chat_llm(
                 {"type": "text", "text": user},
                 {"type": "image_url", "image_url": {"url": image_data_url, "detail": "low"}},
             ]
-        content = _chat(_client(), _DECISION_SYSTEM, user_content)
+        content = _chat(_DECISION_SYSTEM, user_content)
     except Exception:
         logger.warning("AI 决策聊天失败，回退规则分析", exc_info=True)
         return None
@@ -421,17 +522,24 @@ def probe_ai_connection() -> dict:
     """发一次最小合成请求，返回结构化自检结果（不含任何密钥/个人信息）。
 
     返回键：ok(bool) / stage("config"|"call") / reason(str) / model / latency_ms(可选)。
-    - 未配置 key：stage="config"，不发网络请求。
+    - 未配置任何 provider：stage="config"，不发网络请求。
     - 调用成功：ok=True，stage="call"，带 latency_ms。
     - 调用失败：ok=False，stage="call"，按 401/404/429/超时给出具体原因。
+
+    多 provider 语义：本函数走 `_chat()` 同一条容错路径——配置了多个 provider 时，
+    只要其中任意一个最终连通就算成功，中间失败的 provider 只在日志里可见（`_chat`
+    内部 `logger.warning`），不会体现在这里的返回值里。`model` 字段展示第一个 provider
+    的 model 仅供参考；实际命中的是第几个 provider 由 `_chat` 内部顺序/重试决定，
+    不在返回值里单独报告。
     """
-    model = _model()
-    if not is_ai_available():
-        return {"ok": False, "stage": "config", "reason": "未配置 OPENAI_API_KEY", "model": model}
+    providers = _providers()
+    model = providers[0]["model"] if providers else _model()
+    if not providers:
+        return {"ok": False, "stage": "config", "reason": "未配置任何 AI provider（缺少 API Key）", "model": model}
 
     started = time.monotonic()
     try:
-        _chat(_client(), _PROBE_SYSTEM, _PROBE_USER)
+        _chat(_PROBE_SYSTEM, _PROBE_USER)
     except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常
         logger.warning("AI 连接自检失败", exc_info=True)
         code = _status_code(exc)

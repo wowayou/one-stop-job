@@ -174,6 +174,8 @@ JOB_ONE_STOP_CONTEXT_REPO_PATH=D:\path\to\personal-context
 
 不配置 AI 不影响主流程：聊天保留规则判断，公众号回退到纯正则解析，面试准备回退到模板生成。仅粘贴一个登录态或受限网页链接时，聊天不会假装已经读取页面，而会要求补充正文或截图。
 
+**多 provider 自动容错（可选）**：顶级模型 API key 不稳时，可在 `config.yaml` 的 `ai.providers` 配一个候选列表，每项从各自的 `.env` 变量读 `api_key`/`base_url`/`model`（如 `OPENAI_API_KEY_BACKUP`）。调用时按顺序尝试，某个 provider 失败会先退避重试几次，仍失败才换下一个；全部 provider 都失败才会走既有的规则/模板降级。不配置 `ai.providers` 时行为和现状完全一致（只用上面的单一 `OPENAI_*` 环境变量）。密钥同样只进 `.env`，`config.yaml` 里只写“去哪个环境变量读”。
+
 ### 聊天数据与截图
 
 - 会话、规则运行结果和附件元数据保存在本地 SQLite。

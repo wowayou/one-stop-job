@@ -73,6 +73,8 @@ def test_tailor_returns_none_on_bad_json(monkeypatch):
 
 def test_tailor_returns_none_on_client_error(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    # 多 provider 容错引入了退避重试；桩掉 sleep，避免这个「全失败」用例真等退避秒数。
+    monkeypatch.setattr(ai.time, "sleep", lambda _s: None)
 
     def boom():
         raise RuntimeError("endpoint unreachable")
