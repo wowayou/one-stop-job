@@ -8,7 +8,7 @@ import importlib
 
 import httpx
 
-from backend.app.services import ai, bebee, collectors, importer, ingest, telegram, wechat
+from backend.app.services import ai, bebee, chat_ingest, collectors, importer, ingest, telegram, wechat
 from backend.app.services.wechat import ArticleFetch
 
 
@@ -1556,6 +1556,18 @@ def test_persist_ingest_and_poll_loop_write_chat_only():
         source = inspect.getsource(func)
         assert "upsert" not in source, f"{func.__name__} 不得出现 upsert 调用"
         assert "Job(" not in source, f"{func.__name__} 不得直接构造 Job"
+
+
+def test_chat_ingest_module_never_imports_importer():
+    """红线绊线（Phase R·R1 后）：ingest→chat 落盘助手下沉到 services/chat_ingest.py 后，
+    仍不得引用 importer/upsert——把「落盘只写聊天、绝不自动入库」的保证钉在新家。
+
+    落盘函数从 main.py 搬到 chat_ingest.py 只是搬家，红线不变；谁在这里塞回
+    importer/upsert（= ingest 自动入库），CI 立即翻红。
+    """
+    imported = _imported_names(chat_ingest)
+    assert not any("importer" in name for name in imported), "chat_ingest 不得引用 importer"
+    assert not any("upsert" in name.lower() for name in imported), "chat_ingest 不得引用 upsert_*"
 
 
 # ==================== 红线绊线：写回看板只能走 ContextWriter，且只能由确认后的按钮触发 ====================

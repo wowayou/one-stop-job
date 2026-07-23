@@ -34,7 +34,9 @@
 - `backend/app/services/importer.py` — `upsert_job_records` / `get_or_create_company`
 - `backend/app/services/<source>.py` — 单来源的抓取/解析细节(如 `wechat.py` / `bebee.py` / `ai.py` / `yuanbao.py`)
 - `backend/app/services/context_repository.py` — 外部个人操作仓库的只读白名单适配器；不得绕过它读取任意路径
-- `backend/app/main.py` — 薄路由 + `_run_collector` / `_run_wechat_collection` 生命周期封装
+- `backend/app/main.py` — 薄路由 + `_run_collector` / `_run_wechat_collection` 生命周期封装 + Telegram 轮询循环（Phase R 重构中，路由逐步迁往 `routers/`）
+- `backend/app/services/chat_ingest.py` — ingest→chat 落盘/线程查找/删除的中立模块（`_persist_ingest_to_chat` 等），被 chat 路由与 Telegram 轮询共享；**绝不 import importer / upsert（绊线测试锁定）**
+- `backend/app/deps.py` — 共享 FastAPI 依赖（`get_session` / `SessionDep`），供拆分后的路由模块统一 import
 - `backend/app/models.py` — 表结构(见红线 §3.5)，含 `JobSourceLink` 来源证据表
 
 ---
