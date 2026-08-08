@@ -64,10 +64,14 @@ export function ConfigView({
   const [envExampleOpen, setEnvExampleOpen] = useState(false);
   useEscapeClose(envExampleOpen, () => setEnvExampleOpen(false));
   // key 本身绝不进 React state 以外的任何地方（不落 config 草稿、不进 URL/日志）；
-  // 提交成功后立即清空这两个输入框，界面全程不回显 key。
-  const [aiKeyEnvName, setAiKeyEnvName] = useState("");
-  const [aiKeyValue, setAiKeyValue] = useState("");
-  const [aiKeySubmitting, setAiKeySubmitting] = useState(false);
+  // 每张 provider 卡各自一份草稿，按卡片 index 存取；提交成功后立即清空对应输入框，
+  // 界面全程不回显任何已保存的 key（只显示「已配置/未配置」徽标，来自 aiStatus.provider_keys）。
+  const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
+  const [providerKeyDrafts, setProviderKeyDrafts] = useState<Record<number, string>>({});
+  const [providerKeySubmitting, setProviderKeySubmitting] = useState<Record<number, boolean>>({});
+  // 「同时把这次填写的 key 也写入其它 provider」——同一个 key 服务多个 provider 卡时用，
+  // 只在提交那一刻起作用的临时选择，勾选的是"其它卡的 index"。
+  const [providerKeyApplyTargets, setProviderKeyApplyTargets] = useState<Record<number, number[]>>({});
   // 评分权重实际存在 UserProfile.weights（见 updateScoringWeights 的注释），是独立于
   // config.yaml 的一条草稿状态：从 profile 首次可用时播种一次，之后只由用户在这个 tab 里编辑，
   // 不随其它 tab 的 config 拉取/保存被打断。
@@ -92,34 +96,30 @@ export function ConfigView({
     };
   }, []);
 
-  function updateConfig(path: string[], value: unknown) {
-    setPayload((current) => (current ? { ...current, config: setConfigValue(current.config, path, value) } : current));
+  useEffect(() => {
+    let active = true;
+    api<AiStatus>("/api/ai/status")
+      .then((data) => {
+        if (active) setAiStatus(data);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function refreshAiStatus() {
+    try {
+      const latest = await api<AiStatus>("/api/ai/status");
+      setAiStatus(latest);
+      onAiStatus(latest);
+    } catch {
+      // 状态刷新失败不影响主流程；下次手动切换 tab 或保存时还会再拉一次。
+    }
   }
 
-  async function submitAiCredential(event: FormEvent) {
-    event.preventDefault();
-    const envName = aiKeyEnvName.trim();
-    const value = aiKeyValue;
-    if (!envName || !value) {
-      onNotify("error", "请填写 env 变量名和 key。");
-      return;
-    }
-    setAiKeySubmitting(true);
-    try {
-      const result = await api<{ ok: boolean; env_name: string }>(
-        "/api/ai/credentials",
-        { method: "POST", ...jsonBody({ env_name: envName, value }) }
-      );
-      setAiKeyValue("");
-      setAiKeyEnvName("");
-      onNotify("success", `已写入 .env · ${result.env_name}（重新测试连接即可生效）`);
-      const latestAi = await api<AiStatus>("/api/ai/status");
-      onAiStatus(latestAi);
-    } catch (err) {
-      onNotify("error", errorMessage(err, "写入 .env 失败"));
-    } finally {
-      setAiKeySubmitting(false);
-    }
+  function updateConfig(path: string[], value: unknown) {
+    setPayload((current) => (current ? { ...current, config: setConfigValue(current.config, path, value) } : current));
   }
 
   async function saveConfig(event: FormEvent) {
@@ -130,8 +130,7 @@ export function ConfigView({
       const saved = await api<AppConfig>("/api/config", { method: "PUT", ...jsonBody({ config: payload.config }) });
       setPayload(saved);
       onNotify("success", "系统配置已保存。", saved.restart_recommended_after_save);
-      const latestAi = await api<AiStatus>("/api/ai/status");
-      onAiStatus(latestAi);
+      await refreshAiStatus();
     } catch (err) {
       onNotify("error", errorMessage(err, "配置保存失败"));
     } finally {
@@ -175,12 +174,34 @@ export function ConfigView({
     updateProviders(aiProviders.map((provider, i) => (i === index ? { ...provider, [field]: value } : provider)));
   }
 
+  // 每张 provider 卡的 key 归属靠一个稳定、随机生成的 env 变量名（不是数组下标——下标会因
+  // 增删/重排错位而错位），生成后写进这张卡的 api_key_env，此后终身不变，对用户只读小字展示。
+  function generateProviderEnvName(): string {
+    const bytes = new Uint8Array(4);
+    if (typeof crypto !== "undefined" && "getRandomValues" in crypto) {
+      crypto.getRandomValues(bytes);
+    } else {
+      for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    const suffix = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    return `AI_PROVIDER_KEY_${suffix}`;
+  }
+
   function addProvider() {
-    updateProviders([...aiProviders, { api_key_env: "", base_url: "", model: "" }]);
+    updateProviders([...aiProviders, { label: "", api_key_env: generateProviderEnvName(), base_url: "", model: "" }]);
   }
 
   function removeProvider(index: number) {
     updateProviders(aiProviders.filter((_, i) => i !== index));
+    setProviderKeyDrafts((current) => {
+      const next: Record<number, string> = {};
+      Object.entries(current).forEach(([key, value]) => {
+        const i = Number(key);
+        if (i < index) next[i] = value;
+        else if (i > index) next[i - 1] = value;
+      });
+      return next;
+    });
   }
 
   function moveProvider(index: number, delta: number) {
@@ -190,6 +211,79 @@ export function ConfigView({
     const [item] = next.splice(index, 1);
     next.splice(target, 0, item);
     updateProviders(next);
+    // 草稿 key 输入跟着卡片一起挪位置，避免移动后卡片显示的是别家卡的未保存草稿。
+    setProviderKeyDrafts((current) => {
+      const draftA = current[index];
+      const draftB = current[target];
+      const next2 = { ...current };
+      if (draftB === undefined) delete next2[index];
+      else next2[index] = draftB;
+      if (draftA === undefined) delete next2[target];
+      else next2[target] = draftA;
+      return next2;
+    });
+  }
+
+  // 把当前草稿里的整个 ai 配置段单独 PUT 给后端（不牵动其它 tab 未保存的编辑）：
+  // 「保存 Key」需要保证「这张卡的 api_key_env」在 config.yaml 里落盘，否则 key 写进了
+  // .env 却没有 provider 引用它，ai.py 读不到。PUT /api/config 按 config.yaml 现状 +
+  // 传入的顶层段合并，不会波及未提交的其它 tab 草稿；成功后只把返回的 ai 段合回本地草稿。
+  async function persistAiSection(nextAi: Record<string, unknown>) {
+    const saved = await api<AppConfig>("/api/config", { method: "PUT", ...jsonBody({ config: { ai: nextAi } }) });
+    setPayload((current) => (current ? { ...current, config: setConfigValue(current.config, ["ai"], asConfigMap(saved.config.ai)) } : current));
+    return asConfigMap(saved.config.ai);
+  }
+
+  function toggleApplyTarget(index: number, targetIndex: number) {
+    setProviderKeyApplyTargets((current) => {
+      const existing = current[index] ?? [];
+      const next = existing.includes(targetIndex) ? existing.filter((i) => i !== targetIndex) : [...existing, targetIndex];
+      return { ...current, [index]: next };
+    });
+  }
+
+  async function saveProviderKey(index: number) {
+    const value = (providerKeyDrafts[index] ?? "").trim();
+    if (!value) {
+      onNotify("error", "请先填写 Key。");
+      return;
+    }
+    const targets = providerKeyApplyTargets[index] ?? [];
+    const cardIndexes = [index, ...targets];
+
+    setProviderKeySubmitting((current) => ({ ...current, [index]: true }));
+    try {
+      // 先确保参与本次保存的每张卡都有稳定 env 名（缺失才生成，已有的原样保留），一次性落盘，
+      // 保证「.env 里的 key」和「config.yaml 里引用它的 provider」不会出现只写一半的情况。
+      let nextProviders = aiProviders;
+      const envNames: string[] = [];
+      for (const cardIndex of cardIndexes) {
+        const current = nextProviders[cardIndex];
+        let envName = stringValue(current?.api_key_env).trim();
+        if (!envName) {
+          envName = generateProviderEnvName();
+          nextProviders = nextProviders.map((provider, i) => (i === cardIndex ? { ...provider, api_key_env: envName } : provider));
+        }
+        envNames.push(envName);
+      }
+      if (nextProviders !== aiProviders) {
+        await persistAiSection({ ...ai, providers: nextProviders });
+      }
+
+      for (const envName of envNames) {
+        // eslint-disable-next-line no-await-in-loop -- 顺序写多个 env，避免并发写 .env 互相覆盖
+        await api<{ ok: boolean; env_name: string }>("/api/ai/credentials", { method: "POST", ...jsonBody({ env_name: envName, value }) });
+      }
+
+      setProviderKeyDrafts((current) => ({ ...current, [index]: "" }));
+      setProviderKeyApplyTargets((current) => ({ ...current, [index]: [] }));
+      onNotify("success", `已写入 .env · ${envNames.join(" / ")}（重新测试连接即可生效）`);
+      await refreshAiStatus();
+    } catch (err) {
+      onNotify("error", errorMessage(err, "写入 .env 失败"));
+    } finally {
+      setProviderKeySubmitting((current) => ({ ...current, [index]: false }));
+    }
   }
 
   function sourceStatus(source?: JobSourceStatus) {
@@ -470,24 +564,22 @@ export function ConfigView({
                   />
                   <span>启用 AI 兜底</span>
                 </label>
-                <label>
-                  Provider
-                  <input value={stringValue(ai.provider, "openai_compatible")} onChange={(event) => updateConfig(["ai", "provider"], event.target.value)} />
-                </label>
-                <div className="config-status-grid compact">
-                  <div>
-                    <span>OPENAI_API_KEY</span>
-                    <strong>{payload.env.openai_api_key_configured ? "已配置" : "未配置"}</strong>
+                {payload.env.openai_api_key_configured && (
+                  <div className="config-status-grid compact">
+                    <div>
+                      <span>OPENAI_API_KEY（无 provider 卡时的兜底）</span>
+                      <strong>已配置</strong>
+                    </div>
+                    <div>
+                      <span>OPENAI_BASE_URL</span>
+                      <strong>{payload.env.openai_base_url_configured ? "已配置" : "默认"}</strong>
+                    </div>
+                    <div>
+                      <span>OPENAI_MODEL</span>
+                      <strong>{payload.env.openai_model}</strong>
+                    </div>
                   </div>
-                  <div>
-                    <span>OPENAI_BASE_URL</span>
-                    <strong>{payload.env.openai_base_url_configured ? "已配置" : "默认"}</strong>
-                  </div>
-                  <div>
-                    <span>OPENAI_MODEL</span>
-                    <strong>{payload.env.openai_model}</strong>
-                  </div>
-                </div>
+                )}
                 <button type="button" className="small-action config-example-button" onClick={() => setEnvExampleOpen(true)}>
                   <Info size={14} />
                   配置示例
@@ -495,113 +587,124 @@ export function ConfigView({
               </fieldset>
 
               <fieldset>
-                <legend>设置 API Key（写入本机 .env）</legend>
+                <legend>AI Provider（按顺序容错）</legend>
                 <p className="muted">
-                  key 只写入本机 <code>.env</code>，不进 config.yaml / 数据库 / git，界面也不会显示它。
+                  一张卡就是一个 provider：名称、Key、Base URL、Model 都在这张卡里填，Key 只属于这张卡。
+                  Key 只写入本机 <code>.env</code>，不进 config.yaml / 数据库 / git，界面全程不回显已保存的 key（只显示
+                  「已配置/未配置」）。列表按顺序尝试，前一个失败退避重试后换下一个。
                 </p>
-                <form className="inline-fields" onSubmit={submitAiCredential}>
-                  <label>
-                    env 变量名
-                    <input
-                      placeholder={stringValue(aiProviders[0]?.api_key_env) || "DASHSCOPE_API_KEY"}
-                      value={aiKeyEnvName}
-                      onChange={(event) => setAiKeyEnvName(event.target.value.toUpperCase())}
-                      autoComplete="off"
-                    />
-                  </label>
-                  <label>
-                    Key
-                    <input
-                      type="password"
-                      placeholder="sk-..."
-                      value={aiKeyValue}
-                      onChange={(event) => setAiKeyValue(event.target.value)}
-                      autoComplete="new-password"
-                    />
-                  </label>
-                  <button type="submit" className="small-action" disabled={aiKeySubmitting}>
-                    {aiKeySubmitting ? "写入中…" : "写入 .env"}
-                  </button>
-                </form>
-              </fieldset>
-
-              <fieldset>
-                <legend>模型 Provider（按顺序容错）</legend>
-                <div className="config-alert warning" role="note">
-                  <AlertTriangle size={16} />
-                  <span>
-                    <strong>Key 不在这里填</strong>
-                    ——这里只填 key 所在的 <code>.env</code> 变量名（<code>api_key_env</code>）；真实密钥请写进项目根目录{" "}
-                    <code>.env</code>，例如 <code>DASHSCOPE_API_KEY=sk-...</code>。列表按顺序尝试，前一个失败退避重试后换下一个。
-                  </span>
-                </div>
                 {aiProviders.length === 0 && (
                   <p className="muted">
-                    未配置多 provider 列表；AI 兜底沿用单一 <code>OPENAI_API_KEY</code>/<code>OPENAI_BASE_URL</code>/
-                    <code>OPENAI_MODEL</code> 环境变量。点「添加 provider」可切到多 provider 容错模式。
+                    还没有 provider 卡；AI 兜底沿用单一 <code>OPENAI_API_KEY</code>/<code>OPENAI_BASE_URL</code>/
+                    <code>OPENAI_MODEL</code> 环境变量（见上方「配置示例」）。点「添加 Provider」开始按卡片管理。
                   </p>
                 )}
                 {aiProviders.length > 0 && (
-                  <div className="provider-list">
-                    {aiProviders.map((provider, index) => (
-                      <div className="provider-row" key={index}>
-                        <div className="inline-fields">
-                          <label>
-                            api_key_env
+                  <div className="provider-card-list">
+                    {aiProviders.map((provider, index) => {
+                      const envName = stringValue(provider.api_key_env).trim();
+                      const hasKey = Boolean(envName && aiStatus?.provider_keys?.[envName]);
+                      const submitting = Boolean(providerKeySubmitting[index]);
+                      const draft = providerKeyDrafts[index] ?? "";
+                      const otherProviders = aiProviders.map((p, i) => ({ p, i })).filter(({ i }) => i !== index);
+                      const selectedTargets = providerKeyApplyTargets[index] ?? [];
+                      return (
+                        <div className="provider-card" key={index}>
+                          <div className="provider-card-head">
                             <input
-                              placeholder="DASHSCOPE_API_KEY"
-                              value={stringValue(provider.api_key_env)}
-                              onChange={(event) => updateProviderField(index, "api_key_env", event.target.value)}
+                              className="provider-card-label"
+                              placeholder={`Provider #${index + 1}（名称可选，如「阿里 Qwen 视觉」）`}
+                              value={stringValue(provider.label)}
+                              onChange={(event) => updateProviderField(index, "label", event.target.value)}
                             />
+                            <div className="provider-row-actions">
+                              <button
+                                type="button"
+                                className="icon-button compact"
+                                title="上移"
+                                disabled={index === 0}
+                                onClick={() => moveProvider(index, -1)}
+                              >
+                                <ChevronUp size={14} />
+                              </button>
+                              <button
+                                type="button"
+                                className="icon-button compact"
+                                title="下移"
+                                disabled={index === aiProviders.length - 1}
+                                onClick={() => moveProvider(index, 1)}
+                              >
+                                <ChevronDown size={14} />
+                              </button>
+                              <button type="button" className="small-action" onClick={() => removeProvider(index)}>
+                                <Trash2 size={14} />
+                                删除
+                              </button>
+                            </div>
+                          </div>
+
+                          <label className="provider-key-field">
+                            <span>API Key</span>
+                            <div className="provider-key-row">
+                              <input
+                                type="password"
+                                placeholder={hasKey ? "已配置；留空则不改，填新值可更换" : "sk-..."}
+                                value={draft}
+                                onChange={(event) => setProviderKeyDrafts((current) => ({ ...current, [index]: event.target.value }))}
+                                autoComplete="new-password"
+                              />
+                              <button type="button" className="small-action" disabled={submitting} onClick={() => saveProviderKey(index)}>
+                                {submitting ? "保存中…" : "保存 Key"}
+                              </button>
+                              <span className={`status ${hasKey ? "ok" : "disabled"}`}>{hasKey ? "已配置" : "未配置"}</span>
+                            </div>
+                            <small className="muted">env：{envName || "保存 Key 后自动生成"}</small>
                           </label>
-                          <label>
-                            base_url
-                            <input
-                              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
-                              value={stringValue(provider.base_url)}
-                              onChange={(event) => updateProviderField(index, "base_url", event.target.value)}
-                            />
-                          </label>
-                          <label>
-                            model
-                            <input
-                              placeholder="qwen-vl-max"
-                              value={stringValue(provider.model)}
-                              onChange={(event) => updateProviderField(index, "model", event.target.value)}
-                            />
-                          </label>
+
+                          <div className="inline-fields">
+                            <label>
+                              Base URL
+                              <input
+                                placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                                value={stringValue(provider.base_url)}
+                                onChange={(event) => updateProviderField(index, "base_url", event.target.value)}
+                              />
+                            </label>
+                            <label>
+                              Model
+                              <input
+                                placeholder="qwen-vl-max"
+                                value={stringValue(provider.model)}
+                                onChange={(event) => updateProviderField(index, "model", event.target.value)}
+                              />
+                            </label>
+                          </div>
+
+                          {otherProviders.length > 0 && (
+                            <details className="provider-key-share">
+                              <summary>这次保存的 Key 也同时写入其它 Provider…</summary>
+                              <div className="provider-key-share-options">
+                                {otherProviders.map(({ p, i }) => (
+                                  <label className="provider-key-share-option" key={i}>
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedTargets.includes(i)}
+                                      onChange={() => toggleApplyTarget(index, i)}
+                                    />
+                                    <span>{stringValue(p.label) || `Provider #${i + 1}`}</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </details>
+                          )}
                         </div>
-                        <div className="provider-row-actions">
-                          <button
-                            type="button"
-                            className="icon-button compact"
-                            title="上移"
-                            disabled={index === 0}
-                            onClick={() => moveProvider(index, -1)}
-                          >
-                            <ChevronUp size={14} />
-                          </button>
-                          <button
-                            type="button"
-                            className="icon-button compact"
-                            title="下移"
-                            disabled={index === aiProviders.length - 1}
-                            onClick={() => moveProvider(index, 1)}
-                          >
-                            <ChevronDown size={14} />
-                          </button>
-                          <button type="button" className="small-action" onClick={() => removeProvider(index)}>
-                            <Trash2 size={14} />
-                            删除
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
                 <button type="button" className="small-action" onClick={addProvider}>
                   <Plus size={14} />
-                  添加 provider
+                  添加 Provider
                 </button>
               </fieldset>
             </div>

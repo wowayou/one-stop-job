@@ -821,6 +821,41 @@ def test_ai_status_endpoint_hides_secret_values(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_ai_status_endpoint_reports_per_provider_key_booleans_only(monkeypatch, tmp_path):
+    """每张 provider 卡靠 provider_keys[env_name] 显示「已配置/未配置」；响应绝不含 key 值。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "ai:\n"
+        "  enabled: true\n"
+        "  provider: openai_compatible\n"
+        "  providers:\n"
+        "    - label: 阿里 Qwen 视觉\n"
+        "      api_key_env: PROVIDER_A_KEY\n"
+        "      base_url: https://a.example.invalid/v1\n"
+        "      model: qwen-vl-max\n"
+        "    - label: 备用\n"
+        "      api_key_env: PROVIDER_B_KEY\n"
+        "      model: gpt-4o-mini\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("PROVIDER_A_KEY", "sk-provider-a-secret")
+    monkeypatch.delenv("PROVIDER_B_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    app = _fresh_app(monkeypatch, tmp_path, "ai-status-provider-keys.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.get("/api/ai/status")
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+
+            assert payload["provider_keys"] == {"PROVIDER_A_KEY": True, "PROVIDER_B_KEY": False}
+            assert "sk-provider-a-secret" not in resp.text
+
+    asyncio.run(scenario())
+
+
 def test_ai_test_endpoint_reports_success_without_leaking_secret(monkeypatch, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("ai:\n  enabled: true\n  provider: openai_compatible\n", encoding="utf-8")

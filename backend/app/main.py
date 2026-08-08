@@ -703,6 +703,25 @@ async def deployment_diagnostics() -> dict:
     return _deployment_diagnostics()
 
 
+def _provider_key_status(ai_cfg: dict[str, Any]) -> dict[str, bool]:
+    """按 `ai.providers` 里每条的 `api_key_env`，只回布尔「该 env 变量是否有值」。
+
+    绝不读出/回传密钥本身——只喂 `os.getenv(name)` 的真值判断给前端，用来在设置页
+    每张 provider 卡上显示「已配置 / 未配置」徽标（CLAUDE.md 红线：key 绝不进任何 GET 响应）。
+    """
+    providers_cfg = ai_cfg.get("providers")
+    if not isinstance(providers_cfg, list):
+        return {}
+    status: dict[str, bool] = {}
+    for entry in providers_cfg:
+        if not isinstance(entry, dict):
+            continue
+        env_name = entry.get("api_key_env")
+        if isinstance(env_name, str) and env_name:
+            status[env_name] = bool(os.getenv(env_name))
+    return status
+
+
 @app.get("/api/ai/status")
 async def ai_status() -> dict:
     ai_cfg = settings.config.get("ai", {})
@@ -715,6 +734,7 @@ async def ai_status() -> dict:
         "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         "api_key_configured": api_key_configured,
         "base_url_configured": bool(os.getenv("OPENAI_BASE_URL")),
+        "provider_keys": _provider_key_status(ai_cfg),
     }
 
 

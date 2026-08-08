@@ -1744,28 +1744,76 @@ legend {
   gap: 10px;
 }
 
-.provider-list {
+.provider-card-list {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
-.provider-row {
+.provider-card {
   display: grid;
-  gap: 8px;
-  padding: 12px;
+  gap: 10px;
+  padding: 14px;
   border: 1px solid #edf0ed;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #fbfcfa;
 }
 
-.provider-row .inline-fields {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.provider-card .inline-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.provider-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-card-label {
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
 }
 
 .provider-row-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+  flex-shrink: 0;
+}
+
+.provider-key-field {
+  display: grid;
+  gap: 4px;
+}
+
+.provider-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.provider-key-share {
+  font-size: 13px;
+  color: #66736b;
+}
+
+.provider-key-share summary {
+  cursor: pointer;
+}
+
+.provider-key-share-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  margin-top: 8px;
+}
+
+.provider-key-share-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #17201b;
 }
 
 .weight-rescore-hint {

@@ -147,6 +147,8 @@ export type AiStatus = {
   model: string;
   api_key_configured: boolean;
   base_url_configured: boolean;
+  /** 按 provider 卡的 api_key_env 变量名 -> 该 env 是否已配置；只含布尔值，绝无 key 本身。 */
+  provider_keys: Record<string, boolean>;
 };
 
 export type AiProbeResult = {
