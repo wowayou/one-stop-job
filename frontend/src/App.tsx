@@ -448,8 +448,16 @@ function App() {
     try {
       const result = await api<AiProbeResult>("/api/ai/test", { method: "POST" });
       setAiProbe(result);
+      // 侧栏底部那行结果容易被折叠/截断看不到，这里再弹一条醒目通知，确保测试反馈一定可见。
+      if (result.ok) {
+        notify("success", `AI 连接成功 · ${result.model}`, result.latency_ms != null ? [`响应 ${result.latency_ms}ms`] : undefined);
+      } else {
+        notify("error", "AI 连接失败", [result.reason]);
+      }
     } catch (err) {
-      setAiProbe({ ok: false, stage: "call", reason: errorMessage(err, "测试请求失败"), model: aiStatus?.model ?? "" });
+      const message = errorMessage(err, "测试请求失败");
+      setAiProbe({ ok: false, stage: "call", reason: message, model: aiStatus?.model ?? "" });
+      notify("error", "AI 测试请求失败", [message]);
     } finally {
       setAiTesting(false);
     }
