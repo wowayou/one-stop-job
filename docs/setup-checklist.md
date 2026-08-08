@@ -8,11 +8,10 @@
 
 | 变量 | 用途 | 从哪拿 |
 |---|---|---|
-| `OPENAI_API_KEY` | 截图/自由文本抽取候选岗位、面试准备按 JD 定制 | 你的 OpenAI(或兼容协议)服务商控制台 |
 | `TELEGRAM_BOT_TOKEN` | 手机发链接/文本/截图入 Telegram 通道 | 找 [@BotFather](https://t.me/BotFather) 创建 bot 获取 |
 | `JOB_ONE_STOP_CONTEXT_REPO_PATH` | 个人操作仓库(检查入口/决策规则/画像等只读白名单文件) | **当前运行 OS** 的绝对路径,例如 WSL 下 `/mnt/d/xxx`、Windows 下 `D:\xxx` |
 
-以上都是可选功能;不填对应变量,相关功能自动降级/关闭,不影响核心的岗位管理与评分。
+AI 的 API Key **不建议**直接手改 `.env`——见下面「AI 配置」走设置页,更不容易出错;两种方式最终都是写同一个 `.env`。以上都是可选功能;不配置,相关功能自动降级/关闭,不影响核心的岗位管理与评分。
 
 ### 2. `config.yaml`
 
@@ -20,9 +19,23 @@
 |---|---|---|
 | `telegram.enabled` | `true` | 启用 Telegram 长轮询(需要先填好 `TELEGRAM_BOT_TOKEN`) |
 | `telegram.allowed_chat_id` | 你自己的数字 chat id | 获取方法见 [docs/p0-device-checklist.md](p0-device-checklist.md) 「0. 前置配置」 |
-| `ai.enabled` | `true` | 启用 AI 兜底抽取与面试准备定制(需要先填好 `OPENAI_API_KEY`) |
+| `ai.enabled` | `true` | 启用 AI 兜底抽取与面试准备定制(需要先配好至少一个 Provider,见下面「AI 配置」) |
 
-改完 `.env` 或 `config.yaml` 后需要**完整重启**后端(`scripts/app.sh stop && scripts/app.sh start`,或 `update` 会自动重启),`--reload` 热更新和环境变量读取不是一回事。
+改完 `telegram.*` 等 `config.yaml` 项或手动改的 `.env` 后需要**完整重启**后端(`scripts/app.sh stop && scripts/app.sh start`,或 `update` 会自动重启),`--reload` 热更新和环境变量读取不是一回事;但通过设置页保存 AI Provider/Key 是例外,单进程部署模式下同进程内即时生效,不需要重启（见下方「AI 配置」）。
+
+### 3. AI 配置(可选,推荐走设置页)
+
+1. 启动后打开 `http://127.0.0.1:8000/`(或 `--reload` 模式下的前端地址),进入「设置 → AI」。
+2. 点「添加 Provider」,弹窗里填:
+   - 名称(可选,自己认得就行)
+   - Base URL:国内可用示例(阿里百炼 Qwen,兼容 OpenAI 协议)填 `https://dashscope.aliyuncs.com/compatible-mode/v1`
+   - Model:视觉任务(截图分析)填 `qwen-vl-max`,纯文本任务填 `qwen-plus`
+   - API Key:从服务商控制台复制(如阿里云 DashScope)
+3. 点「保存」——Key 只写入本机 `.env`,界面不会回显已保存的 Key,只显示「已配置/未配置」徽标。
+4. 回到「设置 → AI」勾选「启用 AI 兜底」并保存。
+5. 点「测试连接」验证真的能调用成功(不是只看 Key 字符串是否存在)。
+
+需要多个 Provider 做容错时重复上面步骤添加多张卡,列表会按顺序尝试,失败退避重试后换下一张。
 
 ## 启动与验证
 

@@ -93,6 +93,7 @@
 - 前端:React + Vite + TS;复用 `src/api.ts` 的 `api()/jsonBody()` 与既有 CSS 类(`modal`/`primary-action`/`icon-button`/`source-select` 等),不引重组件库。
 - 配置:`config.yaml`(每来源一段 + `scoring`/`followup` 等功能段)+ `.env`(密钥)。AI 走 OpenAI 兼容协议(`OPENAI_API_KEY`/`OPENAI_BASE_URL`),`ai.enabled` 默认关;启用后既做公众号 LLM 兜底抽取,也做面试准备按 JD 定制(`ai.tailor_interview_prep_llm`),不可用/失败时逐键回退 `prep.py` 模板。`followup.stale_days` 控制 fit/interview 岗位多少天无活动算「需跟进」(`services/followup.py`,source-agnostic)。
   多 provider 容错:`ai.providers` 列表(可选)按顺序尝试多个 OpenAI 兼容 provider,每个失败先退避重试再切下一个,全部失败才落进既有的规则/模板降级;密钥各进不同 `.env` 变量(`api_key_env`/`base_url_env`/`model_env` 指名去哪个 env 读),不进 `config.yaml`。不配置 `providers` 时行为与单一 `OPENAI_*` 环境变量完全一致(见 `services/ai.py::_providers`)。
+  Provider 卡可在设置页(`ConfigView` AI 区)以弹窗形式增/删/改/排序:每次操作都单独 `PUT /api/config` 落盘 `ai.providers`(`label`/`api_key_env`/`base_url`/`model`,均非密钥);Key 只经 `POST /api/ai/credentials` 写 `PROJECT_DIR/.env`(`env_name` 需匹配 `_ENV_NAME_PATTERN` 大写变量名,`_is_sensitive_key_name` 放行 `*_env` 结尾的引用字段,拦截字面量密钥字段),写完立即 `os.environ[...] + get_settings.cache_clear()`,单进程部署下同进程内即时生效,无需重启;`GET /api/ai/status` 的 `provider_keys` 只按 `api_key_env` 回布尔「该变量是否有值」,绝不回传密钥本身。
 - 外部个人上下文路径只进环境变量 `JOB_ONE_STOP_CONTEXT_REPO_PATH`；应用通过只读 `ContextRepository` 检查入口、决策规则、画像、看板和岗位卡，不在 `config.yaml` 保存宿主机绝对路径。
 - 依赖:核心进 `requirements.txt`;可选/重依赖进 `requirements-automation.txt`。
 

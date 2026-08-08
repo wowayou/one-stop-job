@@ -221,7 +221,9 @@ general:
 
 ### AI 配置（可选）
 
-编辑 `.env`：
+推荐走设置页：启动后打开 `http://127.0.0.1:8000/` → 设置 → AI → 「添加 Provider」，弹窗里填 Base URL / Model / API Key 后点「保存」——Key 只写本机 `.env`，单进程部署模式下**即时生效，无需重启**；界面全程不回显已保存的 Key。国内可用示例（阿里百炼 Qwen）：Base URL 填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，视觉任务用 `qwen-vl-max`、文本任务用 `qwen-plus`。最后勾选「启用 AI 兜底」保存。
+
+不想用设置页也可以手动编辑 `.env`（不配置任何 Provider 卡时的兜底）：
 
 ```bash
 OPENAI_API_KEY=sk-xxx
@@ -235,6 +237,8 @@ OPENAI_MODEL=gpt-4o-mini                     # 可选
 ai:
   enabled: true
 ```
+
+`config.yaml` 只保存 `ai.enabled` 和 provider 的非密钥字段，从不保存 Key 本身；详细步骤见 [docs/setup-checklist.md](docs/setup-checklist.md)。
 
 ### 更多可选配置（Telegram、个人上下文仓库等）
 

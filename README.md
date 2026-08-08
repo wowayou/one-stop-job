@@ -154,27 +154,32 @@ JOB_ONE_STOP_CONTEXT_REPO_PATH=D:\path\to\personal-context
 
 ### AI 配置（可选）
 
-用于决策聊天、公众号岗位抽取和面试准备：
+用于决策聊天、公众号岗位抽取和面试准备。推荐在设置页配置，也可以手动改 `.env`。
 
-1. 编辑 `.env`：
+**方式一（推荐）：设置页 → AI → Provider 卡**
 
-   ```bash
-   OPENAI_API_KEY=sk-xxx
-   OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
-   ```
+打开「设置 → AI」，点「添加 Provider」，在弹窗里填名称（可选）、Base URL、Model、API Key，点「保存」。Key 只写入本机 `.env`，**单进程部署模式下即时生效，无需重启**；界面全程不回显已保存的 Key，卡片只显示「已配置/未配置」徽标。国内可用示例（阿里百炼 Qwen，兼容 OpenAI 协议）：Base URL 填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，视觉任务用 `qwen-vl-max`、纯文本任务用 `qwen-plus`，Key 从阿里云 DashScope 控制台获取。
 
-2. 在 `config.yaml` 启用：
+多张 Provider 卡按顺序尝试，前一个调用失败会先退避重试几次，仍失败才换下一个；全部失败才会走既有的规则/模板降级。同一个 Key 服务多张卡时，弹窗里「这次填写的 Key 也同时写入其它 Provider」可以一次写多个 `.env` 变量。
 
-   ```yaml
-   ai:
-     enabled: true
-   ```
+最后在「设置 → AI」勾选「启用 AI 兜底」（对应 `config.yaml` 的 `ai.enabled: true`）。
+
+**方式二（手动）：直接编辑 `.env`**
+
+不想用设置页时，也可以自己在项目根目录 `.env` 里加：
+
+```bash
+OPENAI_API_KEY=sk-xxx
+OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
+```
+
+这是不配置任何 Provider 卡时的兜底环境变量；`config.yaml` 只保存 `ai.enabled` 和每张 Provider 卡的 `label`/`api_key_env`/`base_url`/`model`，**从不保存 Key 本身**。
+
+---
 
 启用后，「决策聊天」会把本次材料、最近对话、岗位事实和白名单个人上下文发送给配置的模型服务商；截图分析要求模型支持视觉输入。模型结果不能覆盖规则引擎发现的硬性失败。「面试准备」仍可按岗位 JD 和个人画像定制材料。
 
 不配置 AI 不影响主流程：聊天保留规则判断，公众号回退到纯正则解析，面试准备回退到模板生成。仅粘贴一个登录态或受限网页链接时，聊天不会假装已经读取页面，而会要求补充正文或截图。
-
-**多 provider 自动容错（可选）**：顶级模型 API key 不稳时，可在 `config.yaml` 的 `ai.providers` 配一个候选列表，每项从各自的 `.env` 变量读 `api_key`/`base_url`/`model`（如 `OPENAI_API_KEY_BACKUP`）。调用时按顺序尝试，某个 provider 失败会先退避重试几次，仍失败才换下一个；全部 provider 都失败才会走既有的规则/模板降级。不配置 `ai.providers` 时行为和现状完全一致（只用上面的单一 `OPENAI_*` 环境变量）。密钥同样只进 `.env`，`config.yaml` 里只写“去哪个环境变量读”。
 
 ### 聊天数据与截图
 
