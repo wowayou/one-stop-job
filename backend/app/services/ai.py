@@ -491,6 +491,35 @@ def configured_model() -> str:
     return _model()
 
 
+def active_provider_display() -> dict:
+    """状态展示用：当前 `_chat` 会**先**用的那个 provider 的 model 与 key/base_url 是否就绪。
+
+    配了 `ai.providers` 就取第一条（`_chat` 的实际起点），否则回退单一 `OPENAI_*`。
+    只回 model 名与两个布尔——**绝不回传密钥值**。修正过去 `ai_status` 恒读 `OPENAI_MODEL`
+    导致「配了 qwen 卡、状态却显示 deepseek」的不一致。
+    """
+    from ..config import get_settings
+
+    providers_cfg = get_settings().ai_config.get("providers")
+    if isinstance(providers_cfg, list) and providers_cfg:
+        first = next((p for p in providers_cfg if isinstance(p, dict)), None) or {}
+        model_env = first.get("model_env")
+        model = (os.getenv(model_env) if model_env else None) or first.get("model") or _model()
+        base_url_env = first.get("base_url_env")
+        base_url = (os.getenv(base_url_env) if base_url_env else None) or first.get("base_url")
+        key_env = first.get("api_key_env")
+        return {
+            "model": model,
+            "api_key_configured": bool(os.getenv(key_env)) if key_env else False,
+            "base_url_configured": bool(base_url),
+        }
+    return {
+        "model": _model(),
+        "api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "base_url_configured": bool(os.getenv("OPENAI_BASE_URL")),
+    }
+
+
 def analyze_decision_chat_llm(
     *,
     context: str,

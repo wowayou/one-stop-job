@@ -33,7 +33,7 @@ from .schemas import (
     AiCredentialUpdate,
     AppConfigUpdate,
 )
-from .services.ai import is_ai_available, probe_ai_connection
+from .services.ai import active_provider_display as ai_active_provider_display, is_ai_available, probe_ai_connection
 from .routers import chat, collect, companies, drafts, followups, interviews, jobs, misc, scoring
 from .services.queries import validate_weights as _validate_weights
 from .services.chat_ingest import (
@@ -726,14 +726,16 @@ def _provider_key_status(ai_cfg: dict[str, Any]) -> dict[str, bool]:
 async def ai_status() -> dict:
     ai_cfg = settings.config.get("ai", {})
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
-    api_key_configured = bool(os.getenv("OPENAI_API_KEY"))
+    # model/key/base_url 反映「_chat 实际会先用的那个 provider」（配了 ai.providers 就是第一张卡），
+    # 否则回退单一 OPENAI_*——修正过去恒显 OPENAI_MODEL 造成的「配 qwen 却显示 deepseek」不一致。
+    active = ai_active_provider_display()
     return {
         "enabled_in_config": bool(ai_cfg.get("enabled")),
         "available": bool(ai_cfg.get("enabled")) and is_ai_available(),
         "provider": str(ai_cfg.get("provider") or "openai_compatible"),
-        "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        "api_key_configured": api_key_configured,
-        "base_url_configured": bool(os.getenv("OPENAI_BASE_URL")),
+        "model": active["model"],
+        "api_key_configured": active["api_key_configured"],
+        "base_url_configured": active["base_url_configured"],
         "provider_keys": _provider_key_status(ai_cfg),
     }
 
