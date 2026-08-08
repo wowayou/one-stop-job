@@ -310,11 +310,24 @@ _FREEFORM_USER = """从下面的内容里抽取所有岗位，返回严格 JSON 
 """
 
 
-def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -> list[dict]:
+_PRIOR_CANDIDATE_KEYS = ("title", "company_name", "salary_text", "city", "area")
+_MAX_PRIOR_CANDIDATES = 5
+
+
+def extract_jobs_freeform(
+    text: str | None,
+    image_data_url: str | None = None,
+    *,
+    prior_candidates: list[dict] | None = None,
+) -> list[dict]:
     """把一段自由文本和/或一张截图抽成岗位 dict 列表（键与 normalizer 兼容）。
 
     text 与 image_data_url 至少给一个；两者都给时一起送模型（文本 + 图像）。
     不可用（无 key）/无输入时返回 []；模型正常返回但解析不出岗位时也返回 []。
+
+    prior_candidates：同一 ingest 线程里已识别的候选（如相册前几张图/上一轮补充前的结果），
+    仅供模型判断「本次内容是否是它们的补充片段」并合并补全，不改变输出 schema；
+    为空/None 时行为与不传完全一致。
 
     **调用异常不在此吞掉**：网络/鉴权/模型不支持图片输入等失败会原样向上抛出，
     由调用方（`ingest.run_ingest`）捕获并转成可读原因写回用户，避免「AI 已配置但
@@ -326,7 +339,22 @@ def extract_jobs_freeform(text: str | None, image_data_url: str | None = None) -
     if not text and not image_data_url:
         return []
 
-    user_text = _FREEFORM_USER + (f"\n内容：\n<<<\n{text[:_MAX_CHARS]}\n>>>" if text else "\n内容见随附截图。")
+    user_text = _FREEFORM_USER
+    if prior_candidates:
+        trimmed = []
+        for cand in prior_candidates[-_MAX_PRIOR_CANDIDATES:]:
+            if not isinstance(cand, dict):
+                continue
+            trimmed.append({key: cand.get(key, "") for key in _PRIOR_CANDIDATE_KEYS})
+        if trimmed:
+            prior_json = json.dumps(trimmed, ensure_ascii=False)
+            user_text += (
+                "\n已识别候选（可能是同一岗位的其它部分/前几张图，供你判断本次内容是否为它们的补充）："
+                f"\n<<<\n{prior_json}\n>>>"
+                "\n若本次内容是上述某个岗位的补充或续页（如只有任职要求/岗位职责），"
+                "请合并进该岗位、补全缺失字段，同一岗位只输出一条、不要重复；若确为全新岗位再另开对象。"
+            )
+    user_text += f"\n内容：\n<<<\n{text[:_MAX_CHARS]}\n>>>" if text else "\n内容见随附截图。"
     if image_data_url:
         user_content: object = [
             {"type": "text", "text": user_text},

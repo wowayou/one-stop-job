@@ -133,7 +133,7 @@ def test_run_ingest_freeform_when_ai_enabled(monkeypatch):
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [
+        lambda text, image_data_url=None, prior_candidates=None: [
             {"title": "BOSS 外贸运营", "company_name": "示例公司", "salary_text": "9-13K", "city": "示例市"}
         ],
     )
@@ -156,7 +156,7 @@ def test_run_ingest_ai_exception_surfaces_reason_without_leaking_key(monkeypatch
     """视觉/文本抽取抛异常时，run_ingest 必须把可读原因带出来，且不泄露密钥。"""
     from backend.app.services import ai
 
-    def boom(text, image_data_url=None):
+    def boom(text, image_data_url=None, prior_candidates=None):
         raise RuntimeError(
             "model does not support image input; Authorization: Bearer sk-liveTESTKEY1234567890 rejected"
         )
@@ -194,7 +194,7 @@ def test_run_ingest_ai_enabled_zero_candidates_has_no_ai_error(monkeypatch):
     """AI 正常调用但没认出岗位：ai_error 必须是 None，不能被误判为调用失败。"""
     from backend.app.services import ai
 
-    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None: [])
+    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None, prior_candidates=None: [])
     result = ingest.run_ingest(
         "一段随便的文本，认不出岗位。",
         wechat_cfg={"source_label": "公众号", "fetch": {}},
@@ -203,6 +203,184 @@ def test_run_ingest_ai_enabled_zero_candidates_has_no_ai_error(monkeypatch):
     )
     assert result["ai_error"] is None
     assert result["candidate_count"] == 0
+
+
+# ==================== 同一岗位跨图/跨消息补充：prior_candidates 上下文 ====================
+
+
+def test_extract_jobs_freeform_includes_prior_candidates_in_prompt(monkeypatch):
+    """碎片文本（只有「岗位职责」没有标题/公司）单独抽取本会 0 候选；带上已识别候选做上下文后，
+    prompt 必须包含那个候选的标题，模型才有机会判断「这是补充」而不是「没内容」。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    from backend.app.services import ai
+
+    captured: dict = {}
+
+    def fake_chat(system, user):
+        captured["system"] = system
+        captured["user"] = user
+        return (
+            '{"jobs":[{"title":"独立站运营","company_name":"未知公司","salary_text":"9-14K",'
+            '"city":"青岛","area":"青岛","description":"岗位职责：负责独立站运营"}]}'
+        )
+
+    monkeypatch.setattr(ai, "_chat", fake_chat)
+
+    prior = [
+        {
+            "title": "独立站运营",
+            "company_name": "未知公司",
+            "salary_text": "9-14K",
+            "city": "青岛",
+            "area": "青岛",
+        }
+    ]
+    jobs = ai.extract_jobs_freeform("岗位职责：负责独立站运营", None, prior_candidates=prior)
+
+    assert captured["user"].count("独立站运营") >= 1
+    assert "已识别候选" in captured["user"]
+    assert len(jobs) == 1
+    assert jobs[0]["title"] == "独立站运营"
+
+
+def test_extract_jobs_freeform_without_prior_candidates_matches_current_behavior(monkeypatch):
+    """不传 prior_candidates（默认 None）时 prompt 不应包含上下文块，行为与改动前完全一致。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    from backend.app.services import ai
+
+    captured: dict = {}
+
+    def fake_chat(system, user):
+        captured["user"] = user
+        return '{"jobs":[]}'
+
+    monkeypatch.setattr(ai, "_chat", fake_chat)
+
+    ai.extract_jobs_freeform("岗位职责：负责独立站运营", None)
+
+    assert "已识别候选" not in captured["user"]
+
+
+def test_persist_ingest_to_chat_feeds_target_thread_candidates_as_prior_context(monkeypatch, tmp_path):
+    """相册/回复补充场景：追加进一个已有 ingest 线程时，必须把该线程上一条 assistant 消息的
+    候选作为 prior_candidates 传给 run_ingest，且新消息追加进同一线程而不是新建线程。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-prior-candidates.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    prior_candidate = {
+        "title": "独立站运营",
+        "company_name": "未知公司",
+        "salary_text": "9-14K",
+        "city": "青岛",
+        "area": "青岛",
+        "status": "pending",
+        "job_id": None,
+    }
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="ingest", job_id=None, title="入库候选 · 独立站运营")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+
+        session.add(
+            ChatMessage(
+                thread_id=thread.id,
+                role="user",
+                content="独立站运营 未知公司 9-14K 青岛",
+            )
+        )
+        session.add(
+            ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content="识别到 1 个候选岗位。",
+                metadata_json={"candidates": [prior_candidate]},
+            )
+        )
+        session.commit()
+
+        captured: dict = {}
+
+        def fake_run_ingest(text, **kwargs):
+            captured["prior_candidates"] = kwargs.get("prior_candidates")
+            return {
+                "candidates": [],
+                "candidate_count": 0,
+                "sources_report": [],
+                "unmatched": True,
+                "needs_ai": False,
+                "ai_error": None,
+                "known_uncrawlable_hint": False,
+            }
+
+        monkeypatch.setattr(chat_ingest, "run_ingest", fake_run_ingest)
+
+        result = chat_ingest._persist_ingest_to_chat(
+            session, "岗位职责：负责独立站运营", None, target_thread_id=thread.id
+        )
+
+        assert captured["prior_candidates"] is not None
+        assert any(c.get("title") == "独立站运营" for c in captured["prior_candidates"])
+
+        assert result["thread"]["id"] == thread.id
+        assert result["appended"] is True
+
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1
+        user_msgs = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == thread.id, ChatMessage.role == "user")
+        ).all()
+        assert len(user_msgs) == 2
+
+
+def test_persist_ingest_prior_context_is_order_independent_and_deduped(monkeypatch, tmp_path):
+    """健壮性：prior_candidates 跨线程所有 assistant 消息累积，不依赖到达顺序，且按岗位去重。
+
+    构造：最早一条 assistant 有「独立站运营」，随后一条 assistant 没识别出岗位（空候选，
+    模拟碎片图先到主图后到里那张失败的），最新一条又重复出现「独立站运营」。
+    只看最后一条会拿到重复；跨消息累积去重后应恰好保留一条独立站运营。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-prior-order.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+
+    job = {"title": "独立站运营", "company_name": "未知公司", "salary_text": "9-14K", "city": "青岛", "area": "青岛"}
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="ingest", job_id=None, title="入库候选 · 独立站运营")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+
+        import time as _time
+
+        # 三条 assistant，按创建时间递增；中间一条空候选。
+        for content, meta in [
+            ("识别到 1 个候选岗位。", {"candidates": [job]}),
+            ("未从链接、文本或截图中认出岗位。", {"candidates": []}),
+            ("识别到 1 个候选岗位。", {"candidates": [dict(job)]}),
+        ]:
+            session.add(ChatMessage(thread_id=thread.id, role="assistant", content=content, metadata_json=meta))
+            session.commit()
+            _time.sleep(0.01)
+
+        captured: dict = {}
+
+        def fake_run_ingest(text, **kwargs):
+            captured["prior_candidates"] = kwargs.get("prior_candidates")
+            return {
+                "candidates": [], "candidate_count": 0, "sources_report": [],
+                "unmatched": True, "needs_ai": False, "ai_error": None, "known_uncrawlable_hint": False,
+            }
+
+        monkeypatch.setattr(chat_ingest, "run_ingest", fake_run_ingest)
+
+        chat_ingest._persist_ingest_to_chat(session, "岗位职责：负责独立站运营", None, target_thread_id=thread.id)
+
+        prior = captured["prior_candidates"]
+        assert prior is not None
+        titles = [c.get("title") for c in prior]
+        assert titles.count("独立站运营") == 1, f"应去重为一条，实际 {titles}"
 
 
 # ==================== 修复 2：BOSS/智联链接给出针对性提示 ====================
@@ -226,7 +404,7 @@ def test_run_ingest_zhipin_link_with_jd_text_still_extracts_normally(monkeypatch
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [
+        lambda text, image_data_url=None, prior_candidates=None: [
             {"title": "资深BI工程师", "company_name": "示例科技", "salary_text": "20-30K", "city": "上海"}
         ],
     )
@@ -265,7 +443,7 @@ def test_ingest_endpoint_writes_chat_not_jobs(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "截图岗位", "company_name": "X", "url": None}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "截图岗位", "company_name": "X", "url": None}],
     )
 
     async def scenario():
@@ -316,7 +494,7 @@ def test_commit_empty_indexes_skips_all(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "跳过岗位", "company_name": "Y"}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "跳过岗位", "company_name": "Y"}],
     )
 
     async def scenario():
@@ -352,7 +530,7 @@ def test_restore_skipped_candidate_becomes_pending_and_recommittable(monkeypatch
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [
+        lambda text, image_data_url=None, prior_candidates=None: [
             {"title": "岗位甲", "company_name": "甲司"},
             {"title": "岗位乙", "company_name": "乙司"},
         ],
@@ -411,7 +589,7 @@ def test_restore_rejects_committed_candidate(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "岗位甲", "company_name": "甲司"}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "岗位甲", "company_name": "甲司"}],
     )
 
     async def scenario():
@@ -447,7 +625,7 @@ def test_restore_out_of_range_index_returns_400(monkeypatch, tmp_path):
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "岗位甲", "company_name": "甲司"}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "岗位甲", "company_name": "甲司"}],
     )
 
     async def scenario():
@@ -472,7 +650,7 @@ def test_ingest_endpoint_surfaces_ai_failure_reason_distinct_from_unmatched(monk
     db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-ai-fail-http.sqlite3")
     from backend.app.services import ai
 
-    def boom(text, image_data_url=None):
+    def boom(text, image_data_url=None, prior_candidates=None):
         raise RuntimeError("vision model rejected request (key=sk-liveTESTKEY1234567890)")
 
     monkeypatch.setattr(ai, "extract_jobs_freeform", boom)
@@ -501,7 +679,7 @@ def test_ingest_endpoint_unmatched_text_still_says_not_recognized(monkeypatch, t
     db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-unmatched-http.sqlite3")
     from backend.app.services import ai
 
-    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None: [])
+    monkeypatch.setattr(ai, "extract_jobs_freeform", lambda text, image_data_url=None, prior_candidates=None: [])
 
     async def scenario():
         async for client in _client(main.app):
@@ -553,7 +731,7 @@ def test_ingest_endpoint_flags_existing_job_and_commit_reuses_job(monkeypatch, t
             monkeypatch.setattr(
                 ai,
                 "extract_jobs_freeform",
-                lambda text, image_data_url=None: [
+                lambda text, image_data_url=None, prior_candidates=None: [
                     {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海", "salary_text": "25-35K"}
                 ],
             )
@@ -605,7 +783,7 @@ def test_ingest_full_duplicate_merges_into_existing_thread(monkeypatch, tmp_path
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [
+        lambda text, image_data_url=None, prior_candidates=None: [
             {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海", "salary_text": "25-35K"}
         ],
     )
@@ -640,7 +818,7 @@ def test_ingest_partial_duplicate_tags_candidate_and_creates_new_thread(monkeypa
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
     )
 
     async def scenario():
@@ -652,7 +830,7 @@ def test_ingest_partial_duplicate_tags_candidate_and_creates_new_thread(monkeypa
             monkeypatch.setattr(
                 ai,
                 "extract_jobs_freeform",
-                lambda text, image_data_url=None: [
+                lambda text, image_data_url=None, prior_candidates=None: [
                     {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"},
                     {"title": "前端工程师", "company_name": "另一家公司", "city": "北京"},
                 ],
@@ -685,7 +863,7 @@ def test_ingest_duplicate_badge_coexists_with_existing_job_id(monkeypatch, tmp_p
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
+        lambda text, image_data_url=None, prior_candidates=None: [{"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"}],
     )
 
     async def scenario():
@@ -704,7 +882,7 @@ def test_ingest_duplicate_badge_coexists_with_existing_job_id(monkeypatch, tmp_p
             monkeypatch.setattr(
                 ai,
                 "extract_jobs_freeform",
-                lambda text, image_data_url=None: [
+                lambda text, image_data_url=None, prior_candidates=None: [
                     {"title": "资深BI工程师", "company_name": "示例科技", "city": "上海"},
                     {"title": "前端工程师", "company_name": "另一家公司", "city": "北京"},
                 ],

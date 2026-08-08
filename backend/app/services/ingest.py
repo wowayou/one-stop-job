@@ -201,6 +201,7 @@ def run_ingest(
     ai_enabled: bool,
     image_data_url: str | None = None,
     manual_source: str = "manual",
+    prior_candidates: list[dict] | None = None,
 ) -> dict:
     """文本（可含链接）和/或截图 → 候选岗位列表（**不写库**）。
 
@@ -212,6 +213,10 @@ def run_ingest(
       ai_error: AI 调用异常时的简短原因（None 表示没失败）,
       known_uncrawlable_links / known_uncrawlable_hint: 识别到的 BOSS/智联链接与是否需要提示,
     }
+
+    prior_candidates：同一 ingest 线程里已识别的候选（相册/回复补充场景），
+    透传给 `ai.extract_jobs_freeform` 供其判断本次内容是否为已识别岗位的补充片段；
+    仅影响 freeform 抽取分支，不改变其它逻辑。
     """
     text = text or ""
     classified = classify_links(text)
@@ -269,7 +274,7 @@ def run_ingest(
         from .ai import describe_extraction_error, extract_jobs_freeform
 
         try:
-            raw_jobs = extract_jobs_freeform(residual, image_data_url)
+            raw_jobs = extract_jobs_freeform(residual, image_data_url, prior_candidates=prior_candidates)
         except Exception as exc:  # noqa: BLE001 - 异常本身已在 ai.py 内不吞，这里是唯一捕获点
             logger.warning("freeform 抽取失败", exc_info=True)
             raw_jobs = []

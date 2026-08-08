@@ -96,7 +96,9 @@ def _patch_freeform(monkeypatch, title: str, company: str, salary: str = "8-12K"
     monkeypatch.setattr(
         ai,
         "extract_jobs_freeform",
-        lambda text, image_data_url=None: [{"title": title, "company_name": company, "salary_text": salary}],
+        lambda text, image_data_url=None, prior_candidates=None: [
+            {"title": title, "company_name": company, "salary_text": salary}
+        ],
     )
 
 

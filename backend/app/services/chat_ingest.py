@@ -36,8 +36,12 @@ from ..candidates import Candidate
 from ..config import Settings, get_settings
 from ..models import ChatMessage, ChatThread, Job, utc_now
 from .ai import is_ai_available
-from .ingest import find_duplicate_thread, run_ingest
+from .ingest import candidate_match_key, find_duplicate_thread, run_ingest
 from .jobs import job_ids_by_canonical_key
+
+# 复用线程时最多带多少条已识别候选给模型当上下文（与 ai.extract_jobs_freeform 内部再截一次一致，
+# 双保险控制 prompt 体积；单用户、同一线索里的岗位数量本就很小）。
+_MAX_PRIOR_CONTEXT_CANDIDATES = 5
 
 
 def _chat_thread_payload(session: Session, thread: ChatThread) -> dict:
@@ -235,6 +239,53 @@ def _persist_ingest_to_chat(
     ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
     text = (text or "").strip()
 
+    # 先解析 target_thread_id（相册/回复回执场景）：命中已有 ingest 线程时，把它已识别的候选
+    # 作为上下文喂给本次抽取——同一岗位拆多张图/多条消息时，单独一张碎片图（如只有「任职要求」）
+    # 独立抽取会一个岗位都认不出；带上已知候选，模型才能判断"这是补充"而不是"没内容"。
+    #
+    # 健壮性：跨该线程**所有** assistant 消息收集候选、按 match_key 去重，而不是只看最后一条——
+    # 这样才不依赖到达顺序（相册里「碎片图在前、主图在后」时也拿得到主图那条），也能把多轮补充
+    # 累积起来。从近到远遍历，同一岗位保留最近一条（最完整/已合并的版本胜出），最多带 5 条。
+    explicit_reuse_thread = None
+    prior_candidates: list[dict] = []
+    if target_thread_id is not None:
+        maybe_thread = session.get(ChatThread, target_thread_id)
+        if maybe_thread is not None and maybe_thread.kind == "ingest":
+            explicit_reuse_thread = maybe_thread
+            try:
+                assistants = session.exec(
+                    select(ChatMessage)
+                    .where(ChatMessage.thread_id == maybe_thread.id, ChatMessage.role == "assistant")
+                    .order_by(ChatMessage.created_at.desc())
+                ).all()
+                by_key: dict[str, dict] = {}
+                for msg in assistants:
+                    if not isinstance(msg.metadata_json, dict):
+                        continue
+                    stored = msg.metadata_json.get("candidates")
+                    if not isinstance(stored, list):
+                        continue
+                    for cand in stored:
+                        if not isinstance(cand, dict):
+                            continue
+                        # 去重 key：优先 canonical_key/标题+公司（candidate_match_key）；它对「公司未知」
+                        # 的候选会返回 None（去重安全考虑），但一个有真实**标题**、只是公司未知的岗位
+                        # （如「独立站运营·未知公司」——正是真机里的常见形态）当上下文完全有用，不能丢。
+                        # 所以 match_key 为空时退到「标题」做 key；连标题都没有的纯占位候选才跳过。
+                        key = candidate_match_key(cand)
+                        if not key:
+                            title = re.sub(r"\s+", "", str(cand.get("title") or "").strip().lower())
+                            if not title:
+                                continue
+                            key = f"title:{title}"
+                        if key not in by_key:
+                            by_key[key] = cand
+                    if len(by_key) >= _MAX_PRIOR_CONTEXT_CANDIDATES:
+                        break
+                prior_candidates = list(by_key.values())[:_MAX_PRIOR_CONTEXT_CANDIDATES]
+            except Exception:  # noqa: BLE001 - 上下文纯属锦上添花，读取异常绝不能打断 ingest 主流程
+                prior_candidates = []
+
     extract = run_ingest(
         text,
         wechat_cfg=settings.wechat_config,
@@ -242,6 +293,7 @@ def _persist_ingest_to_chat(
         ai_enabled=ai_enabled,
         image_data_url=image_data_url,
         manual_source=str(settings.ingest_config.get("manual_source") or "manual"),
+        prior_candidates=prior_candidates or None,
     )
 
     candidates: list[Candidate] = extract["candidates"]
@@ -253,11 +305,7 @@ def _persist_ingest_to_chat(
         if key and key in existing_by_key:
             candidate["existing_job_id"] = existing_by_key[key]
 
-    reused_thread = None
-    if target_thread_id is not None:
-        maybe_thread = session.get(ChatThread, target_thread_id)
-        if maybe_thread is not None and maybe_thread.kind == "ingest":
-            reused_thread = maybe_thread
+    reused_thread = explicit_reuse_thread
 
     # 重复检测：只在没有更明确的关联目标（回复回执/同相册）时才跑，避免和那两种「有意归并」互相打架。
     # 全部命中同一个既有线程 → 直接复用那个线程（不新建，等同 target_thread_id 机制）；
