@@ -376,11 +376,25 @@ async def app_unhandled_exception_handler(request: Request, exc: Exception):
     )
 
 
+def _is_sensitive_key_name(key: Any) -> bool:
+    """键名是否判为敏感（密钥类）。
+
+    `*_env` 结尾的键（如 `api_key_env`/`base_url_env`/`model_env`）存的是环境变量名，
+    不是密钥本身，`ai.providers` 靠它们在 config.yaml 里指名去哪个 `.env` 变量读取
+    真实密钥（见 services/ai.py::_normalize_provider）——放行；字面量密钥键
+    （`api_key`/`token`/`secret`/`password`/`authorization` 等，不以 `_env` 结尾）
+    仍然拦截，红线不变：真实密钥值绝不允许进 config.yaml。
+    """
+    normalized = str(key).lower().replace("-", "_")
+    if normalized.endswith("_env"):
+        return False
+    return any(marker in normalized for marker in SENSITIVE_CONFIG_KEYS)
+
+
 def _contains_sensitive_key(value: Any) -> bool:
     if isinstance(value, dict):
         for key, nested in value.items():
-            normalized = str(key).lower().replace("-", "_")
-            if any(marker in normalized for marker in SENSITIVE_CONFIG_KEYS):
+            if _is_sensitive_key_name(key):
                 return True
             if _contains_sensitive_key(nested):
                 return True
@@ -393,8 +407,7 @@ def _strip_sensitive_keys(value: Any) -> Any:
     if isinstance(value, dict):
         cleaned = {}
         for key, nested in value.items():
-            normalized = str(key).lower().replace("-", "_")
-            if any(marker in normalized for marker in SENSITIVE_CONFIG_KEYS):
+            if _is_sensitive_key_name(key):
                 continue
             cleaned[key] = _strip_sensitive_keys(nested)
         return cleaned

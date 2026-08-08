@@ -166,6 +166,10 @@ export function asConfigMap(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
 
+export function asConfigArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map((item) => asConfigMap(item)) : [];
+}
+
 export function stringValue(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }

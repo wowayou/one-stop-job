@@ -1739,6 +1739,30 @@ legend {
   gap: 10px;
 }
 
+.provider-list {
+  display: grid;
+  gap: 10px;
+}
+
+.provider-row {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid #edf0ed;
+  border-radius: 8px;
+  background: #fbfcfa;
+}
+
+.provider-row .inline-fields {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.provider-row-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .weight-rescore-hint {
   margin-top: 10px;
   line-height: 1.55;

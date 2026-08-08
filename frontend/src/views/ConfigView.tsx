@@ -1,10 +1,11 @@
-import { AlertTriangle, Info, Loader2, RefreshCw, X } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, Info, Loader2, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
 import { hasAnyBusy, hasBusy, type BusyState } from "../hooks/useBusyState";
 import { useEscapeClose } from "../hooks/useEscapeClose";
 import { DEFAULT_SCORING_WEIGHTS, GLOBAL_BUSY_KEYS } from "../lib/constants";
 import {
+  asConfigArray,
   asConfigMap,
   booleanValue,
   linesValue,
@@ -124,6 +125,7 @@ export function ConfigView({
   const wechatFetch = asConfigMap(wechat.fetch);
   const yuanbao = asConfigMap(wechat.yuanbao_automation);
   const ai = asConfigMap(config.ai);
+  const aiProviders = asConfigArray(ai.providers);
   const general = asConfigMap(config.general);
   const sourceByKey = (key: string) => sources.find((source) => source.key === key);
   const bossSource = sourceByKey("boss");
@@ -131,6 +133,33 @@ export function ConfigView({
   const bebeeStatus = sourceByKey("bebee");
   const wechatLabel = stringValue(wechat.source_label, "公众号");
   const latestWechatRun = runs.find((run) => run.source === wechatLabel);
+
+  // ai.providers 是有序 provider 列表，靠 *_env 字段名指名去哪个 .env 变量读真实密钥
+  // （services/ai.py::_normalize_provider）；这里只编辑数组结构，不涉及密钥本身。
+  function updateProviders(next: Record<string, unknown>[]) {
+    updateConfig(["ai", "providers"], next);
+  }
+
+  function updateProviderField(index: number, field: string, value: string) {
+    updateProviders(aiProviders.map((provider, i) => (i === index ? { ...provider, [field]: value } : provider)));
+  }
+
+  function addProvider() {
+    updateProviders([...aiProviders, { api_key_env: "", base_url: "", model: "" }]);
+  }
+
+  function removeProvider(index: number) {
+    updateProviders(aiProviders.filter((_, i) => i !== index));
+  }
+
+  function moveProvider(index: number, delta: number) {
+    const target = index + delta;
+    if (target < 0 || target >= aiProviders.length) return;
+    const next = [...aiProviders];
+    const [item] = next.splice(index, 1);
+    next.splice(target, 0, item);
+    updateProviders(next);
+  }
 
   function sourceStatus(source?: JobSourceStatus) {
     if (!source) return <span className="status not_configured">未配置</span>;
@@ -431,6 +460,86 @@ export function ConfigView({
                 <button type="button" className="small-action config-example-button" onClick={() => setEnvExampleOpen(true)}>
                   <Info size={14} />
                   配置示例
+                </button>
+              </fieldset>
+
+              <fieldset>
+                <legend>模型 Provider（按顺序容错）</legend>
+                <div className="config-alert warning" role="note">
+                  <AlertTriangle size={16} />
+                  <span>
+                    <strong>Key 不在这里填</strong>
+                    ——这里只填 key 所在的 <code>.env</code> 变量名（<code>api_key_env</code>）；真实密钥请写进项目根目录{" "}
+                    <code>.env</code>，例如 <code>DASHSCOPE_API_KEY=sk-...</code>。列表按顺序尝试，前一个失败退避重试后换下一个。
+                  </span>
+                </div>
+                {aiProviders.length === 0 && (
+                  <p className="muted">
+                    未配置多 provider 列表；AI 兜底沿用单一 <code>OPENAI_API_KEY</code>/<code>OPENAI_BASE_URL</code>/
+                    <code>OPENAI_MODEL</code> 环境变量。点「添加 provider」可切到多 provider 容错模式。
+                  </p>
+                )}
+                {aiProviders.length > 0 && (
+                  <div className="provider-list">
+                    {aiProviders.map((provider, index) => (
+                      <div className="provider-row" key={index}>
+                        <div className="inline-fields">
+                          <label>
+                            api_key_env
+                            <input
+                              placeholder="DASHSCOPE_API_KEY"
+                              value={stringValue(provider.api_key_env)}
+                              onChange={(event) => updateProviderField(index, "api_key_env", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            base_url
+                            <input
+                              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+                              value={stringValue(provider.base_url)}
+                              onChange={(event) => updateProviderField(index, "base_url", event.target.value)}
+                            />
+                          </label>
+                          <label>
+                            model
+                            <input
+                              placeholder="qwen-vl-max"
+                              value={stringValue(provider.model)}
+                              onChange={(event) => updateProviderField(index, "model", event.target.value)}
+                            />
+                          </label>
+                        </div>
+                        <div className="provider-row-actions">
+                          <button
+                            type="button"
+                            className="icon-button compact"
+                            title="上移"
+                            disabled={index === 0}
+                            onClick={() => moveProvider(index, -1)}
+                          >
+                            <ChevronUp size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className="icon-button compact"
+                            title="下移"
+                            disabled={index === aiProviders.length - 1}
+                            onClick={() => moveProvider(index, 1)}
+                          >
+                            <ChevronDown size={14} />
+                          </button>
+                          <button type="button" className="small-action" onClick={() => removeProvider(index)}>
+                            <Trash2 size={14} />
+                            删除
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <button type="button" className="small-action" onClick={addProvider}>
+                  <Plus size={14} />
+                  添加 provider
                 </button>
               </fieldset>
             </div>

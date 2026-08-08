@@ -953,6 +953,76 @@ def test_config_endpoint_updates_yaml_and_rejects_secrets(monkeypatch, tmp_path)
     asyncio.run(scenario())
 
 
+def test_config_endpoint_allows_provider_env_names_but_rejects_literal_keys(monkeypatch, tmp_path):
+    """`ai.providers` 的 `*_env` 字段存的是环境变量名，不是密钥本身，应该放行；
+    但同一批 providers 里混进字面量密钥（`api_key`）仍要被拦截，且不落盘。"""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  enabled: false\n  provider: openai_compatible\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    app = _fresh_app(monkeypatch, tmp_path, "config-providers.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            accepted = await client.put(
+                "/api/config",
+                json={
+                    "config": {
+                        "ai": {
+                            "enabled": True,
+                            "provider": "openai_compatible",
+                            "providers": [
+                                {
+                                    "api_key_env": "DASHSCOPE_API_KEY",
+                                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                                    "model": "qwen-vl-max",
+                                },
+                                {
+                                    "api_key_env": "OPENAI_API_KEY",
+                                    "base_url_env": "OPENAI_BASE_URL",
+                                    "model_env": "OPENAI_MODEL",
+                                },
+                            ],
+                        }
+                    }
+                },
+            )
+            assert accepted.status_code == 200, accepted.text
+            saved_providers = accepted.json()["config"]["ai"]["providers"]
+            assert saved_providers[0]["api_key_env"] == "DASHSCOPE_API_KEY"
+            assert saved_providers[0]["base_url"] == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            assert saved_providers[1]["model_env"] == "OPENAI_MODEL"
+
+            reread = await client.get("/api/config")
+            assert reread.status_code == 200, reread.text
+            reread_providers = reread.json()["config"]["ai"]["providers"]
+            assert reread_providers[0]["api_key_env"] == "DASHSCOPE_API_KEY"
+            assert reread_providers[1]["base_url_env"] == "OPENAI_BASE_URL"
+
+            saved_yaml = config_path.read_text(encoding="utf-8")
+            assert "DASHSCOPE_API_KEY" in saved_yaml
+            assert "api_key_env" in saved_yaml
+
+            rejected = await client.put(
+                "/api/config",
+                json={
+                    "config": {
+                        "ai": {
+                            "enabled": True,
+                            "provider": "openai_compatible",
+                            "providers": [
+                                {"api_key": "sk-real-secret", "base_url": "https://example.com/v1", "model": "m"},
+                            ],
+                        }
+                    }
+                },
+            )
+            assert rejected.status_code == 400
+            assert "sk-real-secret" not in config_path.read_text(encoding="utf-8")
+
+    asyncio.run(scenario())
+
+
 def test_invalid_config_is_reported_and_can_be_repaired(monkeypatch, tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("ai:\n  enabled: true\n    bad-indent: true\n", encoding="utf-8")
