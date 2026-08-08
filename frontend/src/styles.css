@@ -122,25 +122,30 @@ button:disabled,
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 14px;
   min-height: 0;
-  padding: 18px 16px;
+  padding: 16px 16px;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  /* 不用 scrollbar-gutter: stable——它会永久预留一条滚动条轨道，深色侧栏下看着像一直有个
-     多余的滚动条。改成常规 auto：内容放得下时（≥900px 视口）完全不显示滚动条，只有真的
-     矮到装不下时才短暂出现，届时轻微的一次性位移可以接受。 */
+  /* 侧栏内容放得下时（常规笔记本视口）无需滚动；真的矮到装不下时用滚轮/触控仍可滚，但
+     不显示滚动条——深色侧栏上一条滚动条既丑又容易被误读成「多了一条」。scrollbar-width:none
+     (Firefox) + ::-webkit-scrollbar display:none (Chrome/Edge) 把它视觉隐藏，同时保留可滚动。 */
+  scrollbar-width: none;
   background: #17201b;
   color: #f8faf7;
   transition: gap 0.2s ease-out, padding 0.2s ease-out;
+}
+
+.sidebar::-webkit-scrollbar {
+  display: none;
 }
 
 .brand {
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 48px;
+  min-height: 44px;
   min-width: 0;
   /* 和 nav/.run-strip 一样禁止收缩：矮视口下宁可让 .sidebar 整体滚动，也不让
      头部被压扁。 */
@@ -240,7 +245,7 @@ nav {
 .nav-item {
   justify-content: flex-start;
   width: 100%;
-  min-height: 42px;
+  min-height: 38px;
   padding: 0 12px;
   /* 图标和标签的间距挪到 .nav-label 自己的 margin-left 上（见下）而不是这里的 gap：
      gap 在 flex 子项之间是固定值，就算标签宽度收到 0 也不会跟着让出来，图标会被
@@ -355,7 +360,7 @@ nav {
   display: grid;
   gap: 5px;
   margin-top: 0;
-  padding: 14px;
+  padding: 10px 12px;
   max-height: 120px;
   /* 禁止被 flexbox 压扁到比自身内容更矮：flex-shrink 默认值 1 会在 .sidebar 空间
      不够时把 run-strip 的渲染高度压到比内容矮，而它自己又有 overflow:hidden，
