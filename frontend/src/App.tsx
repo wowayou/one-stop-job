@@ -863,57 +863,63 @@ function App() {
       </aside>
 
       <main className="workspace">
-        {activeNav !== "chat" && <header className="topbar">
+        <header className="topbar">
           <div>
             <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
-            <p>岗位发现、公司证据、匹配评分、准备材料都留在本机。</p>
+            <p>
+              {activeNav === "chat"
+                ? "把拿不准的事丢进来,先按规则判断再继续管理岗位。"
+                : "岗位发现、公司证据、匹配评分、准备材料都留在本机。"}
+            </p>
           </div>
-          <div className="toolbar-actions">
-            <button data-tour="guide" className="icon-button" title="打开使用引导" onClick={() => setTourOpen(true)}>
-              <Info size={18} />
-            </button>
-            <button className="icon-button" title="导出中心" onClick={() => setExportCenterOpen(true)} disabled={hasBusy(busy, "export")}>
-              {hasBusy(busy, "export") ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
-            </button>
-            <button data-tour="collect" className="icon-button" title="运行 BOSS 采集" onClick={runBossCollection} disabled={toolbarBusy}>
-              {hasBusy(busy, "source-boss") ? <Loader2 size={18} className="spin" /> : <RefreshCw size={18} />}
-            </button>
-            <button className="icon-button" title="采集 beBee(按 config.yaml 角色页)" onClick={collectBeBee} disabled={toolbarBusy}>
-              {hasBusy(busy, "source-bebee") ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
-            </button>
-            <button className="icon-button" title="导入 CSV/XLSX" onClick={() => setUploadOpen(true)} disabled={toolbarBusy}>
-              {hasBusy(busy, "upload") ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}
-            </button>
-            <button
-              data-tour="wechat"
-              className="icon-button"
-              title="公众号 / 元宝导入"
-              onClick={() => {
-                closeJobDrawer();
-                setWechatResult(null);
-                setWechatOpen(true);
-              }}
-              disabled={toolbarBusy}
-            >
-              <MessageSquareText size={18} />
-            </button>
-            <button data-tour="sprint" className="icon-button" title="生成今日求职冲刺包" onClick={createSprintBrief} disabled={toolbarBusy}>
-              {hasBusy(busy, "sprint") ? <Loader2 size={18} className="spin" /> : <ClipboardList size={18} />}
-            </button>
-            <button
-              data-tour="manual"
-              className="primary-action"
-              onClick={() => {
-                closeJobDrawer();
-                setManualOpen(true);
-              }}
-              disabled={toolbarBusy}
-            >
-              <Plus size={18} />
-              新增岗位
-            </button>
-          </div>
-        </header>}
+          {activeNav !== "chat" && (
+            <div className="toolbar-actions">
+              <button data-tour="guide" className="icon-button" title="打开使用引导" onClick={() => setTourOpen(true)}>
+                <Info size={18} />
+              </button>
+              <button className="icon-button" title="导出中心" onClick={() => setExportCenterOpen(true)} disabled={hasBusy(busy, "export")}>
+                {hasBusy(busy, "export") ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
+              </button>
+              <button data-tour="collect" className="icon-button" title="运行 BOSS 采集" onClick={runBossCollection} disabled={toolbarBusy}>
+                {hasBusy(busy, "source-boss") ? <Loader2 size={18} className="spin" /> : <RefreshCw size={18} />}
+              </button>
+              <button className="icon-button" title="采集 beBee(按 config.yaml 角色页)" onClick={collectBeBee} disabled={toolbarBusy}>
+                {hasBusy(busy, "source-bebee") ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
+              </button>
+              <button className="icon-button" title="导入 CSV/XLSX" onClick={() => setUploadOpen(true)} disabled={toolbarBusy}>
+                {hasBusy(busy, "upload") ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}
+              </button>
+              <button
+                data-tour="wechat"
+                className="icon-button"
+                title="公众号 / 元宝导入"
+                onClick={() => {
+                  closeJobDrawer();
+                  setWechatResult(null);
+                  setWechatOpen(true);
+                }}
+                disabled={toolbarBusy}
+              >
+                <MessageSquareText size={18} />
+              </button>
+              <button data-tour="sprint" className="icon-button" title="生成今日求职冲刺包" onClick={createSprintBrief} disabled={toolbarBusy}>
+                {hasBusy(busy, "sprint") ? <Loader2 size={18} className="spin" /> : <ClipboardList size={18} />}
+              </button>
+              <button
+                data-tour="manual"
+                className="primary-action"
+                onClick={() => {
+                  closeJobDrawer();
+                  setManualOpen(true);
+                }}
+                disabled={toolbarBusy}
+              >
+                <Plus size={18} />
+                新增岗位
+              </button>
+            </div>
+          )}
+        </header>
 
         {notice && <NoticeBanner notice={notice} onClose={() => setNotice(null)} />}
 

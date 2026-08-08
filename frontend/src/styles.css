@@ -107,20 +107,26 @@ button:disabled,
   --sidebar-w: 76px;
 }
 
-/* 侧栏本身不再整体滚动：display:flex column + overflow:hidden 只当外壳。
-   会变长的是 nav（导航项多时），需要一直贴底可见的是后面的 run-strip 们
-   （「最近采集」+「AI 配置/测试连接」）。滚动职责下放给 nav 自己（见下），
-   这样无论 nav 多长，footer 都不会被挤出视口——细节见 nav 规则的注释。
-   overscroll-behavior/scrollbar-gutter 留在这里不删：桌面态 .sidebar 本身
-   不再滚动时它们是无操作的死权重，但 ≤980px 断点会把 .sidebar 自己重新变回
-   横向可滚动的容器（见文件底部媒体查询），到时候正是这两条在起作用。 */
+/* 侧栏本身整体可滚动兜底：之前试过「nav 内部滚动 + .sidebar 外层 overflow:hidden」
+   的 sticky-footer 方案，指望 nav 自己的 flex-shrink 吸收多余高度、footer
+   （「最近采集」+「AI 配置/测试连接」）永远贴底可见——但 nav 的 flex-shrink 只对
+   nav 自己生效，brand/两个 run-strip 加起来的自然高度仍可能超出矮视口（实测
+   900px/720px 高的视口下「测试连接」按钮 bottom 反而比 .sidebar 的 bottom 还低几
+   像素），外层 overflow:hidden 又不能滚动，只能把超出部分整段裁掉，按钮/探测结果
+   直接不可见也不报错。现在把「兜底」交还给 .sidebar 自己：nav 仍靠 flex:1 尽量
+   吃满/让出空间、让 footer 视觉上贴底（见下 nav 注释），但一旦总高度仍超出视口，
+   .sidebar 自己滚动兜底，内容永远可达、绝不静默裁切。下面的 gap/padding 也顺带
+   收紧了一档，常规桌面视口（≥900px 高）不需要滚动就能完整容纳全部内容。
+   overscroll-behavior/scrollbar-gutter 继续保留：平时不触发滚动时是安全的死权重，
+   矮视口和 ≤980px 断点（见文件底部媒体查询）才会真正用上。 */
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 24px;
+  gap: 18px;
   min-height: 0;
-  padding: 22px 16px;
-  overflow: hidden;
+  padding: 18px 16px;
+  overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   background: #17201b;
@@ -134,6 +140,9 @@ button:disabled,
   gap: 12px;
   min-height: 48px;
   min-width: 0;
+  /* 和 nav/.run-strip 一样禁止收缩：矮视口下宁可让 .sidebar 整体滚动，也不让
+     头部被压扁。 */
+  flex-shrink: 0;
   transition: gap 0.2s ease-out;
 }
 
@@ -183,12 +192,15 @@ button:disabled,
   font-size: 12px;
 }
 
-/* nav 是侧栏里唯一允许内部滚动的区域：flex:1 让它吃掉 .sidebar 里
-   brand 和后面两个 run-strip 之外的全部剩余高度，min-height:0 允许它在
-   内容比可用空间高时收缩而不是把 .sidebar 撑爆；超出部分交给自己的
-   overflow-y:auto 处理。这样不管导航项有多少、视口有多矮，紧跟在 nav
-   后面的「最近采集」「AI 配置」永远贴着 .sidebar 的底部、永远在可见区内
-   ——常见的 7 个导航项在正常视口下高度够用，不会触发这里的滚动。 */
+/* flex:1 0 auto 让 nav 只「长」不「缩」：视口够高时 nav 撑满 .sidebar 里
+   brand 和后面两个 run-strip 之外的剩余空间，把 footer 视觉上顶到底部；
+   但 flex-shrink 显式设为 0，nav 绝不会被压缩到比自身内容更矮——之前用
+   flex:1 1 auto + min-height:0 + 自己的 overflow-y:auto 的方案，nav 会先被
+   压扁，可 brand/两个 run-strip 的自然高度本身在矮视口下就可能超出 .sidebar
+   （nav 再怎么缩都救不了），外层 overflow:hidden 只能把「测试连接」按钮和探测
+   结果整段裁掉。现在 nav 不参与压缩，超出的高度完全交给 .sidebar 自己的
+   overflow-y:auto 整体滚动兜底（见上），nav 内部不再需要也不再设置自己的
+   垂直滚动，避免和外层滚动重复处理同一份溢出。 */
 nav {
   display: grid;
   gap: 6px;
@@ -200,12 +212,8 @@ nav {
      自身内容（.nav-item 的 min-height:42px），不再随 nav 可用高度变化，两态下
      图标 Y 坐标才能真正保持一致。 */
   align-content: start;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
+  flex: 1 0 auto;
   overflow-x: hidden;
-  overscroll-behavior: contain;
-  scrollbar-gutter: stable;
 }
 
 .nav-item,
@@ -347,6 +355,11 @@ nav {
   margin-top: 0;
   padding: 14px;
   max-height: 120px;
+  /* 禁止被 flexbox 压扁到比自身内容更矮：flex-shrink 默认值 1 会在 .sidebar 空间
+     不够时把 run-strip 的渲染高度压到比内容矮，而它自己又有 overflow:hidden，
+     结果是内容（尤其是「测试连接」按钮）被静默裁掉、肉眼看不出发生了什么。
+     shrink:0 之后，空间不够时交给 .sidebar 自己整体滚动兜底（见上）。 */
+  flex-shrink: 0;
   opacity: 1;
   overflow: hidden;
   border: 1px solid #314139;
@@ -367,7 +380,15 @@ nav {
   }
 }
 
+/* .run-strip 的 max-height:120px 是给「最近采集」（3 行文字，天然就矮于 120）量身
+   定的折叠过渡目标值；.ai-status 这块内容更多（标签+状态+详情 3 行，外加「测试
+   连接」按钮，点过之后还会再多一行探测结果），120px 装不下，多出的内容会被自己的
+   overflow:hidden 直接裁掉——按钮/探测结果因此可能被切、或整行不可见（实测最深
+   192px 才装得下按钮+探测结果那一整块）。这里单独把上限放宽到 240px（留出给稍长
+   的探测失败原因换行的余量），不影响折叠态（.sidebar-collapsed .run-strip 统一
+   收到 0，优先级更高）。 */
 .ai-status {
+  max-height: 240px;
   background: #1d2823;
 }
 
@@ -3362,10 +3383,10 @@ meter {
   .sidebar nav {
     display: flex;
     width: auto;
-    /* 桌面态给 nav 加的 flex:1/min-height:0/overflow-y:auto 是为了在纵向排列的
-       侧栏里把「最近采集」「AI 配置」footer 挤到底部、需要时才内部滚动；窄屏这里
-       是横向排列的顶部条，没有 footer 溢出的问题（.run-strip 本来就整体隐藏），
-       这几条针对纵向滚动的属性在这里没有意义，显式还原成横向布局本来的默认值，
+    /* 桌面态给 nav 加的 flex:1 0 auto 是为了在纵向排列的侧栏里把「最近采集」
+       「AI 配置」footer 顶到底部（溢出兜底交给 .sidebar 自己整体滚动）；窄屏这里
+       是横向排列的顶部条，没有 footer 顶底的需求（.run-strip 本来就整体隐藏），
+       这几条针对纵向布局的属性在这里没有意义，显式还原成横向布局本来的默认值，
        避免不必要的副作用。 */
     flex: 0 1 auto;
     min-height: auto;
