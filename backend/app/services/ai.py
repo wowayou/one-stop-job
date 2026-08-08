@@ -36,6 +36,27 @@ def _model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 
 
+def _clean_credential(value: str | None, *, label: str) -> str | None:
+    """清理 api_key / base_url：去首尾空白；含非 ASCII 字符时抛出可读错误。
+
+    复制 key/base_url 时很容易带进中文标点、全角空格等非 ASCII 字符；httpx 把它塞进
+    Authorization 头（只允许 latin-1）时会抛难懂的 UnicodeEncodeError。这里提前拦下并给出
+    「哪个值、什么问题、怎么办」的清晰提示。
+    """
+    if value is None:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    try:
+        cleaned.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError(
+            f"{label} 含非 ASCII 字符（多为复制时带入的中文标点或全角空格），请重新粘贴为纯英文数字"
+        ) from exc
+    return cleaned
+
+
 def _client():
     """现状的单一 provider 客户端：OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL。
 
@@ -47,10 +68,10 @@ def _client():
     from ..config import get_settings
 
     kwargs: dict = {
-        "api_key": os.getenv("OPENAI_API_KEY"),
+        "api_key": _clean_credential(os.getenv("OPENAI_API_KEY"), label="OPENAI_API_KEY"),
         "timeout": get_settings().ai_timeout_seconds,
     }
-    base = os.getenv("OPENAI_BASE_URL")
+    base = _clean_credential(os.getenv("OPENAI_BASE_URL"), label="OPENAI_BASE_URL")
     if base:
         kwargs["base_url"] = base
     return OpenAI(**kwargs)
@@ -68,9 +89,13 @@ def _client_for(resolved: dict):
     """按单个 provider 已解析好的 `{api_key, base_url, timeout}` 建一个独立客户端。"""
     from openai import OpenAI
 
-    kwargs: dict = {"api_key": resolved["api_key"], "timeout": resolved["timeout"]}
-    if resolved.get("base_url"):
-        kwargs["base_url"] = resolved["base_url"]
+    kwargs: dict = {
+        "api_key": _clean_credential(resolved["api_key"], label="provider api_key"),
+        "timeout": resolved["timeout"],
+    }
+    base_url = _clean_credential(resolved.get("base_url"), label="provider base_url")
+    if base_url:
+        kwargs["base_url"] = base_url
     return OpenAI(**kwargs)
 
 

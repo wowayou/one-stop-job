@@ -128,7 +128,9 @@ button:disabled,
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  scrollbar-gutter: stable;
+  /* 不用 scrollbar-gutter: stable——它会永久预留一条滚动条轨道，深色侧栏下看着像一直有个
+     多余的滚动条。改成常规 auto：内容放得下时（≥900px 视口）完全不显示滚动条，只有真的
+     矮到装不下时才短暂出现，届时轻微的一次性位移可以接受。 */
   background: #17201b;
   color: #f8faf7;
   transition: gap 0.2s ease-out, padding 0.2s ease-out;
