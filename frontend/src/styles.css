@@ -134,6 +134,7 @@ button:disabled,
   gap: 12px;
   min-height: 48px;
   min-width: 0;
+  transition: gap 0.2s ease-out;
 }
 
 .brand-mark {
@@ -145,11 +146,26 @@ button:disabled,
   background: #f5c15c;
   color: #18211c;
   font-weight: 800;
+  overflow: hidden;
+  /* logo 方块本身绝不能被旁边的 .brand-copy 挤没：.brand 在极窄场景（比如窄屏没有折叠
+     rail、.brand 和 nav 挤在同一条横向可滚动栏里）自身宽度可能不够两个子项都按 100%
+     显示，默认的 flex-shrink:1 会按 flex-basis 比例分摊收缩，.brand-copy 的文本越长，
+     .brand-mark 分到的挤压就可能越多，极端情况下会被压成 0 宽度直接消失。方块固定
+     flex-shrink:0 之后，缺的空间只从 .brand-copy（允许收缩到 0）那边扣，logo 本身
+     的尺寸/可见性不再受文案长短或容器宽度影响。 */
+  flex-shrink: 0;
+  transition: opacity 0.2s ease-out, max-width 0.2s ease-out;
 }
 
 .brand strong,
 .brand span {
   display: block;
+  /* .brand-copy 折叠时 max-width 收到 0（见下），这两个块级子元素若不禁止换行，文本会
+     在近乎 0 宽度里逐字/逐词折成一长串竖排（中文按字断行更明显，接近每个字单独一行），
+     把 .brand-copy 乃至 .brand 整体的高度顶起来，折叠头部因此变高，把下面的 nav 图标
+     顶下去。和 .nav-label 同款处理：不允许换行，超出部分交给 .brand-copy 的
+     overflow:hidden 直接裁切，而不是换行占用额外高度。 */
+  white-space: nowrap;
 }
 
 .brand-copy {
@@ -176,6 +192,14 @@ button:disabled,
 nav {
   display: grid;
   gap: 6px;
+  /* 不加这行时 grid 行的 align-content 默认值 normal 在有剩余纵向空间时会等价于
+     stretch，把每个 nav-item 的行高拉伸去吃满 nav 的可用高度。折叠时 .run-strip
+     收起（见下）会腾出额外高度，nav 因此比展开态更高，各行被拉得更高，图标在被
+     撑高的行内居中，Y 坐标就跟着往下漂——这是折叠/展开图标 Y 坐标不完全一致的
+     另一个根因（和 .brand 头部高度是两回事）。align-content:start 让行高只取决于
+     自身内容（.nav-item 的 min-height:42px），不再随 nav 可用高度变化，两态下
+     图标 Y 坐标才能真正保持一致。 */
+  align-content: start;
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
@@ -269,23 +293,24 @@ nav {
   overflow-x: hidden;
 }
 
-/* 折叠态下 logo 方块(.brand-mark)、隐藏的文案(.brand-copy)、折叠按钮(.sidebar-toggle)三者
-   要和下面 nav 里的图标共用同一条垂直中线。nav 已经用 width:100% 撑满侧栏内容区宽度，
-   再让 nav-item 用左右等宽 padding 把图标居中在这条宽度中间；.brand 之前没有对应的
-   width:100%，缺了这条尺寸基准，会导致 shrink-to-fit 后的宽度不等于 nav 的宽度，
-   子项各自居中出来的中线因此和 nav 图标错开。这里补上同宽度基准 + 双重居中保险：
-   align-items:center 处理常规布局，brand-mark/sidebar-toggle 各自的 margin:0 auto
-   是即使前者因为某些边界情况失效也依然生效的兜底（auto 外边距在 flex 交叉轴上的
-   居中优先级高于 align-items）。 */
+/* 折叠头部高度必须和展开态完全一致（一行、min-height:48px 不变），nav 图标的 Y 坐标
+   才不会被头部变高顶下去——这是折叠/展开两态 nav 图标 X/Y 都纹丝不动的前提。之前的实现
+   把 .brand 切成 column（logo 方块叠在折叠按钮上面），头部因此从 48px 涨到 ~90px，把
+   下面所有 nav 图标一起往下推了。现在改为：保持 .brand 的行布局不变，只把 logo 方块
+   （.brand-mark）像 .nav-label 那样淡出收 0（opacity+max-width，见上面 .brand-mark
+   的 transition），折叠头部里就只剩折叠按钮。gap 同时收到 0，避免两个已经收零宽度的
+   子项之间还留着两段固定 12px 死间距把按钮挤偏；折叠按钮靠 .sidebar-toggle 自带的
+   margin-left:auto 加下面 `.sidebar-collapsed .sidebar-toggle{margin:0 auto}` 的双重
+   居中，落在收窄后的 rail 正中，和 nav 图标共用同一条宽度基准（width:100%，见下）。 */
 .sidebar-collapsed .brand {
-  flex-direction: column;
-  align-items: center;
-  gap: 10px;
+  gap: 0;
   width: 100%;
 }
 
 .sidebar-collapsed .brand-mark {
-  margin: 0 auto;
+  opacity: 0;
+  max-width: 0;
+  pointer-events: none;
 }
 
 /* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
@@ -2723,6 +2748,124 @@ meter {
   color: #526057;
 }
 
+/* 「预览发送内容」面板坐在 .chat-messages 和 .chat-composer 之间，是 .chat-main 网格里
+   本来只声明了 3 行(header/messages/composer)之外的第 4 个隐式子项。展开长 section（比如
+   决策规则原文）之前，pre 没有高度上限，这块面板的内容高度是多少就撑多高——隐式 auto 行
+   会照单全收，把本来分给 minmax(0,1fr) 的 .chat-messages 挤到接近 0，composer 一起被顶
+   出可视区，看起来像"盖住了聊天区"。这里给面板本身一个封顶高度（max-height）+ 内部
+   overflow-y:auto，面板的固有高度不再随内容无限增长，nav 网格行天然就有了上限，
+   .chat-messages 才能保住自己的空间。宽度/居中沿用 .chat-attachment-preview /
+   .chat-composer-foot 已有的 min(900px,100%) + margin:0 auto 这套约定，视觉上和
+   composer 区其它卡片（如截图预览）是同一族。 */
+.chat-preview {
+  display: flex;
+  flex-direction: column;
+  width: min(900px, 100%);
+  max-height: 40vh;
+  margin: 0 auto;
+  overflow: hidden;
+  border: 1px solid #d7e2dc;
+  border-radius: 8px;
+  background: #f7fbf9;
+}
+
+.chat-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e1e7e1;
+}
+
+.chat-preview-head strong {
+  display: block;
+  font-size: 13px;
+}
+
+.chat-preview-head small {
+  display: block;
+  margin-top: 2px;
+  color: #68766c;
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.chat-preview-head .icon-button {
+  flex: 0 0 auto;
+}
+
+.chat-preview-sections {
+  display: grid;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 8px 12px;
+  overflow-y: auto;
+}
+
+.chat-preview-section {
+  border: 1px solid #dfe5df;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 6px 10px;
+}
+
+.chat-preview-section summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  list-style: none;
+  color: #27332d;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.chat-preview-section summary::-webkit-details-marker {
+  display: none;
+}
+
+.chat-preview-section summary span {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: #eef2ee;
+  color: #526057;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.chat-preview-section pre {
+  max-height: 200px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid #e6ebe5;
+  border-radius: 5px;
+  background: #f7fbf9;
+  color: #3a453e;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-preview-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 12px;
+  border-top: 1px solid #e1e7e1;
+  color: #68766c;
+  font-size: 11px;
+}
+
 .chat-composer {
   display: grid;
   gap: 8px;
@@ -3180,13 +3323,19 @@ meter {
   .sidebar-collapsed .brand {
     flex-direction: row;
     /* 窄屏没有折叠 rail，.brand 要和 nav 并排挤在同一行里；desktop 折叠态给 .brand 加的
-       width:100%/margin:0 auto 是 rail 内居中专用的，这里必须还原，否则会把 brand-mark
-       挤成一整行居中，和右边的 nav 抢位置。 */
+       width:100%/gap:0 是 rail 内收起 logo 方块专用的，这里必须还原成正常间距，否则
+       挨着显示的 logo 方块和文字会贴在一起。 */
     width: auto;
+    gap: 12px;
   }
 
   .sidebar-collapsed .brand-mark {
     margin: 0;
+    /* 桌面端折叠态把 logo 方块收到 opacity:0/max-width:0；窄屏没有折叠按钮，logo 方块
+       和文案一样正常显示，这里必须还原，否则 mobile 上 logo 会变透明消失。 */
+    opacity: 1;
+    max-width: none;
+    pointer-events: auto;
   }
 
   .sidebar-collapsed .brand-copy,
@@ -3197,6 +3346,13 @@ meter {
     opacity: 1;
     max-width: none;
     pointer-events: auto;
+  }
+
+  .sidebar-collapsed .brand-copy {
+    /* 桌面折叠态给 .brand-copy 加的 white-space:nowrap 是配合 max-width:0 防止文字
+       竖排撑高用的；窄屏这里文案正常显示、宽度不再收到 0，必须还原成 normal，否则
+       "job-one-stop" 这类长文案会在窄屏溢出而不是正常换行。 */
+    white-space: normal;
   }
 
   .sidebar-collapsed .nav-label {
