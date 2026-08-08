@@ -34,7 +34,7 @@ scripts/app.sh start
 | [QUICKSTART.md](QUICKSTART.md) | **快速开始指南**（本地/Docker/Windows/Linux） |
 | [CLAUDE.md](CLAUDE.md) | **项目架构标准**（AI 与人类共同遵守） |
 | [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
-| [docs/operations.md](docs/operations.md) | Docker 部署、数据备份、运行排障 |
+| [docs/operations.md](docs/operations.md) | 运行部署（单进程/本地开发/Docker）、数据备份、运行排障 |
 
 <details>
 <summary>开发者文档</summary>

@@ -1,31 +1,30 @@
 # Handoff: job-one-stop
 
-交接日期：2026-07-20
+交接日期：2026-07-20（最后校准：2026-08-08）
 
 ## 当前状态
 
 `job-one-stop` 是本地优先的个人求职助手：岗位采集/导入、公司调研、个人画像评分、面试准备、跟进任务和求职冲刺包都在本机运行。项目保持单用户、本地 SQLite、不自动投递、不自动发消息。
 
-2026-07-20 已开始个人决策 / 求职聊天助手 Phase 0：
+个人决策 / 求职聊天助手能力已从 Phase 0（只读）推进到 Phase 2（受控写回）：
 
-- 新增 `backend/app/services/context_repository.py`，只读访问独立个人操作仓库的固定白名单 Markdown。
-- 新增 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 环境配置和 `GET /api/context/status`，不返回宿主机绝对路径或正文。
-- 已使用临时示例目录验证只读边界；公开文档不记录个人仓库路径、文件数量或更新时间。
-- 尚未实现聊天表、AI 分析、写入建议或 Markdown 写回；不得绕过 Phase 0 只读边界。
+- `backend/app/services/context_repository.py`：只读访问独立个人操作仓库的固定白名单 Markdown；`GET /api/context/status` 不返回宿主机绝对路径或正文。
+- 决策聊天已落地：`ChatThread` / `ChatMessage` 持久化，规则先跑、可选 AI（OpenAI 兼容，多 provider 容错）给优先级/风险/下一步/草稿。
+- **统一 ingest 入口**：文本/链接/截图 → 候选（**默认不写 Job 表**），用户在 Web 聊天勾选 commit 才入库；相册/引用回复的多图会合并到同一岗位（见 CLAUDE.md §8）。Telegram 长轮询为可选出站传输层，回执只发机主本人。
+- **Phase 2 写回已实现（唯一写入通道）**：本人在已入库候选卡点「写入看板」，`ContextWriter`（`services/board_write.py`）在白名单 `board` 文件「收集箱」列插入一行，点击前原样预览；除此之外无任何写入路径（AST 绊线锁定）。详见 CLAUDE.md 顶部 Phase 2 边界与红线 §10。
 
 本轮能力已经扩到“可交付”层：
 
 - 个人画像、岗位池、公司调研、面试准备、待办、面试复盘、冲刺包和完整归档都可直接导出。
 - 岗位抽屉支持记录投递事件（已投递 / 已回复 / 约面 / Offer / 拒绝 / 撤回），前端会汇总求职漏斗和画像提醒。
 
-推荐运行方式已经收敛为本地开发优先、Docker 部署可选：
+运行口径已收敛为三档（与 README / QUICKSTART / CLAUDE.md §6 / docs/operations.md 一致）：
 
-- 本地开发：后端 Uvicorn 监听 `http://127.0.0.1:8000/`，前端 Vite 监听 `http://127.0.0.1:5173/`。
-- Docker 部署：前端生产构建由 FastAPI 静态托管，统一访问 `http://127.0.0.1:8000/`。
-- SQLite 本地开发默认在 `config.yaml general.data_dir`；Docker 默认在 volume `job_one_stop_data`。
-- `config.yaml` 通过 bind mount 挂入容器，系统配置页保存会写回本地文件。
-- `start_app.bat` / `rebuild_app.bat` / `stop_app.bat` / `status_app.bat` 只调用 Docker Compose。
-- `run_backend.bat` / `run_frontend.bat` 只跟随容器日志，不再单独启动 Python/Vite。
+- **日常使用（非改代码）：单进程部署 `scripts/app.sh start`**——构建一次 `frontend/dist` 后只跑一个 uvicorn 进程（:8000，前端由后端静态托管）。`status`/`logs`/`stop`/`update` 见脚本。
+- **改代码/调试：本地开发热更新**——后端 Uvicorn `:8000` + 前端 Vite `:5173`。
+- **备用：Docker Compose**——仅 Windows 无 WSL 一键运行（`start_app.bat` 等调用 Docker Compose）。
+- 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，**不能同时启动**；Docker 用独立 volume `job_one_stop_data`，与前两者不互通。
+- `config.yaml` 是**本地 gitignored 文件**，由 `config.example.yaml` 生成（`app.sh` 首启与 Dockerfile 都会 ensure）；密钥只进 `.env`。AI Provider/Key 走「设置 → AI」弹窗管理，Key 只写 `.env`，单进程部署同进程内即时生效。
 
 BOSS / 智联已改为宿主机采集导入：
 
@@ -59,45 +58,40 @@ BOSS / 智联已改为宿主机采集导入：
 
 ```bash
 scripts/quality_gate.sh
-# 48 passed；前端 Vite build、system_smoke、Alembic 旧库迁移烟测通过
+# 198 passed（2026-08-08）；前端 Vite build、system_smoke、Alembic 旧库迁移烟测通过
 ```
 
 本轮没有跑真实 BOSS/智联/beBee 采集，也没有并发请求外部平台。
 
 ## 运行方式
 
-本地开发：
+日常使用（单进程部署，推荐）：
+
+```bash
+scripts/app.sh start      # 首次自动建 venv/装依赖/构建前端
+scripts/app.sh status
+scripts/app.sh stop
+```
+
+访问 `http://127.0.0.1:8000/`。
+
+改代码/调试（本地开发热更新）：
 
 ```bash
 .venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 cd frontend && npm run dev
 ```
 
-访问：
+访问 `http://127.0.0.1:5173/`。
 
-```text
-http://127.0.0.1:5173/
-```
-
-Docker 运行：
+备用（Docker）：
 
 ```bash
-docker compose up -d --build
-```
-
-访问：
-
-```text
-http://127.0.0.1:8000/
-```
-
-停止：
-
-```bash
+docker compose up -d --build   # 访问 :8000
 docker compose down
 ```
 
-不要让 Docker 容器和开发模式同时使用同一份 SQLite。
+单进程部署与本地开发共用同一份 SQLite、同端口，不要同时启动；也不要让 Docker 容器和它们混用同一份数据。
 
 ## 维护红线
 
@@ -140,7 +134,8 @@ docker compose down
 - 新岗位来源必须走 Collector -> normalizer -> importer。
 - 抓取/解析失败必须记录 skipped reason。
 - 密钥只放 .env，不能进 config.yaml 或前端。
-- 默认运行口径是本地开发优先，Docker 用于部署和 Windows 一键运行；BOSS/智联走宿主机采集导入。
+- 默认运行口径：日常用单进程部署 scripts/app.sh，改代码用本地开发热更新，Docker 仅 Windows 无 WSL 备用；BOSS/智联走宿主机采集导入。
+- 外部个人仓库读只走 ContextRepository 白名单；写只有「写入看板」经 ContextWriter 插入一行，AST 绊线锁定，不得新增写入路径。
 
 测试要求：
 - 后端跑 .venv/bin/python -m pytest -q。

@@ -172,7 +172,7 @@ one-stop-job/
 
 | 入口 | 说明 |
 |------|------|
-| `docs/operations.md` | Docker 部署、数据备份、运行排障 |
+| `docs/operations.md` | 运行部署（单进程/本地开发/Docker）、数据备份、运行排障 |
 | `docs/docker-optimization.md` | 构建优化、故障排查 |
 | `scripts/deploy_check.sh` | 部署前自检 |
 | `scripts/quality_gate.sh` | 质量门禁 |

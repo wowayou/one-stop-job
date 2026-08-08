@@ -131,6 +131,7 @@ Windows 宿主机可用 `run_backend.bat` / `run_frontend.bat`。**不要混用�
 - `services/ingest.py::run_ingest` 是**统一分派器**:文本/截图 → `classify_links` 分派采集器 + freeform LLM → **只返回 `candidates`（不写 Job 表）**。规范化仍走 `normalize_record`；真正入库只在用户确认后调用 `upsert_job_records_with_ids`（§6）。`Job.source` 仍是各来源标签,**不是** `Telegram`(§8)。
 - **默认不入库**:`POST /api/ingest` 与 Telegram 轮询都走 `_persist_ingest_to_chat`：建 `ChatThread(kind="ingest")`，user 消息保留原文/截图附件，assistant 消息 `metadata_json.candidates` 挂候选。用户在 Web 聊天勾选后 `POST /api/chat/threads/{id}/candidates/commit` 才 upsert + 尽力评分。跳过/不入库时原料仍保留在聊天里。
 - **触发方式≠数据源**:HTTP/Telegram 只是触发方式。新增采集器不需要动 ingest;新增来源识别只在 `classify_links` 加一行。
+- **同一岗位多图合并(prior_candidates)**:相册(`media_group_id`)/引用回复补充会被传输层路由到**同一** `kind="ingest"` 线程(`target_thread_id`)。往已有线程追加时,`_persist_ingest_to_chat` 会跨该线程所有 assistant 消息累积并去重出已识别候选,经 `run_ingest(prior_candidates=)` 透传给 `ai.extract_jobs_freeform(prior_candidates=)`,让模型把碎片图(如只有「任职要求」)并进已知岗位、补全字段,而不是把碎片当独立岗位认不出。分组靠传输层结构信号(可靠),合并才用 LLM。去重 key 优先 `canonical_key`,但对「公司未知」的真实标题岗位(如「独立站运营·未知公司」)会退到标题做 key——不能丢。`prior_candidates` 为空时行为与单图完全一致。**注意**:该能力目前仅覆盖 Telegram/`/api/ingest` 通道;Web 聊天只发 `/messages`(决策对话),不驱动 ingest 抽取,是查看/确认入口。
 - **Telegram 传输层**(`services/telegram.py`,默认关闭,opt-in):
   - 长轮询 `getUpdates` 是后端主动**出站**请求 `api.telegram.org`,后端**无需对外暴露端口**;`config.yaml telegram.enabled=true` + `.env` 的 `TELEGRAM_BOT_TOKEN` 才启动(见 `main.py` lifespan 的 `_telegram_poll_loop`)。
   - **只处理白名单 `telegram.allowed_chat_id`(机主本人)的消息**,其余一律忽略。回执**只发机主本人**——符合 §2 的机主回执豁免,绝不发招聘方。

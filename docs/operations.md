@@ -2,7 +2,25 @@
 
 ## 推荐运行方式
 
-日常试用和开发优先使用本地开发模式，启动快、日志直接、热更新清晰：
+运行口径已收敛为三档（与 README / QUICKSTART / CLAUDE.md §6 一致）：**日常使用（非改代码）优先单进程部署 `scripts/app.sh`**；改代码/调试用本地开发热更新模式；Docker 仅作 Windows 无 WSL 时的备用。
+
+### 日常使用：单进程部署（推荐）
+
+构建一次 `frontend/dist` 后只跑一个 uvicorn 进程（:8000，前端由后端静态托管），无需另开 Vite：
+
+```bash
+scripts/app.sh start     # 首次会自动建 venv、装依赖、构建前端
+scripts/app.sh status    # 进程 + 健康检查
+scripts/app.sh logs      # 跟踪日志
+scripts/app.sh stop
+scripts/app.sh update    # 拉取更新并重启
+```
+
+访问 `http://127.0.0.1:8000/`。与本地开发模式共用 `./data/job_one_stop/` 数据库，两者不要同时启动（同端口 :8000）。
+
+### 改代码/调试：本地开发热更新模式
+
+启动快、日志直接、前后端分离热更新：
 
 ```bash
 python3 -m venv .venv
@@ -22,7 +40,9 @@ cd frontend && npm run dev
 http://127.0.0.1:5173/
 ```
 
-Docker Compose 用于 Windows 一键运行、交接部署或需要前后端单端口托管的场景：
+### 备用：Docker Compose
+
+Docker 仅用于 Windows 无 WSL 的一键运行场景（`start_app.bat` 等）；与单进程/本地开发**不共用**数据库（独立 volume）：
 
 ```bash
 docker compose up -d --build

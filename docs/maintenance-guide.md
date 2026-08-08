@@ -4,10 +4,10 @@
 
 ## 日常使用路径
 
-1. 启动系统。
-   - WSL/Linux/macOS：按 [QUICKSTART.md](../QUICKSTART.md) 使用本地开发模式，后端运行 `.venv/bin/python -m uvicorn ...`，前端运行 `npm run dev`。
-   - 浏览器访问 `http://127.0.0.1:5173/`。
-   - Windows 或部署场景可用 Docker：双击 `start_app.bat` 或运行 `docker compose up -d`，访问 `http://127.0.0.1:8000/`。
+1. 启动系统（口径见 [QUICKSTART.md](../QUICKSTART.md) / [operations.md](operations.md)）。
+   - 日常使用（推荐）：`scripts/app.sh start` 单进程部署，访问 `http://127.0.0.1:8000/`。
+   - 改代码/调试：本地开发热更新，后端 `.venv/bin/python -m uvicorn ...` + 前端 `npm run dev`，访问 `http://127.0.0.1:5173/`。
+   - 备用：Windows 无 WSL 时用 Docker（双击 `start_app.bat` 或 `docker compose up -d`，:8000）。
    - 配置了 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 时，先访问 `/api/context/status`，确认核心白名单文件齐全；状态接口不应出现宿主机绝对路径。
 
 2. 校准个人画像。
@@ -79,7 +79,7 @@ scripts/quality_gate.sh
 - 导入、批量更新、批量删除必须显式由用户触发，不能做静默清理或后台自动删库。
 - 抓取或解析失败必须写入 `report.skipped`，不能静默返回空。
 - 密钥只放 `.env` 或环境变量，不能写入 `config.yaml` 或前端。
-- 外部个人操作仓库在 Phase 0 只读；只能经 `ContextRepository` 访问白名单文件，不能从路由或其他服务直接拼路径读写。
+- 外部个人操作仓库：读只走 `ContextRepository` 白名单，不能从路由或其他服务直接拼路径。写只有一条通道——本人在已入库候选卡点「写入看板」，经 `ContextWriter`（`board_write.py`）在白名单 `board` 文件「收集箱」列插入一行（点击前原样预览）；除此之外不得新增任何写入路径（AST 绊线锁定）。
 - 导出只能基于本地 SQLite 数据生成文件，不能把求职数据自动上传到第三方云端。
 - 导出内容不能包含 `.env`、运行时配置密钥、宿主机路径或登录态目录。
 - 现有表新增字段必须写 Alembic 迁移。

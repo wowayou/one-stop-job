@@ -33,22 +33,28 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[本地开发] --> B[FastAPI /api :8000]
+    S[单进程部署 scripts/app.sh · 推荐日常] --> B0[FastAPI /api + frontend/dist :8000]
+    A[本地开发 · 改代码调试] --> B[FastAPI /api :8000]
     A --> C[Vite 前端 :5173]
-    D[Docker Compose app 容器] --> B2[FastAPI /api + frontend/dist :8000]
-    B --> DB1[(SQLite config.yaml general.data_dir)]
-    B2 --> DB2[(SQLite /data/job_one_stop.sqlite3)]
+    D[Docker Compose · 备用 Windows 无 WSL] --> B2[FastAPI /api + frontend/dist :8000]
+    B0 --> DB0[(SQLite ./data/job_one_stop/)]
+    B --> DB0
+    B2 --> DB2[(SQLite volume /data/job_one_stop.sqlite3)]
     O[宿主机 OpenCLI] --> T[tools/host_opencli_import.py]
     T --> G[/api/jobs/import]
+    G --> B0
     G --> B
     G --> B2
 
-    H[浏览器] --> I[http://127.0.0.1:5173/]
-    H --> J[http://127.0.0.1:8000/]
+    H[浏览器] --> J[http://127.0.0.1:8000/]
+    H --> I[http://127.0.0.1:5173/]
+    J --> B0
     I --> C
     C --> B
     J --> B2
 ```
+
+> 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，不能同时启动；Docker 用独立 volume，与前两者不互通。
 
 ## 去重与来源证据
 
@@ -80,7 +86,9 @@ flowchart LR
     H --> I[仅可用状态]
 ```
 
-Phase 0 没有从应用指回外部仓库的写入边。SQLite 仍保存应用运行数据；外部 Markdown 是后续聊天分析的只读上下文，写回必须等“写入建议 + diff 复核 + 本人确认”层完成后另行设计。
+读取始终只读、只走 `ContextRepository` 白名单，不返回宿主机绝对路径。SQLite 保存应用运行数据；外部 Markdown 是聊天分析的只读上下文。
+
+**Phase 2 写回已落地（唯一写入通道）**：本人在 Web 聊天的已入库候选卡上点「写入看板」时（点击前原样预览将写入的整行），由 `ContextWriter`（`services/board_write.py`）在白名单 `board` 文件的「收集箱」列内**插入一行**——不改写/删除既有内容、不创建/移动/删除文件、不 EOF 追加。除此之外没有任何写入路径（AST 绊线测试锁定 `ContextWriter` 引用只出现在 `context_repository.py` / `board_write.py` / `main.py`）。看板列＝岗位状态唯一事实源，状态流转由本人在 Obsidian 拖卡完成，应用绝不写「移动卡片/状态变更」类内容。详见 CLAUDE.md 顶部 Phase 2 边界与红线 §10。
 
 ## 评分、准备与跟进闭环
 
