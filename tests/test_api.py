@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import importlib
+import os
 import sqlite3
 from datetime import timedelta
 
@@ -895,6 +896,99 @@ def test_ai_test_endpoint_flags_config_disabled(monkeypatch, tmp_path):
             assert "sk-test-secret" not in resp.text
 
     asyncio.run(scenario())
+
+
+def _prep_ai_credentials_env(monkeypatch, tmp_path):
+    """给 /api/ai/credentials 测试隔离一个假 PROJECT_DIR，绝不碰真实仓库的 .env。"""
+    from backend.app import config
+
+    env_home = tmp_path / "fake-project-dir"
+    env_home.mkdir()
+    monkeypatch.setattr(config, "PROJECT_DIR", env_home)
+    return env_home / ".env"
+
+
+def test_ai_credentials_endpoint_writes_env_and_applies_immediately(monkeypatch, tmp_path):
+    env_path = _prep_ai_credentials_env(monkeypatch, tmp_path)
+    app = _fresh_app(monkeypatch, tmp_path, "ai-credentials-write.sqlite3")
+    monkeypatch.delenv("MY_TEST_KEY", raising=False)
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post(
+                "/api/ai/credentials", json={"env_name": "MY_TEST_KEY", "value": "sk-abc123"}
+            )
+            assert resp.status_code == 200, resp.text
+            payload = resp.json()
+            assert payload == {"ok": True, "env_name": "MY_TEST_KEY"}
+            assert "sk-abc123" not in resp.text
+
+    asyncio.run(scenario())
+
+    assert env_path.read_text(encoding="utf-8").strip() == "MY_TEST_KEY=sk-abc123"
+    # 即时生效：不重启进程也能读到新值。
+    assert os.getenv("MY_TEST_KEY") == "sk-abc123"
+
+
+def test_ai_credentials_endpoint_replaces_existing_line_without_duplicating(monkeypatch, tmp_path):
+    env_path = _prep_ai_credentials_env(monkeypatch, tmp_path)
+    env_path.write_text("FOO=bar\nMY_TEST_KEY=old-value\nBAZ=qux\n", encoding="utf-8")
+    app = _fresh_app(monkeypatch, tmp_path, "ai-credentials-replace.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post(
+                "/api/ai/credentials", json={"env_name": "MY_TEST_KEY", "value": "sk-new-value"}
+            )
+            assert resp.status_code == 200, resp.text
+            assert "sk-new-value" not in resp.text
+            assert "old-value" not in resp.text
+
+    asyncio.run(scenario())
+
+    lines = env_path.read_text(encoding="utf-8").splitlines()
+    assert lines == ["FOO=bar", "MY_TEST_KEY=sk-new-value", "BAZ=qux"]
+    assert sum(1 for line in lines if line.startswith("MY_TEST_KEY=")) == 1
+
+
+@pytest.mark.parametrize(
+    "env_name",
+    ["my_test_key", "MY-TEST-KEY", "../ETC_PASSWD", "1LEADING_DIGIT", "MY TEST KEY", ""],
+)
+def test_ai_credentials_endpoint_rejects_invalid_env_name(monkeypatch, tmp_path, env_name):
+    env_path = _prep_ai_credentials_env(monkeypatch, tmp_path)
+    app = _fresh_app(monkeypatch, tmp_path, "ai-credentials-bad-name.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post(
+                "/api/ai/credentials", json={"env_name": env_name, "value": "sk-should-not-be-written"}
+            )
+            assert resp.status_code == 400, resp.text
+            assert "sk-should-not-be-written" not in resp.text
+
+    asyncio.run(scenario())
+
+    assert not env_path.exists()
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["contains\nnewline", "contains\rcarriage", "contains\x00null", "非ASCII密钥值", "   "],
+)
+def test_ai_credentials_endpoint_rejects_dangerous_value(monkeypatch, tmp_path, value):
+    env_path = _prep_ai_credentials_env(monkeypatch, tmp_path)
+    app = _fresh_app(monkeypatch, tmp_path, "ai-credentials-bad-value.sqlite3")
+
+    async def scenario():
+        async for client in _client(app):
+            resp = await client.post("/api/ai/credentials", json={"env_name": "MY_TEST_KEY", "value": value})
+            assert resp.status_code == 400, resp.text
+            assert value not in resp.text
+
+    asyncio.run(scenario())
+
+    assert not env_path.exists()
 
 
 def test_config_endpoint_updates_yaml_and_rejects_secrets(monkeypatch, tmp_path):

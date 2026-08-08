@@ -5,6 +5,7 @@ import copy
 import logging
 import math
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -24,10 +25,12 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 from starlette.concurrency import run_in_threadpool
 
+from . import config as config_module
 from .config import ConfigError, get_config_path, get_settings, load_yaml_config, save_yaml_config
 from .db import engine, init_db
 from .models import ChatMessage, utc_now
 from .schemas import (
+    AiCredentialUpdate,
     AppConfigUpdate,
 )
 from .services.ai import is_ai_available, probe_ai_connection
@@ -727,6 +730,74 @@ async def ai_test() -> dict:
     if not bool(ai_cfg.get("enabled")):
         return {"ok": False, "stage": "config", "reason": "config.yaml 未启用 ai.enabled。", "model": os.getenv("OPENAI_MODEL", "gpt-4o-mini")}
     return await run_in_threadpool(probe_ai_connection)
+
+
+_ENV_NAME_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,63}$")
+
+
+def _clean_env_credential_value(value: str) -> str:
+    """校验/清理写入 `.env` 的 value；不合规直接抛 400。
+
+    绝不在异常消息里回显 value 本身（哪怕是截断片段）——错误信息只描述"哪种问题"。
+    """
+    cleaned = (value or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="value 不能为空")
+    try:
+        cleaned.encode("ascii")
+    except UnicodeEncodeError:
+        raise HTTPException(status_code=400, detail="value 含非 ASCII 字符，请重新粘贴为纯英文数字") from None
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in cleaned):
+        raise HTTPException(status_code=400, detail="value 不能包含换行符、回车符或其它控制字符")
+    return cleaned
+
+
+def _write_env_var(env_path: Path, env_name: str, value: str) -> None:
+    """原地替换/追加 `.env` 里的 `ENV_NAME=...` 一行,保留其它所有行与注释;原子写入。"""
+    lines: list[str] = []
+    if env_path.exists():
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    prefix = f"{env_name}="
+    for i, line in enumerate(lines):
+        if line.startswith(prefix):
+            lines[i] = f"{env_name}={value}"
+            break
+    else:
+        lines.append(f"{env_name}={value}")
+    content = "\n".join(lines)
+    if content:
+        content += "\n"
+    tmp_path = env_path.with_name(env_path.name + ".tmp")
+    tmp_path.write_text(content, encoding="utf-8")
+    os.replace(tmp_path, env_path)
+
+
+@app.post("/api/ai/credentials")
+async def set_ai_credential(payload: AiCredentialUpdate) -> dict:
+    """把 AI provider 的密钥写入本机 `PROJECT_DIR/.env`,供设置页「设置 API Key」使用。
+
+    安全边界(§3.4 密钥只进 .env):
+    - 只接受大写环境变量名(`^[A-Z][A-Z0-9_]{0,63}$`),拒绝小写/特殊字符/`../` 等,防止
+      被诱导写坏 `.env` 或做路径穿越联想攻击(env_name 只参与文件内容拼接,不参与路径)。
+    - value 必须非空、纯 ASCII、不含换行/控制字符,防止把额外行注入 `.env`。
+    - 响应体只回 `{"ok", "env_name"}`,**绝不返回/记录 value 明文**。
+    - 写完立刻 `os.environ[env_name] = value` + `get_settings.cache_clear()`,同进程内
+      "重新测试连接"就能读到新值,不需要重启。
+    """
+    env_name = payload.env_name
+    if not _ENV_NAME_PATTERN.match(env_name or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="env_name 必须是大写环境变量名，匹配 ^[A-Z][A-Z0-9_]{0,63}$（大写字母开头，仅含大写字母/数字/下划线）",
+        )
+    cleaned_value = _clean_env_credential_value(payload.value)
+
+    env_path = config_module.PROJECT_DIR / ".env"
+    await run_in_threadpool(_write_env_var, env_path, env_name, cleaned_value)
+
+    os.environ[env_name] = cleaned_value
+    get_settings.cache_clear()
+    return {"ok": True, "env_name": env_name}
 
 
 def _record_telegram_receipt(chat_message_id: int, tg_message_id: int) -> None:

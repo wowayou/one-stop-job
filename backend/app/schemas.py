@@ -334,3 +334,16 @@ class ApplicationEventCreate(SQLModel):
 
 class AppConfigUpdate(SQLModel):
     config: dict
+
+
+class AiCredentialUpdate(SQLModel):
+    """写入本机 `.env` 的 AI provider 密钥。
+
+    刻意不加 field_validator/长度约束：value 的格式校验（ASCII、无控制字符、非空）全部放在
+    端点函数体内手工做，用 `HTTPException(400, detail=...)` 报错——绝不用 pydantic 校验器，
+    因为校验失败时 FastAPI 的 RequestValidationError 处理器会把 `exc.errors()`（含原始
+    input 明文）编码进响应体，那会把密钥泄露回客户端/日志。
+    """
+
+    env_name: str
+    value: str

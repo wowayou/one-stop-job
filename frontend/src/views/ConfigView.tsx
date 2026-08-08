@@ -63,6 +63,11 @@ export function ConfigView({
   const [activeSection, setActiveSection] = useState<ConfigSection>("status");
   const [envExampleOpen, setEnvExampleOpen] = useState(false);
   useEscapeClose(envExampleOpen, () => setEnvExampleOpen(false));
+  // key 本身绝不进 React state 以外的任何地方（不落 config 草稿、不进 URL/日志）；
+  // 提交成功后立即清空这两个输入框，界面全程不回显 key。
+  const [aiKeyEnvName, setAiKeyEnvName] = useState("");
+  const [aiKeyValue, setAiKeyValue] = useState("");
+  const [aiKeySubmitting, setAiKeySubmitting] = useState(false);
   // 评分权重实际存在 UserProfile.weights（见 updateScoringWeights 的注释），是独立于
   // config.yaml 的一条草稿状态：从 profile 首次可用时播种一次，之后只由用户在这个 tab 里编辑，
   // 不随其它 tab 的 config 拉取/保存被打断。
@@ -89,6 +94,32 @@ export function ConfigView({
 
   function updateConfig(path: string[], value: unknown) {
     setPayload((current) => (current ? { ...current, config: setConfigValue(current.config, path, value) } : current));
+  }
+
+  async function submitAiCredential(event: FormEvent) {
+    event.preventDefault();
+    const envName = aiKeyEnvName.trim();
+    const value = aiKeyValue;
+    if (!envName || !value) {
+      onNotify("error", "请填写 env 变量名和 key。");
+      return;
+    }
+    setAiKeySubmitting(true);
+    try {
+      const result = await api<{ ok: boolean; env_name: string }>(
+        "/api/ai/credentials",
+        { method: "POST", ...jsonBody({ env_name: envName, value }) }
+      );
+      setAiKeyValue("");
+      setAiKeyEnvName("");
+      onNotify("success", `已写入 .env · ${result.env_name}（重新测试连接即可生效）`);
+      const latestAi = await api<AiStatus>("/api/ai/status");
+      onAiStatus(latestAi);
+    } catch (err) {
+      onNotify("error", errorMessage(err, "写入 .env 失败"));
+    } finally {
+      setAiKeySubmitting(false);
+    }
   }
 
   async function saveConfig(event: FormEvent) {
@@ -461,6 +492,37 @@ export function ConfigView({
                   <Info size={14} />
                   配置示例
                 </button>
+              </fieldset>
+
+              <fieldset>
+                <legend>设置 API Key（写入本机 .env）</legend>
+                <p className="muted">
+                  key 只写入本机 <code>.env</code>，不进 config.yaml / 数据库 / git，界面也不会显示它。
+                </p>
+                <form className="inline-fields" onSubmit={submitAiCredential}>
+                  <label>
+                    env 变量名
+                    <input
+                      placeholder={stringValue(aiProviders[0]?.api_key_env) || "DASHSCOPE_API_KEY"}
+                      value={aiKeyEnvName}
+                      onChange={(event) => setAiKeyEnvName(event.target.value.toUpperCase())}
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label>
+                    Key
+                    <input
+                      type="password"
+                      placeholder="sk-..."
+                      value={aiKeyValue}
+                      onChange={(event) => setAiKeyValue(event.target.value)}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                  <button type="submit" className="small-action" disabled={aiKeySubmitting}>
+                    {aiKeySubmitting ? "写入中…" : "写入 .env"}
+                  </button>
+                </form>
               </fieldset>
 
               <fieldset>
