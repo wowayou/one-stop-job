@@ -1,14 +1,45 @@
-import { CheckCircle2, Loader2, RotateCcw, X } from "lucide-react";
+import { CheckCircle2, Loader2, MessageCircleQuestion, RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
 import { buildInboxLinePreview } from "../lib/format";
-import type { BoardWriteResult, ChatMessage, IngestCandidate } from "../types";
+import type { BoardWriteResult, CandidateAdvice, ChatMessage, IngestCandidate } from "../types";
+
+// 与后端回执/建议里的序号一致（services/advice.format_advice_block、decision_reply.candidate_label），
+// 手机上看到「② 广告优化师」就能直接打 `?2` 指名同一个候选。
+const MARKERS = "①②③④⑤⑥⑦⑧⑨⑩".split("");
+
+/** 候选卡里的初步建议：与手机端回执同一份判断（后端 services/advice.py），这里排成三行。
+ * 只是「值不值得推进」的只读结论，不影响勾选与入库口径，所以放在勾选框之外、不可点。 */
+function CandidateAdviceBlock({ advice }: { advice: CandidateAdvice }) {
+  const priorityClass = advice.priority === "待确认" ? "unknown" : advice.priority.toLowerCase();
+  const reason = (advice.reasons?.length ? advice.reasons.join("；") : advice.summary) || "";
+  return (
+    <div className="candidate-advice">
+      <div className="candidate-advice-head">
+        <span className={`priority priority-${priorityClass}`}>{advice.priority}</span>
+        <strong>{advice.direction}</strong>
+        <small>→ {advice.next_action}</small>
+        {!advice.ai_used && <small className="candidate-advice-mode">仅规则</small>}
+      </div>
+      {!!advice.hard_conditions?.length && (
+        <p className="candidate-advice-hard">硬条件：{advice.hard_conditions.join("；")}</p>
+      )}
+      {reason && <p>理由：{reason}</p>}
+      {advice.ask_first?.length ? (
+        <p>先问：{advice.ask_first.join("；")}</p>
+      ) : (
+        advice.action_text && <p>下一步：{advice.action_text}</p>
+      )}
+    </div>
+  );
+}
 
 export function CandidateListCard({
   threadId,
   messageId,
   candidates,
   boardWriteEnabled,
+  onAsk,
   onUpdated,
   onError,
 }: {
@@ -16,6 +47,8 @@ export function CandidateListCard({
   messageId: number;
   candidates: IngestCandidate[];
   boardWriteEnabled: boolean;
+  /** 「问这个」：把下一条提问锚定到这个候选（候选没入库前没有 Job，线程挂不住岗位）。 */
+  onAsk?: (index: number, label: string) => void;
   onUpdated: (message: ChatMessage) => void;
   onError: (message: string) => void;
 }) {
@@ -140,6 +173,20 @@ export function CandidateListCard({
                   {status === "skipped" && <em>已跳过</em>}
                 </span>
               </label>
+              {item.advice && <CandidateAdviceBlock advice={item.advice} />}
+              {onAsk && (
+                <div className="candidate-ask">
+                  <button
+                    type="button"
+                    className="small-action"
+                    title="把下一条提问锁定到这个岗位"
+                    onClick={() => onAsk(index, `${MARKERS[index] ?? index + 1} ${item.title || "未命名岗位"}`)}
+                  >
+                    <MessageCircleQuestion size={14} />
+                    问这个
+                  </button>
+                </div>
+              )}
               {status === "committed" && boardWriteEnabled && (
                 <div className="candidate-board-write">
                   <code className="candidate-board-line">{buildInboxLinePreview(item)}</code>

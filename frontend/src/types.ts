@@ -213,6 +213,8 @@ export type ChatMessage = {
     analysis?: DecisionAnalysis;
     ai_used?: boolean;
     run_status?: "completed" | "fallback" | "rules_only";
+    /** 这条回答是针对哪个岗位/候选做的（后端 decision_reply.resolve_thread_anchor）。 */
+    anchor?: { kind: "job" | "candidate" | "none"; label?: string | null; index?: number | null; total?: number };
     candidates?: IngestCandidate[];
     sources_report?: { source: string; jobs: number; skipped?: unknown[] }[];
     unmatched?: boolean;
@@ -245,6 +247,22 @@ export type IngestCandidate = {
   /** 与最近 ~50 个 ingest 线程里出现过的候选重复（canonical_key，缺失时退化为标题+公司）时后端会带上
    * 匹配到的线程 id；仅用于展示「重复候选」徽标并默认不勾选，提交时会被后端剔除。 */
   duplicate_in_thread_id?: number | null;
+  /** 按个人决策规则给出的初步建议（后端 services/advice.py，只对前几个候选生成）；
+   * 纯展示字段，提交入库时会被后端剔除。手机端回执里是同一份判断的文本排版。 */
+  advice?: CandidateAdvice | null;
+};
+
+/** 候选岗位的初步决策建议：与 Web 决策卡同源（同一条规则+模型链路），只是字段更少。 */
+export type CandidateAdvice = {
+  priority: string;
+  direction: string;
+  next_action: string;
+  summary?: string;
+  action_text?: string;
+  reasons?: string[];
+  ask_first?: string[];
+  hard_conditions?: string[];
+  ai_used?: boolean;
 };
 
 export type ContextRepoStatus = {

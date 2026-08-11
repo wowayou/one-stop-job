@@ -3091,6 +3091,18 @@ meter {
   cursor: pointer;
 }
 
+/* 全局 input 规则（width:100% + min-height:38px）会把候选前的复选框撑成一个大方块，
+   把标题和公司信息挤到行尾——真机上看着像排版坏了。这里按 checkbox 还原原生尺寸，
+   并与下面 .candidate-status-icon 的占位保持一致，pending 与非 pending 行左侧对齐。 */
+.candidate-item input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
 /* 非 pending 候选不再渲染 checkbox；用同尺寸的状态图标占位，保持列表左侧对齐一致。 */
 .candidate-status-icon {
   flex-shrink: 0;
@@ -3183,6 +3195,81 @@ meter {
   font-size: 12px;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+/* 候选的初步决策建议：勾选框之外的只读结论，缩进与「写入看板」「恢复为待选」保持一致。 */
+.candidate-advice {
+  display: grid;
+  gap: 3px;
+  margin: 6px 0 2px 10px;
+  padding: 8px 10px;
+  border-left: 3px solid #cfe0d5;
+  border-radius: 0 8px 8px 0;
+  background: #f6faf7;
+  color: #445048;
+  font-size: 12px;
+}
+
+.candidate-advice-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.candidate-advice-head strong {
+  font-size: 13px;
+}
+
+.candidate-advice-head small,
+.candidate-advice-mode {
+  color: #68766c;
+}
+
+.candidate-advice-mode {
+  margin-left: auto;
+}
+
+.candidate-advice p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.candidate-advice-hard {
+  color: #9b342d;
+}
+
+.chat-answer-anchor {
+  margin-bottom: 4px;
+  color: #4a6b58;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.candidate-ask {
+  display: flex;
+  margin: 4px 0 2px 10px;
+}
+
+/* 提问锚点：告诉你「下一条问的是哪个候选」，就在输入框正上方，发送后自动清掉。 */
+.chat-ask-anchor {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 4px 6px 4px 12px;
+  border: 1px solid #cfe0d5;
+  border-radius: 999px;
+  background: #f0f6f2;
+  color: #2c4a3a;
+  font-size: 12px;
+}
+
+.chat-ask-anchor span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .candidate-restore {

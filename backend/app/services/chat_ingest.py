@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import re
 import uuid
 from pathlib import Path
@@ -35,6 +36,7 @@ from sqlmodel import Session, select
 from ..candidates import Candidate
 from ..config import Settings, get_settings
 from ..models import ChatMessage, ChatThread, Job, utc_now
+from .advice import DEFAULT_MAX_ADVICE_ITEMS, build_candidate_advice, format_advice_block
 from .ai import is_ai_available
 from .ingest import candidate_match_key, find_duplicate_thread, run_ingest
 from .jobs import job_ids_by_canonical_key
@@ -206,6 +208,111 @@ def _find_ingest_message_by_tg_id(session: Session, tg_message_id: int) -> ChatM
     return None
 
 
+def thread_candidates(session: Session, thread_id: int, limit: int = _MAX_PRIOR_CONTEXT_CANDIDATES) -> list[Candidate]:
+    """收集一条 ingest 线程里已识别的候选，按「同一岗位保留最近一条」去重，最多 `limit` 条。
+
+    跨该线程**所有** assistant 消息收集、而不是只看最后一条：这样不依赖到达顺序（相册里
+    「碎片图在前、主图在后」时也拿得到主图那条），也能把多轮补充累积起来；从近到远遍历，
+    同一岗位保留最近一条（最完整/已合并的版本胜出）。
+
+    两个调用方：
+    - `_persist_ingest_to_chat`：当作 `prior_candidates` 喂给抽取，让碎片图能并进已知岗位；
+    - `decision_reply`：当作「这条线索在聊哪个岗位」的事实来源——线程本身没有 job_id
+      （候选没入库前根本没有 Job 记录），不查这里就只能靠对话正文猜。
+
+    读取异常一律降级成空列表：它服务的两个场景都是锦上添花，绝不能打断主流程。
+    """
+    try:
+        assistants = session.exec(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id, ChatMessage.role == "assistant")
+            .order_by(ChatMessage.created_at.desc())
+        ).all()
+    except Exception:  # noqa: BLE001
+        return []
+
+    by_key: dict[str, Candidate] = {}
+    for msg in assistants:
+        if not isinstance(msg.metadata_json, dict):
+            continue
+        stored = msg.metadata_json.get("candidates")
+        if not isinstance(stored, list):
+            continue
+        for cand in stored:
+            if not isinstance(cand, dict):
+                continue
+            # 去重 key：优先 canonical_key/标题+公司（candidate_match_key）；它对「公司未知」
+            # 的候选会返回 None（去重安全考虑），但一个有真实**标题**、只是公司未知的岗位
+            # （如「独立站运营·未知公司」——正是真机里的常见形态）完全有用，不能丢。
+            # 所以 match_key 为空时退到「标题」做 key；连标题都没有的纯占位候选才跳过。
+            key = candidate_match_key(cand)
+            if not key:
+                title = re.sub(r"\s+", "", str(cand.get("title") or "").strip().lower())
+                if not title:
+                    continue
+                key = f"title:{title}"
+            if key not in by_key:
+                by_key[key] = cand
+        if len(by_key) >= limit:
+            break
+    return list(by_key.values())[:limit]
+
+
+def attach_candidate_advice(session: Session, assistant_message_id: int, settings: Settings | None = None) -> dict:
+    """给已落盘的候选补上决策建议：写回 `metadata_json.candidates[*].advice`，返回排好版的文本。
+
+    **刻意和 `_persist_ingest_to_chat` 分成两步**：建议每条都是一次独立模型调用，provider
+    不通时还要走重试+退避+切换，最坏可能等上好几分钟。如果和落盘捆在一起，手机上会连
+    「已收到、识别到 N 个候选」这句回执都迟迟收不到——那正是「没回执只能盲猜」的老问题。
+    现在的顺序是：先落盘 → 先回执 → 再算建议 → 建议单独发一条。
+
+    返回 `{"advice_text", "candidates", "assistant_message", "advice_count"}`；未启用
+    （`ingest.advice=false`）、没有候选、或生成失败时 `advice_text` 是空串，调用方据此
+    决定要不要多发一条消息。建议是纯只读判断，失败绝不影响已经落盘的原料与候选。
+    """
+    settings = settings or get_settings()
+    empty = {"advice_text": "", "candidates": [], "assistant_message": None, "advice_count": 0}
+
+    ingest_cfg = settings.ingest_config
+    if not ingest_cfg.get("advice", True):
+        return empty
+
+    message = session.get(ChatMessage, assistant_message_id)
+    if message is None or message.role != "assistant":
+        return empty
+    # 深拷贝原因同 routers/chat.py 的 commit/board-write：直接改共享的嵌套 dict，
+    # SQLAlchemy 会把 old/new 判等而静默丢弃这次写入。
+    meta = copy.deepcopy(message.metadata_json or {})
+    candidates: list[Candidate] = list(meta.get("candidates") or [])
+    if not candidates:
+        return empty
+
+    try:
+        max_items = int(ingest_cfg.get("advice_max_candidates", DEFAULT_MAX_ADVICE_ITEMS) or 0)
+    except (TypeError, ValueError):
+        max_items = DEFAULT_MAX_ADVICE_ITEMS
+
+    ai_cfg = settings.config.get("ai", {})
+    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
+    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()
+
+    advice_count = build_candidate_advice(session, candidates, ai_enabled=ai_enabled, max_items=max_items)
+    if not advice_count:
+        return empty
+
+    meta["candidates"] = candidates
+    message.metadata_json = meta
+    session.add(message)
+    session.commit()
+    session.refresh(message)
+    return {
+        "advice_text": format_advice_block(candidates),
+        "candidates": candidates,
+        "assistant_message": message,
+        "advice_count": advice_count,
+    }
+
+
 def _persist_ingest_to_chat(
     session: Session,
     text: str | None,
@@ -252,39 +359,7 @@ def _persist_ingest_to_chat(
         maybe_thread = session.get(ChatThread, target_thread_id)
         if maybe_thread is not None and maybe_thread.kind == "ingest":
             explicit_reuse_thread = maybe_thread
-            try:
-                assistants = session.exec(
-                    select(ChatMessage)
-                    .where(ChatMessage.thread_id == maybe_thread.id, ChatMessage.role == "assistant")
-                    .order_by(ChatMessage.created_at.desc())
-                ).all()
-                by_key: dict[str, dict] = {}
-                for msg in assistants:
-                    if not isinstance(msg.metadata_json, dict):
-                        continue
-                    stored = msg.metadata_json.get("candidates")
-                    if not isinstance(stored, list):
-                        continue
-                    for cand in stored:
-                        if not isinstance(cand, dict):
-                            continue
-                        # 去重 key：优先 canonical_key/标题+公司（candidate_match_key）；它对「公司未知」
-                        # 的候选会返回 None（去重安全考虑），但一个有真实**标题**、只是公司未知的岗位
-                        # （如「独立站运营·未知公司」——正是真机里的常见形态）当上下文完全有用，不能丢。
-                        # 所以 match_key 为空时退到「标题」做 key；连标题都没有的纯占位候选才跳过。
-                        key = candidate_match_key(cand)
-                        if not key:
-                            title = re.sub(r"\s+", "", str(cand.get("title") or "").strip().lower())
-                            if not title:
-                                continue
-                            key = f"title:{title}"
-                        if key not in by_key:
-                            by_key[key] = cand
-                    if len(by_key) >= _MAX_PRIOR_CONTEXT_CANDIDATES:
-                        break
-                prior_candidates = list(by_key.values())[:_MAX_PRIOR_CONTEXT_CANDIDATES]
-            except Exception:  # noqa: BLE001 - 上下文纯属锦上添花，读取异常绝不能打断 ingest 主流程
-                prior_candidates = []
+            prior_candidates = thread_candidates(session, maybe_thread.id or 0, limit=_MAX_PRIOR_CONTEXT_CANDIDATES)
 
     extract = run_ingest(
         text,

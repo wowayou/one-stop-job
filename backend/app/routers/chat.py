@@ -30,7 +30,7 @@ from ..candidates import (
 )
 from ..config import get_settings
 from ..deps import SessionDep
-from ..models import AnalysisRun, ChatMessage, ChatThread, Job, SourceRun, utc_now
+from ..models import ChatMessage, ChatThread, Job, SourceRun, utc_now
 from ..schemas import (
     CandidatesCommitRequest,
     ChatMessageCreate,
@@ -39,18 +39,18 @@ from ..schemas import (
     ChatThreadUpdate,
     IngestRequest,
 )
-from ..services.ai import analyze_decision_chat_llm, configured_model, is_ai_available
+from ..services.ai import is_ai_available
 from ..services.board_write import write_candidate_to_board
 from ..services.chat_ingest import (
     _chat_attachment_path,
     _chat_thread_payload,
     _delete_chat_thread,
     _persist_ingest_to_chat,
-    _save_chat_image,
+    attach_candidate_advice,
 )
-from ..services.chat_support import decision_context, job_context, recent_conversation
+from ..services.chat_support import job_context, recent_conversation
 from ..services.context_repository import ContextRepository, ContextRepositoryError
-from ..services.decision_chat import assistant_content, build_rule_analysis, mark_image_processed, merge_model_analysis
+from ..services.decision_reply import reply_in_thread
 from ..services.importer import upsert_job_records_with_ids
 from ..services.ingest import score_job_ids
 from ..services.queries import get_profile
@@ -202,101 +202,23 @@ async def batch_delete_chat_threads(payload: ChatThreadBatchDeleteRequest, sessi
 
 @router.post("/api/chat/threads/{thread_id}/messages")
 async def create_chat_message(thread_id: int, payload: ChatMessageCreate, session: SessionDep) -> dict:
+    """一轮决策问答。核心已下沉到 `services/decision_reply.reply_in_thread`，与 Telegram
+    「手机上追问」共用同一条判断/落盘代码，避免两处结论漂移。"""
     thread = session.get(ChatThread, thread_id)
     if not thread:
         raise HTTPException(status_code=404, detail="Chat thread not found")
-    job = session.get(Job, thread.job_id) if thread.job_id else None
-    profile = get_profile(session)
 
-    settings = get_settings()
-    attachment = _save_chat_image(payload.image_data_url, payload.image_name, settings) if payload.image_data_url else None
-    user_message = ChatMessage(
-        thread_id=thread_id,
-        role="user",
-        content=payload.content,
-        metadata_json={"attachment": attachment} if attachment else {},
+    return await run_in_threadpool(
+        reply_in_thread,
+        session,
+        thread,
+        payload.content,
+        image_data_url=payload.image_data_url,
+        image_name=payload.image_name,
+        use_ai=payload.use_ai,
+        candidate_index=payload.candidate_index,
+        settings=get_settings(),
     )
-    session.add(user_message)
-    thread.updated_at = utc_now()
-    if thread.title == "新对话":
-        thread.title = payload.content.replace("\n", " ")[:32]
-    session.add(thread)
-    session.commit()
-    session.refresh(user_message)
-
-    context_text, rules_version, context_available = decision_context()
-    rule_analysis = build_rule_analysis(
-        message=payload.content,
-        profile=profile,
-        job=job,
-        thread_kind=thread.kind,
-        context_available=context_available,
-        image_attached=bool(payload.image_data_url),
-        policy_context=context_text,
-    )
-    history = session.exec(
-        select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
-    ).all()
-    conversation = recent_conversation(history)
-    job_ctx = job_context(job)
-
-    ai_cfg = settings.config.get("ai", {})
-    ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
-    # payload.use_ai=False（前端「本条不用 AI」开关关闭）时直接并入这条判断，复用下面既有的
-    # 「AI 不可用/未启用」降级路径——不新写分支：model_analysis 保持 None、ai_used=False、
-    # run_status 落到既有的 "rules_only"、provider 落到既有的 "rules"。
-    ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available() and payload.use_ai
-    model_analysis = None
-    if ai_enabled:
-        model_analysis = await run_in_threadpool(
-            analyze_decision_chat_llm,
-            context=context_text,
-            conversation=conversation,
-            job_context=job_ctx,
-            rule_analysis=rule_analysis,
-            image_data_url=payload.image_data_url,
-        )
-    ai_used = model_analysis is not None
-    analysis = merge_model_analysis(rule_analysis, model_analysis)
-    if ai_used and payload.image_data_url:
-        mark_image_processed(analysis)
-    run_status = "completed" if ai_used else ("fallback" if ai_enabled else "rules_only")
-    provider = str(ai_cfg.get("provider") or "openai_compatible") if ai_enabled else "rules"
-
-    assistant_message = ChatMessage(
-        thread_id=thread_id,
-        role="assistant",
-        content=assistant_content(analysis, ai_used=ai_used),
-        metadata_json={"analysis": analysis, "ai_used": ai_used, "run_status": run_status},
-    )
-    session.add(assistant_message)
-    session.commit()
-    session.refresh(assistant_message)
-    analysis_run = AnalysisRun(
-        thread_id=thread_id,
-        user_message_id=user_message.id or 0,
-        assistant_message_id=assistant_message.id,
-        rules_version=rules_version,
-        provider=provider,
-        model=configured_model() if ai_enabled else None,
-        status=run_status,
-        result_json=analysis,
-    )
-    session.add(analysis_run)
-    session.commit()
-    session.refresh(analysis_run)
-    session.refresh(thread)
-    session.refresh(user_message)
-    session.refresh(assistant_message)
-
-    return {
-        "thread": _chat_thread_payload(session, thread),
-        "user_message": user_message,
-        "assistant_message": assistant_message,
-        "analysis_run": analysis_run,
-        "analysis": analysis,
-        "ai_used": ai_used,
-    }
 
 
 @router.post("/api/ingest")
@@ -304,8 +226,20 @@ async def ingest_text(payload: IngestRequest, session: SessionDep) -> dict:
     """抽取候选岗位并写入聊天；**默认不入库**，用户确认后再写 Job 表。
 
     认识的链接走专用采集器；其余文本/截图走 LLM freeform。原料（原文/截图）落在聊天附件与消息里。
+
+    落盘后再补决策建议（`ingest.advice`）：两步是刻意的，见 `attach_candidate_advice` 的说明。
+    Web 是前台请求、用户本来就在等，所以这里一次返回带建议的完整结果；建议失败不影响落盘结果。
     """
-    return await run_in_threadpool(_persist_ingest_to_chat, session, payload.text, payload.image_data_url)
+    result = await run_in_threadpool(_persist_ingest_to_chat, session, payload.text, payload.image_data_url)
+    assistant_message_id = getattr(result.get("assistant_message"), "id", None)
+    if isinstance(assistant_message_id, int):
+        advice = await run_in_threadpool(attach_candidate_advice, session, assistant_message_id, get_settings())
+        if advice["advice_count"]:
+            # 建议写回的是消息 metadata 里的候选副本，这里同步替换响应中的对应字段，
+            # 免得前端拿到「消息里有建议、candidates 里没有」的半旧状态。
+            result["assistant_message"] = advice["assistant_message"]
+            result["candidates"] = advice["candidates"]
+    return result
 
 
 @router.post("/api/chat/threads/{thread_id}/candidates/commit")

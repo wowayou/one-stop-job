@@ -118,6 +118,8 @@ bebee:
 # ==================== Telegram 入口（可选，默认关）====================
 # 手机把岗位链接发给你的 Telegram bot → 后端长轮询拉取 → 抽链落盘 + 评分 → 回执给你自己。
 # bot token 只进 .env（TELEGRAM_BOT_TOKEN）；这里只放开关与白名单。
+# 回执里会带上按你的决策规则给出的初步建议（见 ingest.advice）；想直接追问就用
+# ? / ？ / /ask 开头发消息，走的是和 Web 决策聊天同一条分析链路，回答同样只发给你自己。
 # 红线边界：只处理 allowed_chat_id（你本人）的消息，回执也只发给你自己，绝不向招聘方发消息。
 telegram:
   enabled: false
@@ -130,6 +132,11 @@ telegram:
 # manual_source 是 freeform 抽出的岗位入库时的 Job.source 标签。
 ingest:
   manual_source: "manual" # 也可设成如 "手机粘贴" 以区分手机端来源
+  # 识别到候选后，顺手按个人决策规则给一句「值不值得推进」（优先级/方向/下一步/先问什么）。
+  # Web 显示在候选卡里，Telegram 直接写进回执——手机上不打开 Web 也能先有判断。
+  # 只读判断，不改变「默认不入库」的口径；ai.enabled=false 时退化为规则模板结论。
+  advice: true
+  advice_max_candidates: 3 # 每条建议是一次独立模型调用；一次发来一堆岗位时只给前几个
 
 # ==================== 匹配评分配置 ====================
 scoring:

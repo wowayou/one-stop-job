@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org"
+
+# 「这是一个提问」的显式前缀：`?` / `？` / `/ask`（可带 `@botname`）。见 parse_question。
+_QUESTION_PREFIX = re.compile(r"^(?:/ask(?:@\S+)?|[?？])\s*", re.IGNORECASE)
 
 # 「以文件发送」的图片：只认这三种 mime（与 schemas.IngestRequest.image_data_url 的 data URL 前缀一致）。
 _SUPPORTED_DOCUMENT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
@@ -159,6 +163,79 @@ def extract_message(update: dict) -> ExtractedMessage:
     )
 
 
+def parse_question(text: str) -> str | None:
+    """区分「向 AI 追问」和「补充材料」：只认显式前缀，返回去掉前缀后的问题，否则 None。
+
+    为什么用显式前缀而不是「回复回执的纯文字就算提问」：回复回执补一段 JD 文本是已有的
+    正常用法（多图/多条消息合并成同一岗位），靠内容猜意图必然误判，把材料吃成提问就等于
+    丢材料。前缀是零歧义的：`?` / `？` / `/ask`（后两种大小写与空格都容忍）。
+
+    只带前缀、后面没有实际内容时返回 None——空问题没有分析价值，交给既有的「请发送岗位
+    链接/文本/截图」提示即可。
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return None
+    match = _QUESTION_PREFIX.match(stripped)
+    if not match:
+        return None
+    return stripped[match.end() :].strip() or None
+
+
+def parse_candidate_index(question: str) -> tuple[int | None, str]:
+    """从问题开头取出「问第几个候选」，返回 (0 基索引 或 None, 去掉序号后的问题)。
+
+    一条线索里常有好几个候选（一次发来两张截图 = 两个岗位）。没有指名手段的话，回答只能
+    默认第一个，你却无从知道也无从更换——`?2 这个值得聊吗` 就是那个指名手段。
+    认阿拉伯数字和 ①-⑩ 两种写法（回执里用的正是 ①②，直接照着打即可）。
+    """
+    stripped = (question or "").strip()
+    match = re.match(r"^(?:([1-9]\d?)|([①②③④⑤⑥⑦⑧⑨⑩]))[\s、.，,:：]*", stripped)
+    if not match:
+        return None, stripped
+    rest = stripped[match.end() :].strip()
+    if not rest:
+        # 只发了个序号、没有问题：当成普通文本交回上层，避免把「2」这种残缺输入当成指名。
+        return None, stripped
+    if match.group(1):
+        return int(match.group(1)) - 1, rest
+    return "①②③④⑤⑥⑦⑧⑨⑩".index(match.group(2)), rest
+
+
+def summarize_analysis(analysis: dict, *, ai_used: bool, anchor: dict | None = None) -> str:
+    """把一次决策分析压成手机上能一眼读完的回答。
+
+    字段口径与 Web 决策卡完全一致（同一份 analysis），只是排版更短：结论、下一步、最多两条
+    风险、最多两条待确认。规则模式要明说，否则用户分不清「模型给的判断」和「AI 没跑起来
+    时的模板兜底」。
+
+    `anchor`：这次答的是哪个候选（`decision_reply.resolve_thread_anchor` 的结果）。必须回显——
+    一条线索里有多个候选时，光看「B / 邻近可接受」根本不知道说的是哪个；同一条线索还有别的
+    候选时再补一句怎么换（`?2 …`）。
+    """
+    lines: list[str] = []
+    if anchor and anchor.get("kind") == "candidate" and anchor.get("label"):
+        lines.append(f"针对 {anchor['label']}")
+    lines.append(str(analysis.get("summary") or "已完成分析"))
+    lines.append(
+        f"判断：{analysis.get('priority') or '待确认'} / {analysis.get('direction') or '待确认'}"
+        f" → {analysis.get('next_action') or '补充信息'}"
+    )
+    if action_text := str(analysis.get("action_text") or "").strip():
+        lines.append(f"下一步：{action_text}")
+    risks = [str(item) for item in analysis.get("risks") or [] if str(item).strip()][:2]
+    if risks:
+        lines.append(f"风险：{'；'.join(risks)}")
+    uncertainties = [str(item) for item in analysis.get("uncertainties") or [] if str(item).strip()][:2]
+    if uncertainties:
+        lines.append(f"待确认：{'；'.join(uncertainties)}")
+    if anchor and anchor.get("kind") == "candidate" and (anchor.get("total") or 0) > 1:
+        lines.append(f"这条线索有 {anchor['total']} 个候选；换一个问：?2 你的问题")
+    if not ai_used:
+        lines.append("（规则模式：AI 未启用或本次调用不可用）")
+    return "\n".join(lines)
+
+
 def classify_document_image(mime_type: str | None, file_size: int | None) -> str | None:
     """判断「以文件发送」的图片是否可以下载。返回 None 表示可以下载；否则是要回执的原因文案。
 
@@ -222,6 +299,9 @@ def summarize_ingest(result: dict) -> str:
     用户主动关联），措辞要和 `appended` 的「已补充」区分开，明确说「与已有线索重复」，
     避免用户误以为是自己回复了回执。`duplicate_count`：即便新建了线程，其中部分候选和
     近期线索重复时，仍要提示一句，但不改变「未入库」的整体结论。
+
+    注意本回执**不含决策建议**：建议要额外做模型调用，算完再发会拖慢「已收到」这句本身，
+    因此由轮询循环在发完本回执后另发一条（见 main.py 与 `chat_ingest.attach_candidate_advice`）。
     """
     n = int(result.get("candidate_count") or 0)
     candidates = result.get("candidates") or []
@@ -262,4 +342,5 @@ def summarize_ingest(result: dict) -> str:
             "检测到 BOSS/智联链接：该平台受风控无法直接抓取公开页，"
             "请复制 JD 文本或随手发一张截图（可与链接同一条消息）。链接已随原料保留。"
         )
+
     return " ".join(parts)

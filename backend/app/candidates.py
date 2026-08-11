@@ -27,13 +27,16 @@
 - `existing_job_id`：**纯 UI 字段**。候选的 `canonical_key` 命中岗位池里已有的 Job 时，
   `chat_ingest._persist_ingest_to_chat` 会打上这个标注，供前端展示「已在岗位池」并默认
   不勾选；提交入库前必须剔除（不是 Job 表字段，仅用于展示）。
+- `advice`：**纯 UI 字段**。`services/advice.build_candidate_advice` 为前几个候选生成的决策
+  建议（优先级/方向/下一步/先问什么），供 Web 候选卡展示、手机回执排版；只读判断结果，
+  不承载任何入库语义，提交前必须剔除（Job 表没有这一列）。
 - `duplicate_in_thread_id`：**纯 UI 字段**。该候选与最近 ~50 个 ingest 线程里已出现过的
   某候选重复时，`services/ingest.find_duplicate_thread` 会打上匹配到的线程 id，供前端
   标「重复候选」徽标并默认不勾选；提交入库前同样必须剔除（仅用于展示）。
 
-`CANDIDATE_UI_ONLY_FIELDS` / `strip_ui_only_fields` 是这两个纯 UI 字段的集中剔除点。
+`CANDIDATE_UI_ONLY_FIELDS` / `strip_ui_only_fields` 是这些纯 UI 字段的集中剔除点。
 注意：写入 Job 表前实际还需要额外剔除 `status`/`job_id`——它们是 candidate 自身的生命周期
-记账字段而非「纯 UI 字段」（`existing_job_id`/`duplicate_in_thread_id` 从头到尾只被展示，
+记账字段而非「纯 UI 字段」（`existing_job_id`/`duplicate_in_thread_id`/`advice` 从头到尾只被展示，
 从不被赋予业务含义；`status`/`job_id` 则是候选自己的状态机），因此不在
 `CANDIDATE_UI_ONLY_FIELDS` 里，调用方（如 `commit_candidates`）仍需自行剔除。
 """
@@ -74,11 +77,12 @@ class Candidate(TypedDict, total=False):
     # 纯 UI 字段：仅供前端展示，提交入库前必须剔除，见 CANDIDATE_UI_ONLY_FIELDS
     existing_job_id: int | None
     duplicate_in_thread_id: int | None
+    advice: dict
 
 
 # 纯 UI 字段：candidate dict 里只用于前端展示、从不承载业务语义的字段。
 # 不包含 status/job_id——那两个是候选自身的状态机记账，是否剔除由调用方按场景决定。
-CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id")
+CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id", "advice")
 
 
 def strip_ui_only_fields(candidate: dict) -> dict:
@@ -86,7 +90,7 @@ def strip_ui_only_fields(candidate: dict) -> dict:
 
     供 commit / board-write 等「即将把候选字段落到别处（如 upsert 记录）」的调用点统一
     调用，避免每处各自手写剔除集合而逐渐漂移。只剔除 `existing_job_id` /
-    `duplicate_in_thread_id`；`status`/`job_id` 是否需要额外剔除由调用方自行处理
+    `duplicate_in_thread_id` / `advice`；`status`/`job_id` 是否需要额外剔除由调用方自行处理
     （例如写入 Job 表前，见 `routers/chat.py` 的 `commit_candidates`）。
     """
 

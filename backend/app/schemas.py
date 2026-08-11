@@ -237,6 +237,9 @@ class ChatMessageCreate(SQLModel):
     image_name: Optional[str] = Field(default=None, max_length=180)
     # 默认 True：沿用「配置了 AI 就用」的现状；False 时这一条只走规则引擎，即便全局 ai.enabled=true。
     use_ai: bool = True
+    # 在入库候选线索里指名「这条问的是第几个候选」（0 基）。候选没入库前没有 Job 记录，
+    # 线程本身挂不住岗位，只能靠它锚定；省略时单候选直接用它、多候选默认第一个。
+    candidate_index: Optional[int] = Field(default=None, ge=0, le=49)
 
     _validate_content = field_validator("content")(lambda cls, value: validate_required_text("content", value))
     _normalize_image_name = field_validator("image_name", mode="before")(

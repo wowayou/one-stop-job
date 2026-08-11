@@ -141,7 +141,8 @@ def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_fai
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-ai.sqlite3")
 
-    import backend.app.routers.chat as chat_router
+    # 分析核心已下沉到 services/decision_reply（与 Telegram 追问共用），打桩目标随之下移。
+    import backend.app.services.decision_reply as decision_reply
 
     def fake_analysis(**_kwargs):
         return {
@@ -153,7 +154,7 @@ def test_decision_chat_can_refine_with_configured_ai_without_overriding_rule_fai
             "reply_draft": "你好，方便补充一下岗位的核心目标吗？",
         }
 
-    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", fake_analysis)
+    monkeypatch.setattr(decision_reply, "analyze_decision_chat_llm", fake_analysis)
 
     async def scenario():
         async for client in _client(app):
@@ -178,10 +179,11 @@ def test_decision_chat_marks_fallback_when_ai_enabled_but_call_fails(monkeypatch
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-fallback.sqlite3")
 
-    import backend.app.routers.chat as chat_router
+    # 分析核心已下沉到 services/decision_reply（与 Telegram 追问共用），打桩目标随之下移。
+    import backend.app.services.decision_reply as decision_reply
 
     # 模拟坏 key / 端点不通：analyze 返回 None，端点应回退规则但标记 fallback。
-    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", lambda **_kwargs: None)
+    monkeypatch.setattr(decision_reply, "analyze_decision_chat_llm", lambda **_kwargs: None)
 
     async def scenario():
         async for client in _client(app):
@@ -206,7 +208,8 @@ def test_decision_chat_use_ai_false_skips_model_call(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     app = _fresh_app(monkeypatch, tmp_path, "decision-chat-use-ai-false.sqlite3")
 
-    import backend.app.routers.chat as chat_router
+    # 分析核心已下沉到 services/decision_reply（与 Telegram 追问共用），打桩目标随之下移。
+    import backend.app.services.decision_reply as decision_reply
 
     calls: list[dict] = []
 
@@ -221,7 +224,7 @@ def test_decision_chat_use_ai_false_skips_model_call(monkeypatch, tmp_path):
             "reply_draft": "你好。",
         }
 
-    monkeypatch.setattr(chat_router, "analyze_decision_chat_llm", fake_analysis)
+    monkeypatch.setattr(decision_reply, "analyze_decision_chat_llm", fake_analysis)
 
     async def scenario():
         async for client in _client(app):

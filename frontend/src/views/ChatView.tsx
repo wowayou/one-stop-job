@@ -51,6 +51,9 @@ export function ChatView({
   });
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  // 「问这个岗位」：入库候选线索里有多个候选时，指名这一条问的是第几个（0 基）。
+  // 候选没入库前没有 Job 记录，线程本身挂不住岗位，只能靠这个索引锚定；发送后即清空。
+  const [askCandidate, setAskCandidate] = useState<{ index: number; label: string } | null>(null);
   const [imageDataUrl, setImageDataUrl] = useState("");
   const [imageName, setImageName] = useState("");
   const [jobId, setJobId] = useState("");
@@ -80,6 +83,7 @@ export function ChatView({
   const stageTimers = useRef<number[]>([]);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const selectAllThreadsRef = useRef<HTMLInputElement>(null);
 
   const activeThread = threads.find((thread) => thread.id === activeThreadId) ?? null;
@@ -169,11 +173,13 @@ export function ChatView({
     if (!activeThreadId || !content || sending) return;
     const sentImageDataUrl = imageDataUrl;
     const sentImageName = imageName;
+    const sentCandidateIndex = askCandidate?.index ?? null;
     setSending(true);
     setError("");
     setDraft("");
     setImageDataUrl("");
     setImageName("");
+    setAskCandidate(null);
     setPendingMessage({ content, imageDataUrl: sentImageDataUrl, imageName: sentImageName });
     // 阶段推进：规则先跑（立即），实际会用 AI 时约 0.4s 进入「询问模型」，兜底再显示「整理结果」。
     // 只是等待时的可见进度，不改变后端流程；请求返回时立刻清掉。本条关了 AI 时按「仅规则」的
@@ -190,7 +196,8 @@ export function ChatView({
           content,
           image_data_url: sentImageDataUrl || null,
           image_name: sentImageName || null,
-          use_ai: useAiForMessage
+          use_ai: useAiForMessage,
+          candidate_index: sentCandidateIndex
         })
       });
       setMessages((items) => [...items, reply.user_message, reply.assistant_message]);
@@ -200,6 +207,7 @@ export function ChatView({
       setDraft(content);
       setImageDataUrl(sentImageDataUrl);
       setImageName(sentImageName);
+      setAskCandidate(askCandidate);
       setError(errorMessage(err, "分析失败；消息可能已保存在本机，可刷新查看"));
     } finally {
       stageTimers.current.forEach((id) => window.clearTimeout(id));
@@ -479,6 +487,11 @@ export function ChatView({
                   <article key={message.id} className={`chat-message ${message.role}`}>
                     <div className="chat-message-label">{message.role === "user" ? "你" : "助手"}</div>
                     <div className="chat-bubble">
+                      {/* 回答针对哪个候选：气泡正文显示的是 analysis.summary，不单独渲染这行的话，
+                          后端写进 content 的「针对 ① …」在 Web 上就看不见了（手机上能看见）。 */}
+                      {message.metadata_json?.anchor?.kind === "candidate" && message.metadata_json.anchor.label && (
+                        <p className="chat-answer-anchor">针对 {message.metadata_json.anchor.label}</p>
+                      )}
                       <p>{analysis?.summary || message.content}</p>
                       {message.metadata_json?.attachment?.kind === "image" && (
                         <img className="chat-attachment" src={apiUrl(`/api/chat/attachments/${message.metadata_json.attachment.id}`)} alt={message.metadata_json.attachment.name || "聊天截图"} />
@@ -490,6 +503,10 @@ export function ChatView({
                           messageId={message.id}
                           candidates={candidates}
                           boardWriteEnabled={boardWriteEnabled}
+                          onAsk={(index, label) => {
+                            setAskCandidate({ index, label });
+                            composerRef.current?.focus();
+                          }}
                           onUpdated={(updated) => {
                             setMessages((items) => items.map((m) => (m.id === updated.id ? updated : m)));
                             void loadThreads(activeThreadId);
@@ -567,6 +584,12 @@ export function ChatView({
 
             <form className="chat-composer" onSubmit={sendMessage}>
               {error && <div className="chat-error"><AlertCircle size={15} />{error}</div>}
+              {askCandidate && (
+                <div className="chat-ask-anchor">
+                  <span>针对 {askCandidate.label}</span>
+                  <button type="button" className="icon-button" title="改回不指定候选" onClick={() => setAskCandidate(null)}><X size={14} /></button>
+                </div>
+              )}
               {imageDataUrl && (
                 <div className="chat-attachment-preview">
                   <img src={imageDataUrl} alt={imageName || "待发送截图"} />
@@ -575,6 +598,7 @@ export function ChatView({
                 </div>
               )}
               <textarea
+                ref={composerRef}
                 value={draft}
                 onChange={(event) => setDraft(event.target.value)}
                 onPaste={pasteImage}

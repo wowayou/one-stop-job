@@ -28,7 +28,7 @@ from starlette.concurrency import run_in_threadpool
 from . import config as config_module
 from .config import ConfigError, get_config_path, get_settings, load_yaml_config, save_yaml_config
 from .db import engine, init_db
-from .models import ChatMessage, utc_now
+from .models import ChatMessage, ChatThread, utc_now
 from .schemas import (
     AiCredentialUpdate,
     AppConfigUpdate,
@@ -42,8 +42,10 @@ from .services.chat_ingest import (
     _ingest_thread_title,
     _persist_ingest_to_chat,
     _save_chat_image,
+    attach_candidate_advice,
 )
 from .services.context_repository import ContextRepository
+from .services.decision_reply import find_or_create_mobile_thread, reply_in_thread
 from .services.job_ops import _read_upload_file
 from .services.sources import list_source_definitions, source_health
 
@@ -171,7 +173,9 @@ async def _telegram_poll_loop() -> None:
                     chat_id,
                     "发送岗位链接、复制的 JD 文本或一张招聘截图即可；BOSS/智联链接请配上文本或截图。"
                     "识别结果需在 Web 聊天确认后才入库。"
-                    "回复某条回执可把补充材料归入同一条线索。",
+                    "回复某条回执可把补充材料归入同一条线索。"
+                    "想直接问我，就用 ? 或 /ask 开头（例：? 这个岗位值得聊吗）；"
+                    "回复某条回执提问时，我会带上那条线索的上下文。",
                 )
                 continue
 
@@ -193,6 +197,52 @@ async def _telegram_poll_loop() -> None:
                 await run_in_threadpool(
                     telegram.send_message, token, chat_id, "请发送岗位链接、复制的招聘文本，或一张招聘截图。"
                 )
+                continue
+
+            # 追问（? / ？ / /ask 开头）：这是提问，不是新材料，不走抽取、不产生候选。走和 Web
+            # 决策聊天**完全相同**的分析链路（services/decision_reply），把结论直接发回手机——
+            # 仍是本机→本人的通知（§2 机主回执豁免），不对外发送任何消息。
+            # 回复某条回执时提问 → 落到那条 ingest 线索里，模型能看到该线索的对话上下文；
+            # 否则落到固定的「手机提问」通用线程，避免每问一句就刷出一条新线程。
+            question = telegram.parse_question(text)
+            if question is not None:
+                # `?2 这个值得聊吗`：一条线索里有多个候选时指名问第几个（回执/建议里的序号）。
+                candidate_index, question = telegram.parse_candidate_index(question)
+                answer = "分析失败，请稍后再试。"
+                assistant_message_id: int | None = None
+                try:
+                    with Session(engine) as session:
+                        thread: ChatThread | None = None
+                        if extracted.reply_to_message_id:
+                            replied_thread_id = await run_in_threadpool(
+                                _find_ingest_thread_by_receipt, session, extracted.reply_to_message_id
+                            )
+                            thread = session.get(ChatThread, replied_thread_id) if replied_thread_id else None
+                        if thread is None:
+                            thread = await run_in_threadpool(find_or_create_mobile_thread, session)
+                        answer_result = await run_in_threadpool(
+                            reply_in_thread,
+                            session,
+                            thread,
+                            question,
+                            image_data_url=image_data_url,
+                            candidate_index=candidate_index,
+                        )
+                        answer = telegram.summarize_analysis(
+                            answer_result["analysis"],
+                            ai_used=answer_result["ai_used"],
+                            anchor=answer_result["anchor"],
+                        )
+                        assistant_message_id = getattr(answer_result.get("assistant_message"), "id", None)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 追问失败只回一条可读原因，不影响轮询继续
+                    logger.warning("Telegram 追问处理失败", exc_info=True)
+                    answer = f"分析失败：{exc}"
+                answer_tg_message_id = await run_in_threadpool(telegram.send_message, token, chat_id, answer)
+                # 记下这条回答的 tg message_id：回复它继续追问或补材料时能找回同一条线索。
+                if isinstance(answer_tg_message_id, int) and isinstance(assistant_message_id, int):
+                    await run_in_threadpool(_record_telegram_receipt, assistant_message_id, answer_tg_message_id)
                 continue
 
             result: dict | None = None
@@ -230,6 +280,21 @@ async def _telegram_poll_loop() -> None:
                 assistant_id = getattr(result.get("assistant_message"), "id", None)
                 if isinstance(tg_message_id, int) and isinstance(assistant_id, int):
                     await run_in_threadpool(_record_telegram_receipt, assistant_id, tg_message_id)
+
+                # 决策建议：**回执发完之后**才算，单独再发一条。建议要额外做模型调用（provider
+                # 不通时还有重试退避），捆在回执里会让「已收到」这句迟迟不到，手机端只能盲等。
+                if isinstance(assistant_id, int):
+                    try:
+                        with Session(engine) as session:
+                            advice = await run_in_threadpool(attach_candidate_advice, session, assistant_id)
+                            advice_text = advice["advice_text"]
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - 建议是锦上添花，失败不回执错误、不影响已落盘候选
+                        logger.warning("Telegram 候选建议生成失败", exc_info=True)
+                        advice_text = ""
+                    if advice_text:
+                        await run_in_threadpool(telegram.send_message, token, chat_id, advice_text)
 
 
 @asynccontextmanager

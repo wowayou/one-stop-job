@@ -43,7 +43,10 @@ def test_candidate_status_constants_match_expected_literals():
 
 
 def test_strip_ui_only_fields_removes_only_ui_only_keys():
-    """R5：strip_ui_only_fields 只剔除 existing_job_id/duplicate_in_thread_id，其余字段原样保留。"""
+    """R5：strip_ui_only_fields 只剔除纯 UI 字段（含建议 advice），其余字段原样保留。
+
+    `advice` 必须在这份集合里：Job 表没有这一列，漏剔会让 commit 时的 upsert 直接炸。
+    """
     candidate = {
         "title": "资深BI工程师",
         "company_name": "示例科技",
@@ -51,6 +54,7 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
         "job_id": None,
         "existing_job_id": 7,
         "duplicate_in_thread_id": 3,
+        "advice": {"priority": "B", "direction": "邻近可接受", "next_action": "继续沟通"},
     }
     stripped = strip_ui_only_fields(candidate)
     assert stripped == {
@@ -62,7 +66,8 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
     # 浅拷贝：不原地修改传入的候选 dict。
     assert "existing_job_id" in candidate
     assert "duplicate_in_thread_id" in candidate
-    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id"}
+    assert "advice" in candidate
+    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice"}
 
 
 def _fresh_modules(monkeypatch, tmp_path, name):
@@ -1557,6 +1562,452 @@ def test_poll_loop_start_command_mentions_reply_to_append(monkeypatch, tmp_path)
     assert "回复" in sent[0] and "线索" in sent[0]
 
 
+# ==================== 候选决策建议（手机上先给判断，不止入库） ====================
+
+
+def _stub_freeform(monkeypatch, jobs):
+    from backend.app.services import ai as ai_module
+
+    monkeypatch.setattr(
+        ai_module,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None, prior_candidates=None: list(jobs),
+    )
+
+
+def test_ingest_attaches_advice_and_commit_strips_it(monkeypatch, tmp_path):
+    """识别到候选后要带上初步建议；建议是纯 UI 字段，入库时必须被剔除。
+
+    漏剔会直接把 commit 打挂——Job 表没有 advice 列，upsert 会拿到未知字段。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-advice.sqlite3")
+    from backend.app.models import Job
+    from sqlmodel import select
+
+    _stub_freeform(monkeypatch, [{"title": "独立站运营", "company_name": "示例科技", "salary_text": "12-18K", "city": "上海"}])
+
+    async def scenario():
+        async for client in _client(main.app):
+            payload = (await client.post("/api/ingest", json={"text": "一段足够长的招聘 JD 正文文本"})).json()
+            advice = payload["candidates"][0]["advice"]
+            assert advice["priority"] and advice["direction"] and advice["next_action"]
+            # conftest 把建议里的模型调用桩成 None：走规则引擎的确定性结论，标记为非 AI 结果。
+            assert advice["ai_used"] is False
+            # 建议也要写回消息 metadata，Web 刷新后仍看得到，不是只在这次响应里。
+            stored = payload["assistant_message"]["metadata_json"]["candidates"][0]
+            assert stored["advice"]["priority"] == advice["priority"]
+
+            commit = await client.post(
+                f"/api/chat/threads/{payload['thread']['id']}/candidates/commit",
+                json={"message_id": payload["assistant_message"]["id"], "indexes": [0]},
+            )
+            assert commit.status_code == 200, commit.text
+            assert commit.json()["created"] == 1
+
+    asyncio.run(scenario())
+
+    with db.Session(db.engine) as session:
+        jobs = session.exec(select(Job)).all()
+        assert len(jobs) == 1
+        assert not hasattr(jobs[0], "advice")
+
+
+def test_attach_candidate_advice_respects_config_switch(monkeypatch, tmp_path):
+    """`ingest.advice=false` 时一条建议都不生成（也就不会有任何模型调用）。"""
+    from dataclasses import replace
+
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-advice-off.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="ingest", title="入库候选 · 测试")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+        message = ChatMessage(
+            thread_id=thread.id or 0,
+            role="assistant",
+            content="识别到 1 个候选岗位。",
+            metadata_json={"candidates": [{"title": "独立站运营", "company_name": "示例科技"}]},
+        )
+        session.add(message)
+        session.commit()
+        session.refresh(message)
+        message_id = message.id
+
+        off = replace(main.settings, config={**main.settings.config, "ingest": {"advice": False}})
+        result = chat_ingest.attach_candidate_advice(session, message_id or 0, off)
+        assert result["advice_count"] == 0
+        assert result["advice_text"] == ""
+
+        on = replace(main.settings, config={**main.settings.config, "ingest": {"advice": True}})
+        assert chat_ingest.attach_candidate_advice(session, message_id or 0, on)["advice_count"] == 1
+
+
+def test_format_advice_block_is_compact_and_notes_remainder():
+    from backend.app.services.advice import format_advice_block
+
+    candidates = [
+        {
+            "title": "独立站运营",
+            "company_name": "示例科技",
+            "salary_text": "12-18K",
+            "advice": {
+                "priority": "B",
+                "direction": "邻近可接受",
+                "next_action": "继续沟通",
+                "reasons": ["命中目标方向"],
+                "ask_first": ["确认薪资结构"],
+                "hard_conditions": [],
+            },
+        },
+        {"title": "没有建议的候选", "company_name": "乙司"},
+    ]
+    text = format_advice_block(candidates)
+    assert "① 独立站运营 · 示例科技 · 12-18K" in text
+    assert "建议：B / 邻近可接受 → 继续沟通" in text
+    assert "理由：命中目标方向" in text
+    assert "先问：确认薪资结构" in text
+    assert "其余 1 个候选未生成建议" in text
+    # 没有任何建议时返回空串，调用方据此决定「要不要多发一条消息」。
+    assert format_advice_block([{"title": "甲"}]) == ""
+
+
+def test_poll_loop_sends_advice_after_the_receipt(monkeypatch, tmp_path):
+    """回执必须先到，建议单独再发一条——建议要额外做模型调用，捆在一起会让「已收到」迟到。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-advice.sqlite3")
+    _stub_freeform(monkeypatch, [{"title": "独立站运营", "company_name": "示例科技", "salary_text": "12-18K"}])
+
+    batches = [[{"update_id": 80, "message": {"message_id": 800, "chat": {"id": 42}, "text": "一段足够长的招聘 JD 正文文本"}}]]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: sent.append(text) or 9100)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    assert len(sent) == 2
+    assert "识别到 1 个候选" in sent[0] and "建议：" not in sent[0]
+    assert sent[1].startswith("① 独立站运营")
+    assert "建议：" in sent[1]
+
+
+# ==================== 手机端追问：? / ？ / /ask 走决策链路，不产生候选 ====================
+
+
+def test_parse_question_only_accepts_explicit_prefixes():
+    """靠内容猜意图会把「回复回执补一段 JD」吃成提问 = 丢材料，所以只认显式前缀。"""
+    assert telegram.parse_question("? 这个岗位值得聊吗") == "这个岗位值得聊吗"
+    assert telegram.parse_question("？值得聊吗") == "值得聊吗"
+    assert telegram.parse_question("/ask 薪资怎么谈") == "薪资怎么谈"
+    assert telegram.parse_question("/ask@my_job_bot 薪资怎么谈") == "薪资怎么谈"
+    # 不带前缀的一律是材料，绝不能被当成提问。
+    assert telegram.parse_question("补充：这个岗位还要求英文写作") is None
+    assert telegram.parse_question("https://mp.weixin.qq.com/s/abc") is None
+    # 只有前缀没有内容：没有分析价值，交回既有的「请发送链接/文本/截图」提示。
+    assert telegram.parse_question("?") is None
+    assert telegram.parse_question("/ask   ") is None
+    assert telegram.parse_question("") is None
+
+
+def test_summarize_analysis_keeps_rule_mode_visible():
+    analysis = {
+        "summary": "岗位方向与画像较匹配。",
+        "priority": "A",
+        "direction": "核心优先",
+        "next_action": "主动联系",
+        "action_text": "先发一条针对岗位的沟通。",
+        "risks": ["薪资结构待确认", "通勤偏远", "第三条应被截断"],
+        "uncertainties": ["确认是否一人全包"],
+    }
+    text = telegram.summarize_analysis(analysis, ai_used=True)
+    assert "判断：A / 核心优先 → 主动联系" in text
+    assert "第三条应被截断" not in text
+    assert "规则模式" not in text
+    assert "规则模式" in telegram.summarize_analysis(analysis, ai_used=False)
+
+
+def test_poll_loop_question_answers_in_mobile_thread_without_candidates(monkeypatch, tmp_path):
+    """`?` 开头 = 提问：走决策链路回答，不建 ingest 候选，也不重复开新线程。"""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-ask.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    batches = [
+        [{"update_id": 90, "message": {"message_id": 900, "chat": {"id": 42}, "text": "? 这个岗位值得聊吗"}}],
+        [],
+        [{"update_id": 91, "message": {"message_id": 901, "chat": {"id": 42}, "text": "/ask 那薪资怎么谈"}}],
+        [],
+    ]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: sent.append(text) or 9200)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+    _poll_once(main)
+
+    assert len(sent) == 2
+    assert all("判断：" in text for text in sent)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        # 两次提问共用同一条「手机提问」线程，不是每问一句刷一条新线程。
+        assert len(threads) == 1
+        assert threads[0].kind == "general"
+        assert threads[0].title == "手机提问"
+        messages = session.exec(select(ChatMessage).where(ChatMessage.thread_id == threads[0].id)).all()
+        assert [item.role for item in messages] == ["user", "assistant", "user", "assistant"]
+        # 提问不是材料：不产生任何候选。
+        assert all(not (item.metadata_json or {}).get("candidates") for item in messages)
+        # 前缀已剥掉，落盘的是问题本身。
+        assert messages[0].content == "这个岗位值得聊吗"
+
+
+def test_poll_loop_question_replying_to_receipt_lands_in_that_thread(monkeypatch, tmp_path):
+    """回复某条回执再提问 → 落进那条线索（模型能看到该线索上下文），不落通用线程。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-ask-reply.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    _stub_freeform(monkeypatch, [{"title": "独立站运营", "company_name": "示例科技"}])
+
+    batches = [[{"update_id": 95, "message": {"message_id": 950, "chat": {"id": 42}, "text": "一段足够长的招聘 JD 正文文本"}}], []]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+    next_message_id = {"n": 9300}
+
+    def fake_send(token, chat_id, text):
+        sent.append(text)
+        next_message_id["n"] += 1
+        return next_message_id["n"]
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", fake_send)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1
+        ingest_thread_id = threads[0].id
+        receipt = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == ingest_thread_id, ChatMessage.role == "assistant")
+        ).first()
+        receipt_tg_id = receipt.metadata_json.get("receipt_tg_message_id")
+    assert isinstance(receipt_tg_id, int)
+
+    batches.append(
+        [
+            {
+                "update_id": 96,
+                "message": {
+                    "message_id": 951,
+                    "chat": {"id": 42},
+                    "text": "? 这个值得继续聊吗",
+                    "reply_to_message": {"message_id": receipt_tg_id},
+                },
+            }
+        ]
+    )
+    batches.append([])
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        threads = session.exec(select(ChatThread)).all()
+        assert len(threads) == 1  # 没有另开「手机提问」线程
+        messages = session.exec(select(ChatMessage).where(ChatMessage.thread_id == ingest_thread_id)).all()
+        assert [item.content for item in messages].count("这个值得继续聊吗") == 1
+    assert "判断：" in sent[-1]
+
+
+# ==================== 追问锚定：这次问的到底是哪个岗位 ====================
+
+
+def test_parse_candidate_index_accepts_digits_and_markers():
+    """`?2 …` / `?② …` 指名问第几个候选；没有序号或只有序号时不当成指名。"""
+    assert telegram.parse_candidate_index("2 这个值得聊吗") == (1, "这个值得聊吗")
+    assert telegram.parse_candidate_index("②、这个值得聊吗") == (1, "这个值得聊吗")
+    assert telegram.parse_candidate_index("1. 薪资怎么谈") == (0, "薪资怎么谈")
+    assert telegram.parse_candidate_index("这个值得聊吗") == (None, "这个值得聊吗")
+    # 只有一个数字、没有问题：别把它当指名，原样交回上层。
+    assert telegram.parse_candidate_index("2") == (None, "2")
+
+
+def test_reply_in_thread_anchors_to_thread_candidate(monkeypatch, tmp_path):
+    """ingest 线索的 job_id 恒为 None，锚点必须来自该线索已识别的候选，否则模型不知道在答哪个岗位。
+
+    覆盖三件事：默认第一个、`candidate_index` 指名第二个、岗位事实真的进了规则分析。
+    """
+    db, main = _fresh_modules(monkeypatch, tmp_path, "reply-anchor.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from backend.app.services.decision_reply import reply_in_thread
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="ingest", title="入库候选 · 两个岗位")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+        session.add(
+            ChatMessage(
+                thread_id=thread.id or 0,
+                role="assistant",
+                content="识别到 2 个候选岗位。",
+                metadata_json={
+                    "candidates": [
+                        {"title": "独立站运营", "company_name": "未知公司", "salary_text": "12-18K", "city": "上海"},
+                        {"title": "广告优化师", "company_name": "示例科技", "salary_text": "8-12K", "city": "上海"},
+                    ]
+                },
+            )
+        )
+        session.commit()
+
+        default_reply = reply_in_thread(session, thread, "这个值得聊吗")
+        assert default_reply["anchor"]["kind"] == "candidate"
+        assert default_reply["anchor"]["label"] == "① 独立站运营 · 未知公司"
+        assert default_reply["anchor"]["total"] == 2
+        # 回答正文要回显锚点，否则用户看到结论也不知道说的是哪个候选。
+        assert default_reply["assistant_message"].content.startswith("针对 ① 独立站运营 · 未知公司")
+
+        picked = reply_in_thread(session, thread, "那这个呢", candidate_index=1)
+        assert picked["anchor"]["label"] == "② 广告优化师 · 示例科技"
+        # 岗位事实确实进了规则引擎：确认清单里出现该候选的公司/岗位事实。
+        facts = " ".join(item["text"] for item in picked["analysis"]["confirmed_facts"])
+        assert "示例科技" in facts and "广告优化师" in facts
+
+
+def test_reply_in_thread_without_candidates_keeps_previous_behaviour(monkeypatch, tmp_path):
+    """通用线程（如「手机提问」）没有候选可锚：anchor=none，行为与加锚点之前一致。"""
+    db, main = _fresh_modules(monkeypatch, tmp_path, "reply-anchor-none.sqlite3")
+    from backend.app.models import ChatThread
+    from backend.app.services.decision_reply import reply_in_thread
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="general", title="手机提问")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+        reply = reply_in_thread(session, thread, "现在整体该怎么推进")
+        assert reply["anchor"]["kind"] == "none"
+        assert not reply["assistant_message"].content.startswith("针对")
+
+
+def test_poll_loop_question_index_picks_that_candidate(monkeypatch, tmp_path):
+    """手机上 `?2 …`：回答锚到第二个候选，并提示还能换着问。"""
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-ask-index.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from sqlmodel import select
+
+    _stub_freeform(
+        monkeypatch,
+        [
+            {"title": "独立站运营", "company_name": "未知公司", "salary_text": "12-18K"},
+            {"title": "广告优化师", "company_name": "示例科技", "salary_text": "8-12K"},
+        ],
+    )
+
+    batches = [[{"update_id": 97, "message": {"message_id": 970, "chat": {"id": 42}, "text": "一段足够长的招聘 JD 正文文本"}}], []]
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    sent: list[str] = []
+    next_message_id = {"n": 9400}
+
+    def fake_send(token, chat_id, text):
+        sent.append(text)
+        next_message_id["n"] += 1
+        return next_message_id["n"]
+
+    from backend.app.services import telegram as telegram_svc
+    from dataclasses import replace
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", fake_send)
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    _poll_once(main)
+
+    with db.Session(db.engine) as session:
+        thread_id = session.exec(select(ChatThread)).all()[0].id
+        receipt = session.exec(
+            select(ChatMessage).where(ChatMessage.thread_id == thread_id, ChatMessage.role == "assistant")
+        ).first()
+        receipt_tg_id = receipt.metadata_json.get("receipt_tg_message_id")
+
+    batches.append(
+        [
+            {
+                "update_id": 98,
+                "message": {
+                    "message_id": 971,
+                    "chat": {"id": 42},
+                    "text": "?2 这个值得聊吗",
+                    "reply_to_message": {"message_id": receipt_tg_id},
+                },
+            }
+        ]
+    )
+    batches.append([])
+    _poll_once(main)
+
+    answer = sent[-1]
+    assert answer.startswith("针对 ② 广告优化师 · 示例科技")
+    assert "换一个问：?2" in answer  # 多候选时要告诉用户怎么换
+
+
 # ==================== 修复 4：线程标题压缩空白 / 剔除 URL / 截断 ====================
 
 
@@ -1776,6 +2227,37 @@ def test_persist_ingest_and_poll_loop_write_chat_only():
         source = inspect.getsource(func)
         assert "upsert" not in source, f"{func.__name__} 不得出现 upsert 调用"
         assert "Job(" not in source, f"{func.__name__} 不得直接构造 Job"
+
+
+def test_advice_and_decision_reply_never_import_importer():
+    """红线绊线（CLAUDE.md §2/§6）：建议与追问都是只读判断，不得成为第二条入库路径。
+
+    `advice.py` 会构造一个**纯内存** Job 对象当规则引擎的输入载体，这里额外锁定它不会
+    顺手 add/upsert：谁把入库塞进「给个建议」或「回答一句」的路径里，CI 立即翻红。
+    """
+    import inspect
+
+    from backend.app.services import advice as advice_module
+    from backend.app.services import decision_reply
+
+    for module in (advice_module, decision_reply):
+        imported = _imported_names(module)
+        assert not any("importer" in name for name in imported), f"{module.__name__} 不得引用 importer"
+        assert not any("upsert" in name.lower() for name in imported), f"{module.__name__} 不得引用 upsert_*"
+
+    # AST 级（不受文档字符串/注释干扰）：advice 拿到的 session 只能用来读，绝不能 add/commit。
+    import ast
+
+    writes = {
+        node.func.attr
+        for node in ast.walk(ast.parse(inspect.getsource(advice_module)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "session"
+        and node.func.attr in {"add", "add_all", "commit", "merge", "delete", "flush"}
+    }
+    assert not writes, f"advice 只读 session，不得调用 session.{'/'.join(sorted(writes))}"
 
 
 def test_chat_ingest_module_never_imports_importer():
