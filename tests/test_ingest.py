@@ -2310,3 +2310,123 @@ def test_context_writer_reference_allowlist():
         if "ContextWriter" in text:
             offenders.append(str(path))
     assert not offenders, f"以下文件不应引用 ContextWriter：{offenders}"
+
+
+# ==================== 压测回归：空请求校验 + 热路径查询有上界 ====================
+
+
+def test_ingest_rejects_empty_payload(monkeypatch, tmp_path):
+    """`POST /api/ingest` 没有任何原料时必须 422，且不留下空线索。
+
+    压测发现的真实缺口：「必须提供 text 或 image_data_url 之一」原本挂在 `image_data_url` 的
+    field_validator 上，而 pydantic v2 **默认不校验缺省值**——客户端只要不传这个键（`{}`、
+    `{"text": "   "}`），校验根本不触发，请求 200 并建出一条空的「入库候选」线索。
+    """
+    db, main = _fresh_modules(monkeypatch, tmp_path, "ingest-empty.sqlite3")
+    from backend.app.models import ChatThread
+    from sqlmodel import select
+
+    async def scenario():
+        async for client in _client(main.app):
+            for payload in ({}, {"text": "   \n\t "}, {"text": None}, {"text": "", "image_data_url": None}):
+                resp = await client.post("/api/ingest", json=payload)
+                assert resp.status_code == 422, f"{payload} 应被拒绝，实际 {resp.status_code} {resp.text[:200]}"
+            # 仍然接受「只有截图、没有文本」。
+            resp = await client.post("/api/ingest", json={"image_data_url": "data:image/png;base64,iVBORw0KGgo="})
+            assert resp.status_code == 200, resp.text
+
+        with db.Session(db.engine) as session:
+            threads = session.exec(select(ChatThread)).all()
+            assert len(threads) == 1, "被拒的空请求不得留下线索"
+
+    asyncio.run(scenario())
+
+
+def test_reply_in_thread_reads_a_bounded_history_window(monkeypatch, tmp_path, decision_llm_calls):
+    """追问只读最近一个窗口的历史，不随线程长度线性膨胀。
+
+    「手机提问」线程是**永久复用**的（`find_or_create_mobile_thread`），原来每次追问都要把整条
+    线程的消息全读出来（还逐条解 metadata_json）再取最后 12 条——实测 ~1000 条消息时单次追问
+    从 8ms 涨到 30ms 且没有上界。这里锁住两点：窗口有上界，且喂给模型的对话内容仍是最近的。
+    """
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    db, main = _fresh_modules(monkeypatch, tmp_path, "reply-window.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+    from backend.app.services import decision_reply
+
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="general", job_id=None, title=decision_reply.MOBILE_THREAD_TITLE)
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+        for index in range(200):
+            session.add(ChatMessage(thread_id=thread.id, role="user", content=f"历史消息 {index}"))
+        session.commit()
+
+        seen: list[int] = []
+        original = decision_reply.recent_conversation
+
+        def counting_recent_conversation(messages):
+            seen.append(len(messages))
+            return original(messages)
+
+        monkeypatch.setattr(decision_reply, "recent_conversation", counting_recent_conversation)
+        result = decision_reply.reply_in_thread(session, thread, "最后一个问题", use_ai=True)
+
+    assert seen and seen[0] <= decision_reply._HISTORY_WINDOW, f"历史窗口未收敛：读了 {seen} 条"
+    conversation = decision_llm_calls[-1]["conversation"]
+    assert conversation[-1]["content"] == "最后一个问题", "窗口翻转后顺序错了：最新一条必须在末尾"
+    assert conversation[0]["content"].startswith("历史消息 1"), "取到的不是最近的历史"
+    assert result["assistant_message"].id is not None
+
+
+def test_receipt_lookup_scans_a_bounded_window(monkeypatch, tmp_path):
+    """按 Telegram message_id 反查线索的两个函数都只翻最近一窗消息，不随聊天记录无限增长。
+
+    TG 每收到一条「回复了某条消息」都要跑一次；原来是把最近 50 条 ingest 线程的**全部**消息
+    读出来逐条解 JSON（实测库里 ~3900 条消息时单次 50ms）。回执关联本就只对近期消息有意义。
+    """
+    db, _main = _fresh_modules(monkeypatch, tmp_path, "receipt-window.sqlite3")
+    from backend.app.models import ChatMessage, ChatThread
+
+    window = chat_ingest._RECENT_MESSAGE_SCAN
+    with db.Session(db.engine) as session:
+        thread = ChatThread(kind="ingest", job_id=None, title="回执线索")
+        session.add(thread)
+        session.commit()
+        session.refresh(thread)
+        # 最老的一条带回执标记，后面压上一整窗新消息把它挤出窗口。
+        session.add(
+            ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content="老回执",
+                metadata_json={"receipt_tg_message_id": 111},
+            )
+        )
+        session.add(
+            ChatMessage(
+                thread_id=thread.id, role="user", content="老材料", metadata_json={"source_tg_message_id": 222}
+            )
+        )
+        session.commit()
+        for index in range(window + 5):
+            session.add(ChatMessage(thread_id=thread.id, role="assistant", content=f"后续回复 {index}"))
+            session.add(ChatMessage(thread_id=thread.id, role="user", content=f"后续材料 {index}"))
+        session.commit()
+        # 窗口内的新回执必须找得到。
+        session.add(
+            ChatMessage(
+                thread_id=thread.id,
+                role="assistant",
+                content="新回执",
+                metadata_json={"receipt_tg_message_id": 333},
+            )
+        )
+        session.commit()
+
+        assert chat_ingest._find_ingest_thread_by_receipt(session, 333) == thread.id
+        # 被挤出窗口的老回执查不到 → 走既有降级（新建线程/落到「手机提问」），不是崩溃。
+        assert chat_ingest._find_ingest_thread_by_receipt(session, 111) is None
+        assert chat_ingest._find_ingest_message_by_tg_id(session, 222) is None
+        assert chat_ingest._find_ingest_thread_by_receipt(session, 999) is None

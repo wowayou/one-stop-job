@@ -45,6 +45,12 @@ from .jobs import job_ids_by_canonical_key
 # 双保险控制 prompt 体积；单用户、同一线索里的岗位数量本就很小）。
 _MAX_PRIOR_CONTEXT_CANDIDATES = 5
 
+# 「按 Telegram message_id 反查线索」时最多翻多少条最近消息。原来是把最近 50 条 ingest 线程的
+# **全部**消息读出来逐条解 JSON——TG 每收到一条「回复了某条消息」都要跑一次，实测库里 ~3900 条
+# 消息时单次 50ms 且随聊天记录无上界增长。回执关联本就只对近期消息有意义（回复太久远的消息
+# 早就静默回退到新建线程了，见下面两个函数的 docstring），限个窗口不改变实际可用范围。
+_RECENT_MESSAGE_SCAN = 500
+
 
 def _chat_thread_payload(session: Session, thread: ChatThread) -> dict:
     message_count = session.exec(select(func.count(ChatMessage.id)).where(ChatMessage.thread_id == thread.id)).one()
@@ -164,7 +170,7 @@ def _ingest_thread_title(text: str, has_image: bool) -> str:
 def _find_ingest_thread_by_receipt(session: Session, reply_to_message_id: int) -> int | None:
     """按 Telegram「回复了哪条回执」找回对应的 ingest 线程 id；找不到返回 None。
 
-    单用户、量小：只看最近 ~50 个 ingest 线程里任意一条 assistant 消息的
+    单用户、量小：只看最近 ~50 个 ingest 线程里最近 `_RECENT_MESSAGE_SCAN` 条 assistant 消息的
     `metadata_json.receipt_tg_message_id` 是否匹配即可，不加表不加列不做 JSON 索引。
     """
     threads = session.exec(
@@ -176,7 +182,8 @@ def _find_ingest_thread_by_receipt(session: Session, reply_to_message_id: int) -
     messages = session.exec(
         select(ChatMessage)
         .where(ChatMessage.thread_id.in_(thread_ids), ChatMessage.role == "assistant")
-        .order_by(ChatMessage.created_at.desc())
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(_RECENT_MESSAGE_SCAN)
     ).all()
     for message in messages:
         if (message.metadata_json or {}).get("receipt_tg_message_id") == reply_to_message_id:
@@ -189,7 +196,8 @@ def _find_ingest_message_by_tg_id(session: Session, tg_message_id: int) -> ChatM
 
     用于处理「编辑消息」：Telegram 编辑事件的 message_id 和被编辑的原消息完全一致，据此判断
     「这是不是在编辑本 bot 处理过的某条消息」，而不是一条全新消息。只看最近 ~50 个 ingest
-    线程，和 `_find_ingest_thread_by_receipt` 同样的取舍：单用户、量小，足够覆盖实际场景。
+    线程的最近 `_RECENT_MESSAGE_SCAN` 条消息，和 `_find_ingest_thread_by_receipt` 同样的取舍：
+    单用户、量小，足够覆盖实际场景。
     """
     threads = session.exec(
         select(ChatThread).where(ChatThread.kind == "ingest").order_by(ChatThread.updated_at.desc()).limit(50)
@@ -200,7 +208,8 @@ def _find_ingest_message_by_tg_id(session: Session, tg_message_id: int) -> ChatM
     messages = session.exec(
         select(ChatMessage)
         .where(ChatMessage.thread_id.in_(thread_ids), ChatMessage.role == "user")
-        .order_by(ChatMessage.created_at.desc())
+        .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+        .limit(_RECENT_MESSAGE_SCAN)
     ).all()
     for message in messages:
         if (message.metadata_json or {}).get("source_tg_message_id") == tg_message_id:

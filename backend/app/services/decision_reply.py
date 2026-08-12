@@ -31,6 +31,9 @@ _MAX_ANCHOR_CANDIDATES = 5
 
 _MARKERS = "①②③④⑤⑥⑦⑧⑨⑩"
 
+# 取回多少条历史消息交给 `recent_conversation`（它只用最后 12 条，留一倍余量即可）。
+_HISTORY_WINDOW = 24
+
 
 def candidate_label(candidate: Candidate, index: int) -> str:
     """「① 独立站运营 · 未知公司」——回答开头要回显它，否则你根本不知道模型在答哪个岗位。"""
@@ -137,9 +140,19 @@ def reply_in_thread(
         image_attached=bool(image_data_url),
         policy_context=context_text,
     )
-    history = session.exec(
-        select(ChatMessage).where(ChatMessage.thread_id == thread_id).order_by(ChatMessage.created_at.asc())
-    ).all()
+    # 只取最近 _HISTORY_WINDOW 条：`recent_conversation` 反正只用最后 12 条，而「手机提问」
+    # 线程是**永久复用**的（`find_or_create_mobile_thread`），一路问下去会积累上千条消息——
+    # 原来每次追问都把整条线程读出来（还要逐条解 metadata_json 里的 analysis），耗时随消息数
+    # 线性上涨（实测 ~1000 条时单次追问 8ms → 30ms，且没有上界）。倒序取窗口再翻回正序，
+    # 结果与原来逐字一致。created_at 相同时用 id 兜底定序，避免同秒消息顺序不稳。
+    history = list(
+        session.exec(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id == thread_id)
+            .order_by(ChatMessage.created_at.desc(), ChatMessage.id.desc())
+            .limit(_HISTORY_WINDOW)
+        ).all()
+    )[::-1]
     conversation = recent_conversation(history)
     job_ctx = job_context(job)
 

@@ -5,7 +5,7 @@ import binascii
 from datetime import date, datetime
 from typing import Optional
 
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from sqlmodel import Field, SQLModel
 
 from .services.domain import (
@@ -121,12 +121,23 @@ class IngestRequest(SQLModel):
         lambda cls, value: validate_optional_text("text", value) if isinstance(value, str) or value is None else value
     )
 
+    @model_validator(mode="after")
+    def require_text_or_image(self) -> "IngestRequest":
+        """必须提供 text 或 image_data_url 之一。
+
+        这条检查过去挂在 `image_data_url` 的 field_validator 里，而 pydantic v2 **默认不校验
+        缺省值**：客户端只要不传 `image_data_url` 这个键（`{}`、`{"text": "   "}`），校验根本
+        不会触发，请求直接 200 并建出一条空的「入库候选」线索。改成模型级校验，无论字段
+        传没传都会跑。
+        """
+        if not (self.text or "").strip() and not (self.image_data_url or "").strip():
+            raise ValueError("必须提供 text 或 image_data_url 之一")
+        return self
+
     @field_validator("image_data_url")
     @classmethod
     def validate_ingest_image(cls, value: Optional[str], info) -> Optional[str]:
         if value is None:
-            if not (info.data.get("text") or "").strip():
-                raise ValueError("必须提供 text 或 image_data_url 之一")
             return None
         allowed = ("data:image/png;base64,", "data:image/jpeg;base64,", "data:image/webp;base64,")
         if not value.startswith(allowed):
