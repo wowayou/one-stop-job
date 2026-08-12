@@ -24,6 +24,7 @@ bash -n scripts/dev_wsl.sh
 bash -n scripts/deploy_check.sh
 bash -n scripts/system_smoke.sh
 bash -n scripts/load_smoke.sh
+bash -n scripts/chat_stress.sh
 bash -n scripts/docker_doctor.sh
 bash -n tools/host_collect_opencli.sh
 

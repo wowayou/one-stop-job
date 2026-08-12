@@ -26,6 +26,7 @@
 | 质量门禁 | `run_quality_check.bat` / `scripts/quality_gate.sh` | 提交前必跑 |
 | 系统冒烟 | `scripts/system_smoke.sh` | 启动真实后端，用临时 SQLite 跑业务闭环 |
 | 压力冒烟 | `scripts/load_smoke.sh` | 临时 SQLite，覆盖批量导入、并发评分和冲刺包耗时预算 |
+| 聊天压测 | `scripts/chat_stress.sh` | 临时 SQLite，覆盖长线程退化、并发写、边界输入和追问锚点正确性 |
 | 运维交接 | `docs/operations.md` | 数据位置、备份、Windows/WSL Docker 和新人接手路径 |
 
 ## 删除与清理
@@ -92,9 +93,12 @@ scripts/quality_gate.sh
 ```bash
 scripts/load_smoke.sh
 JOBS=1000 CONCURRENCY=12 scripts/load_smoke.sh
+
+scripts/chat_stress.sh                              # 聊天 / ingest 面
+ROUNDS=300 CONCURRENCY=16 scripts/chat_stress.sh
 ```
 
-该脚本不访问真实招聘平台，不读写真实数据。
+两个脚本都不访问真实招聘平台，不读写真实数据。
 
 单独定位问题时：
 

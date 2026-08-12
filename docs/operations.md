@@ -292,7 +292,14 @@ scripts/load_smoke.sh
 JOBS=1000 CONCURRENCY=12 scripts/load_smoke.sh
 ```
 
-压力冒烟只使用临时 SQLite 和本地 Uvicorn，不读写真实数据，不访问真实招聘平台。
+聊天 / ingest 面的压测（长线程退化、并发写、边界输入、追问锚点正确性）：
+
+```bash
+scripts/chat_stress.sh
+ROUNDS=300 CONCURRENCY=16 scripts/chat_stress.sh
+```
+
+两个压测都只使用临时 SQLite 和本地 Uvicorn，不读写真实数据，不访问真实招聘平台。
 
 ## 外部平台速率
 

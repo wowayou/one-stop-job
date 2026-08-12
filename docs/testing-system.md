@@ -41,6 +41,13 @@ JOBS=1000 CONCURRENCY=12 scripts/load_smoke.sh
 
 压力冒烟使用临时 SQLite 和本地 Uvicorn，不访问真实招聘平台。
 
+聊天 / ingest 面另有一条压测（同样不纳入默认门禁）。改完聊天、ingest 落盘、追问锚点相关代码后跑一遍：
+
+```bash
+scripts/chat_stress.sh
+ROUNDS=300 CONCURRENCY=16 scripts/chat_stress.sh
+```
+
 ## 测试分层
 
 ### 1. 纯函数 / 解析器测试
@@ -160,6 +167,36 @@ scripts/system_smoke.sh
 JOBS=300
 CONCURRENCY=8
 ```
+
+`scripts/chat_stress.sh` 覆盖另一条主干（聊天入口），分两个阶段：
+
+HTTP 阶段（临时 SQLite + 本地 Uvicorn，AI 关闭）：
+
+- 单条线程连发 N 次追问，看耗时是否随线程变长而退化。
+- ingest 线索里反复追问（每次都要重算候选锚点）。
+- 建 60 条线索后的落盘与列表耗时。
+- 并发混合读写，抓 `database is locked` 和 5xx。
+- 边界与恶意输入（超长/超限文本、坏 data URL、控制字符、越界 `candidate_index`），确认既不 500 也不把空请求放行。
+
+进程内阶段（Telegram 专属路径 HTTP 打不到；规则模式下也拆不出多候选，需直接合成）：
+
+- `reply_in_thread` 在 3000 条消息的线程里的耗时倍数。
+- `_find_ingest_thread_by_receipt` 随聊天记录总量的耗时。
+- 多候选下指名 `?N` 的锚点正确性，含脏数据、去重、越界回落。
+- 候选字段异常（超长/None/错类型）不炸锚点与回答。
+- 建议正文长度 vs Telegram 4000 字符截断点。
+
+默认参数：
+
+```text
+ROUNDS=150
+CONCURRENCY=12
+```
+
+**计时类断言只是趋势看板，不是守门人。** 真正钉住「热路径不得无上界」的是 `tests/test_ingest.py`
+里的 `test_reply_in_thread_reads_a_bounded_history_window` 和 `test_receipt_lookup_scans_a_bounded_window`
+（确定性断言、零计时）。脚本里的阈值经过正反两向校准：把对应修复回退掉，场景 6 会从 ×1.7 跳到
+×8.3 并失败；场景 7 的计时在几千条消息量级分辨不出来，注释里已写明它只兜灾难级回归。
 
 ### 9. 手动冒烟清单
 
