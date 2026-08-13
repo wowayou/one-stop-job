@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -81,6 +82,9 @@ def _fresh_app(monkeypatch, tmp_path, name: str):
 
     db = importlib.reload(db)
     main = importlib.reload(main)
+    # 同 test_ingest._isolated_data_dir：截图落盘的内部链路会回退到 get_settings()，
+    # 只 patch main.settings 拦不住，必须让配置里的 data_dir 本身指向 tmp_path。
+    main.settings = replace(main.settings, data_dir=tmp_path / "chat-data")
     db.init_db()
     return main
 

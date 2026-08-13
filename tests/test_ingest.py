@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib
+from dataclasses import replace
 
 import httpx
 
@@ -70,6 +71,36 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
     assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice"}
 
 
+def _isolated_data_dir(monkeypatch, tmp_path):
+    """把 data_dir 指到 tmp_path，同时保留真实 config.yaml 的其余配置。
+
+    只 monkeypatch `main.settings` 不够：截图落盘的内部调用链
+    （`_persist_ingest_to_chat` → `_save_chat_image(settings=None)`）会回退到
+    `get_settings()`，那读的是**真实** config.yaml 的 `general.data_dir`，于是测试
+    用的假 PNG（8 字节魔术头）写进真实数据目录（实测积了 78 个）。
+
+    所以这里复制真实配置、只替换 `general.data_dir`，再让 `JOB_ONE_STOP_CONFIG`
+    指向它——不能整份换成极简配置，那会连带掐掉测试依赖的 `ai.providers`
+    （曾因此误伤 25 个用例）。测试若已自行指定配置文件，则尊重它、不覆盖。
+    """
+    import os
+
+    import yaml
+
+    from backend.app import config as config_module
+
+    data_dir = tmp_path / "chat-data"
+    if not os.getenv("JOB_ONE_STOP_CONFIG"):
+        real = config_module.load_yaml_config()
+        real.setdefault("general", {})
+        real["general"]["data_dir"] = str(data_dir)
+        isolated = tmp_path / "config-isolated.yaml"
+        isolated.write_text(yaml.safe_dump(real, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(isolated))
+        config_module.get_settings.cache_clear()
+    return data_dir
+
+
 def _fresh_modules(monkeypatch, tmp_path, name):
     monkeypatch.setenv("JOB_ONE_STOP_DATABASE_URL", f"sqlite:///{tmp_path / name}")
     from backend.app import config
@@ -80,6 +111,7 @@ def _fresh_modules(monkeypatch, tmp_path, name):
 
     db = importlib.reload(db)
     main = importlib.reload(main)
+    main.settings = replace(main.settings, data_dir=_isolated_data_dir(monkeypatch, tmp_path))
     db.init_db()
     return db, main
 
