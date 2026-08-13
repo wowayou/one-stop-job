@@ -78,6 +78,41 @@ def send_message(token: str, chat_id: int, text: str) -> int | None:
     return message_id if isinstance(message_id, int) else None
 
 
+def split_message(text: str, chunk_size: int = 3500) -> list[str]:
+    """把长文本按行边界拆成不超过 chunk_size 的段（Telegram 单条上限 4096）。
+
+    纯函数便于单测；单行超长时硬切，绝不丢内容。空文本返回空列表。
+    """
+    if not text:
+        return []
+    chunks: list[str] = []
+    current = ""
+    for line in text.split("\n"):
+        while len(line) > chunk_size:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:chunk_size])
+            line = line[chunk_size:]
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > chunk_size:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def send_long_message(token: str, chat_id: int, text: str) -> list[int | None]:
+    """分段发送长文本（如晨间日清单），每段一条消息；返回各段 message_id。
+
+    与 send_message 相同的机主回执边界：只发给白名单机主本人。
+    """
+    return [send_message(token, chat_id, chunk) for chunk in split_message(text)]
+
+
 @dataclass
 class ExtractedMessage:
     """从一条 Telegram update 里解析出的关键信息，供轮询循环分派处理。"""

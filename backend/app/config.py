@@ -197,6 +197,11 @@ class Settings:
             return 5
         return days if days >= 1 else 5
 
+    @property
+    def schedule_config(self) -> dict[str, Any]:
+        value = self.config.get("schedule", {})
+        return value if isinstance(value, dict) else {}
+
 
 @lru_cache
 def get_settings() -> Settings:
