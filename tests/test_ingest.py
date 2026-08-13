@@ -2093,9 +2093,14 @@ def test_config_roundtrip_keeps_telegram_section(monkeypatch, tmp_path):
         async for client in _client(main.app):
             got = (await client.get("/api/config")).json()
             assert "telegram" in got["config"]
+            before = got["config"]["telegram"]
             resp = await client.put("/api/config", json={"config": got["config"]})
             assert resp.status_code == 200, resp.text
-            assert resp.json()["config"]["telegram"]["enabled"] is False
+            # 断言 telegram 段**原样回来**，而不是某个写死的取值：本用例复制的是仓库
+            # 真实 config.yaml，`enabled` 是本机开关（本人开了 Telegram 就是 true），
+            # 拿它当期望值会让"改了自己的配置"表现成"测试挂了"。要守的不变量是
+            # 白名单没漏掉 telegram、回环不丢字段。
+            assert resp.json()["config"]["telegram"] == before
 
     asyncio.run(scenario())
 

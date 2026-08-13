@@ -30,6 +30,17 @@ def _reload_settings(monkeypatch, tmp_path, config_yaml: str) -> None:
     config.get_settings.cache_clear()
 
 
+def _unset_env(monkeypatch, *names: str) -> None:
+    """把变量置空而不是 delenv。
+
+    `get_settings()` 每次都 `load_dotenv(PROJECT_DIR/".env")`，被 `delenv` 删掉的变量
+    会立刻从开发机 `.env` 里重新填上，于是"没配 key"的用例反而拿到真 key。置空则不同：
+    load_dotenv 不覆盖已存在的变量，而读取侧一律把空串当未配置。
+    """
+    for name in names:
+        monkeypatch.setenv(name, "")
+
+
 class _FakeOpenAI:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
@@ -128,7 +139,7 @@ def test_providers_defaults_to_single_openai_env_when_not_configured(monkeypatch
     """不配置 ai.providers 时回退现状：单一 provider，client_factory 就是 `_client` 本身。"""
     _reload_settings(monkeypatch, tmp_path, "ai:\n  enabled: true\n")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    _unset_env(monkeypatch, "OPENAI_MODEL", "OPENAI_BASE_URL")
 
     providers = ai_module._providers()
 
@@ -139,7 +150,7 @@ def test_providers_defaults_to_single_openai_env_when_not_configured(monkeypatch
 
 def test_providers_empty_when_no_key_configured_anywhere(monkeypatch, tmp_path):
     _reload_settings(monkeypatch, tmp_path, "ai:\n  enabled: true\n")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    _unset_env(monkeypatch, "OPENAI_API_KEY", "OPENAI_BASE_URL")
 
     assert ai_module._providers() == []
     assert ai_module.is_ai_available() is False
@@ -166,8 +177,7 @@ def test_providers_normalizes_configured_list_and_skips_missing_keys(monkeypatch
     monkeypatch.setenv("OPENAI_API_KEY", "sk-primary")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://primary.example/v1")
     monkeypatch.setenv("OPENAI_MODEL_PRIMARY", "model-from-env")
-    monkeypatch.delenv("OPENAI_MODEL", raising=False)  # 全局默认值不设置，验证兜底 gpt-4o-mini
-    monkeypatch.delenv("OPENAI_API_KEY_MISSING", raising=False)
+    _unset_env(monkeypatch, "OPENAI_MODEL", "OPENAI_API_KEY_MISSING")  # 全局默认不设置，验证兜底 gpt-4o-mini
     monkeypatch.setenv("OPENAI_API_KEY_BACKUP", "sk-backup")
 
     providers = ai_module._providers()

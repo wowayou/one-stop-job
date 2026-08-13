@@ -113,6 +113,13 @@ def _setup(monkeypatch, tmp_path, name: str, *, board_content: str | None = BOAR
     if board_content is not None:
         _write_context_fixture(context_root, board_content)
         monkeypatch.setenv("JOB_ONE_STOP_CONTEXT_REPO_PATH", str(context_root))
+    else:
+        # 「未配置上下文仓库」必须把变量显式置空，不能只 delenv：项目根 `.env` 里配的是
+        # **真实**个人仓库，而 `get_settings()` 会 `load_dotenv()`——删掉的变量会被从 .env
+        # 重新读回来，于是 ContextWriter 拿到真路径，把测试候选写进真看板的收集箱列
+        # （实测污染过 7 行）。置空则不同：load_dotenv 不覆盖已存在的变量，且
+        # `_env_absolute_path` 对空串返回 None，才是真正的"未配置"。
+        monkeypatch.setenv("JOB_ONE_STOP_CONTEXT_REPO_PATH", "")
     main = _fresh_app(monkeypatch, tmp_path, name)
     return main, context_root
 
