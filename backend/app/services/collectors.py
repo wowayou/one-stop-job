@@ -156,6 +156,63 @@ class BossOpenCLICollector(OpenCLICommandCollector):
         super().__init__(opencli_path=opencli_path, command=boss_cmd, timeout_seconds=timeout_seconds, source=source)
 
 
+def command_with_query(command: list[str], query: str) -> list[str]:
+    """把 OpenCLI 搜索命令里 `search` 后面的关键词替换成 query；找不到 `search` 则原样返回。"""
+    result = list(command)
+    for index, token in enumerate(result[:-1]):
+        if token == "search":
+            result[index + 1] = query
+            return result
+    return result
+
+
+@dataclass
+class OpenCLIMultiCommandCollector:
+    """按多关键词依次跑同一 OpenCLI 搜索命令，并按 external_id 跨命令去重。
+
+    单个关键词失败进 report.skipped（不静默丢，§3.7）；全部失败才抛错让
+    SourceRun 记为 failed。命令间 sleep 限速，符合低频抓取边界（§3.3）。
+    """
+
+    opencli_path: str
+    commands: list[list[str]]
+    timeout_seconds: int = 120
+    rate_limit_seconds: float = 2.0
+    source: str = "BOSS直聘"
+
+    def __post_init__(self) -> None:
+        self.report: dict = {"commands_total": len(self.commands), "commands_ok": 0, "jobs": 0, "skipped": []}
+
+    def collect(self) -> list[dict]:
+        records: list[dict] = []
+        seen_external: set[str] = set()
+        for index, command in enumerate(self.commands):
+            if index > 0 and self.rate_limit_seconds:
+                time.sleep(self.rate_limit_seconds)
+            label = " ".join(command[1:4]) if len(command) > 1 else str(command)
+            try:
+                rows = OpenCLICommandCollector(
+                    opencli_path=self.opencli_path,
+                    command=command,
+                    timeout_seconds=self.timeout_seconds,
+                    source=self.source,
+                ).collect()
+            except Exception as exc:  # noqa: BLE001 - 单关键词失败不终止整批
+                self.report["skipped"].append({"command": label, "reason": str(exc)})
+                continue
+            self.report["commands_ok"] += 1
+            for row in rows:
+                ext = row.get("external_id")
+                if ext in seen_external:
+                    continue
+                seen_external.add(ext)
+                records.append(row)
+        if self.report["commands_ok"] == 0 and self.report["skipped"]:
+            raise RuntimeError(f"全部关键词采集失败: {self.report['skipped']}")
+        self.report["jobs"] = len(records)
+        return records
+
+
 @dataclass
 class TabularFileCollector:
     df: pd.DataFrame

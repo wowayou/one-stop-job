@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException
 from fastapi.encoders import jsonable_encoder
 from sqlmodel import select
@@ -14,6 +16,8 @@ from ..config import get_settings
 from ..deps import SessionDep
 from ..models import FollowUpTask, utc_now
 from ..schemas import FollowUpTaskCreate, FollowUpTaskUpdate
+from ..services.context_repository import ContextRepositoryError
+from ..services.daily_digest import build_daily_digest
 from ..services.followup import find_stale_jobs
 
 router = APIRouter()
@@ -28,6 +32,23 @@ async def list_follow_ups(session: SessionDep) -> list[FollowUpTask]:
 async def list_stale_follow_ups(session: SessionDep) -> list[dict]:
     """需跟进岗位：fit/interview 超过 stale_days 天无活动。只提醒，不自动联系。"""
     return find_stale_jobs(session, now=utc_now(), stale_days=get_settings().followup_stale_days)
+
+
+@router.get("/api/follow-ups/board-sla")
+async def board_sla_digest(session: SessionDep, day: str | None = None) -> dict:
+    """看板到期动作日清单：解析个人上下文仓库看板「下一步」里的日期（只读、只提醒）。
+
+    返回今日必发 / 今日跟进 / 今日收口 / 未来 7 天，以及库内 stale 岗位和可直接
+    发给机主本人的摘要文本。看板未配置或缺文件时按 503 报出，不静默返回空清单。
+    """
+    try:
+        target = date.fromisoformat(day) if day else date.today()
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="day 参数需为 YYYY-MM-DD") from exc
+    try:
+        return build_daily_digest(session, target)
+    except ContextRepositoryError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/api/follow-ups")

@@ -27,6 +27,17 @@ opencli:
     - "--format"
     - "csv" # 关键修改：必须改为 csv，不能是 xlsx
 
+  # 多关键词轮询（可选）：配了以后 boss_cmd 里 `search` 后面那个词会被逐个替换，
+  # 跨关键词按 external_id 去重，单个关键词失败只进 report.skipped 不中断整批。
+  # 一个岗位方向往往挂在多个标签下，单一关键词会漏掉大半岗位池。
+  # boss_keywords:
+  #   - "示例岗位A"
+  #   - "示例岗位B"
+
+  # WSL 提示：后端跑在 WSL、opencli 装在 Windows 时，boss_cmd 第一项要写
+  # Windows 绝对路径（形如 <盘符>:\Users\<你的用户名>\AppData\Roaming\npm\opencli.cmd），
+  # 后端会经 cmd.exe 代理调用；只写 "opencli" 在 WSL 里找不到命令。
+
   # liepin_cmd:
   #   - "opencli"
   #   - "liepin"
@@ -139,21 +150,41 @@ ingest:
   advice_max_candidates: 3 # 每条建议是一次独立模型调用；一次发来一堆岗位时只给前几个
 
 # ==================== 匹配评分配置 ====================
+# 权重合计不能超过 100（validate_weights 校验），维度名必须是已知的那 7 个。
+# 注意：这里的 weights 只在**首次建画像**时当种子默认值；之后真正影响评分的是
+# UserProfile.weights（改它走 PUT /api/profile 或 Web 匹配评分页）。
+# 权重刻意向"有真实数据的维度"倾斜：role_match / salary_city 完全由岗位自带字段决定，
+# 而 stability / reputation 在没有公司调研证据时只能取常量默认值——给它们高权重等于给
+# 所有岗位同时加同一个数，只会压缩分数区间、让排序失去信息量。
 scoring:
   weights:
-    role_match: 25
-    salary_city: 15
-    growth: 15
-    stability: 15
-    reputation: 10
+    role_match: 40
+    salary_city: 18
+    growth: 12
+    stability: 8
+    reputation: 4
     commute_rest: 10
-    interview_roi: 10
+    interview_roi: 8
 
 # ==================== 跟进提醒配置 ====================
 # fit/interview 状态超过 stale_days 天没有任何活动（状态变更/面试复盘/跟进任务）
 # 时，会在冲刺包和「跟进任务」里高亮为“需跟进”。只提醒，不自动联系对方。
 followup:
   stale_days: 5
+
+# ==================== 定时任务 ====================
+# 晨间日清单：解析个人看板「下一步」里的到期日期，按今日必发 / 跟进 / 收口三段汇总，
+# 连同库内需跟进岗位与新入库岗位，经 Telegram 发给**本人**（红线 §2 机主回执豁免）。
+# 依赖：telegram.enabled + TELEGRAM_BOT_TOKEN + 已配置的个人上下文仓库。
+# 实现是应用进程内的 15 分钟轮询 + 状态文件（data_dir/daily_digest_state.json）：
+# 到点未发才发、当天只发一次；发送时点机器没开机，则开机后一个周期内补发。
+schedule:
+  digest:
+    enabled: false
+    hour: 8
+    minute: 20
+    # true 时先跑一次 BOSS 采集再生成清单（每日一次，是 §3.3 低频人工触发的唯一例外）
+    collect_first: false
 
 # ==================== AI 配置 ====================
 ai:

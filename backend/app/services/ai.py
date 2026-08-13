@@ -33,7 +33,9 @@ _USER_TMPL = """从下文抽取所有岗位，返回严格 JSON 对象：{{"jobs
 
 
 def _model() -> str:
-    return os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+    # 空串按未配置处理：`.env` 里写成 `OPENAI_MODEL=`（留空占位很常见）时，
+    # `os.getenv(name, default)` 会返回空串而非默认值，等于把空模型名发给 API。
+    return (os.getenv("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
 
 
 def _clean_credential(value: str | None, *, label: str) -> str | None:

@@ -5,7 +5,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..config import Settings
-from .collectors import BeBeeCollector, OpenCLICommandCollector, inspect_opencli
+from .collectors import (
+    BeBeeCollector,
+    OpenCLICommandCollector,
+    OpenCLIMultiCommandCollector,
+    command_with_query,
+    inspect_opencli,
+)
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,7 @@ def list_source_definitions(settings: Settings) -> list[JobSourceDefinition]:
 
     boss_cfg = {
         "command": opencli_cfg.get("boss_cmd", []),
+        "keywords": opencli_cfg.get("boss_keywords", []),
         "timeout_seconds": opencli_cfg.get("timeout_seconds", 120),
         **_as_dict(configured_sources.get("boss")),
     }
@@ -126,10 +133,21 @@ def build_source_collector(source: JobSourceDefinition):
     if source.kind == "opencli_csv":
         if os.getenv("JOB_ONE_STOP_OPENCLI_SERVER_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
             raise RuntimeError("Docker 模式不在服务端调用 OpenCLI；请在宿主机采集 CSV 后导入。")
+        command = _as_list(source.config.get("command"))
+        keywords = _as_list(source.config.get("keywords"))
+        timeout_seconds = int(source.config.get("timeout_seconds", 120) or 120)
+        # 配了多关键词且命令是 `search` 形态时，逐关键词替换查询词并跨命令去重。
+        if keywords and "search" in command:
+            return OpenCLIMultiCommandCollector(
+                opencli_path="",
+                commands=[command_with_query(command, keyword) for keyword in keywords],
+                timeout_seconds=timeout_seconds,
+                source=source.label,
+            )
         return OpenCLICommandCollector(
             opencli_path="",
-            command=_as_list(source.config.get("command")),
-            timeout_seconds=int(source.config.get("timeout_seconds", 120) or 120),
+            command=command,
+            timeout_seconds=timeout_seconds,
             source=source.label,
         )
     if source.kind == "structured_pages" and source.key == "bebee":

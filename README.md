@@ -12,6 +12,7 @@
 - **智能评分**：按岗位匹配、薪资、成长性、稳定性、口碑等维度输出 100 分解释
 - **面试准备**：生成 JD 摘要、技能差距、优势话术、STAR 素材、反问问题；配置 AI 后按 JD + 个人画像定制打招呼语、简历重排与反问（不配 AI 回退模板）
 - **跟进任务 & 提醒**：把投递、沟通、调研动作沉淀为本地任务；fit/面试中久无进展的岗位自动标记「需跟进」
+- **晨间日清单（可选）**：每天定时解析个人看板「下一步」里的到期日期，按「今日必发 / 今日跟进 / 今日收口」三段汇总，连同库内需跟进岗位经 Telegram 推给本人（`config.yaml` 的 `schedule.digest`；看板只读，动作仍由本人执行）。发送时点机器没开机也不会丢：应用启动后 15 分钟内自动补发当天清单，且当天只发一次
 
 ## 🚀 快速开始
 
@@ -35,6 +36,7 @@ scripts/app.sh start
 | [CLAUDE.md](CLAUDE.md) | **项目架构标准**（AI 与人类共同遵守） |
 | [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
 | [docs/operations.md](docs/operations.md) | 运行部署（单进程/本地开发/Docker）、数据备份、运行排障 |
+| [docs/restore-on-new-machine.md](docs/restore-on-new-machine.md) | **换机/重装还原清单**（配置与数据都不入库，按此重建） |
 
 <details>
 <summary>开发者文档</summary>
@@ -60,7 +62,7 @@ scripts/app.sh start
 
 | 来源 | 触发方式 | 说明 |
 |------|---------|------|
-| **BOSS 直聘** | 宿主机脚本 | 需安装 OpenCLI，Windows 双击 `tools\host_collect_boss.bat` |
+| **BOSS 直聘** | 宿主机脚本／每日一次定时 | 需安装 OpenCLI，Windows 双击 `tools\host_collect_boss.bat`；配 `opencli.boss_keywords` 可一次跑多个关键词并跨关键词去重；`schedule.digest.collect_first: true` 时每天晨间日清单前自动采集一次（上限每日一次，红线 §3.3） |
 | **智联招聘** | 宿主机脚本 | 需安装 OpenCLI，默认禁用，配置后启用 |
 | **公众号** | 粘贴导入 | 粘贴元宝回答或 mp.weixin 链接，自动拆分多岗位 |
 | **beBee** | 配置采集 | 解析页面 JobPosting JSON-LD 或 Next.js payload |
@@ -137,6 +139,12 @@ opencli:
     - "200"
     - "--format"
     - "csv"
+  # 可选：一次采集跑多个关键词。填了就用它替换 boss_cmd 里 `search` 后面的那个词，
+  # 逐个关键词依次执行（命令间限速 2 秒），结果按 external_id 跨关键词去重。
+  # 不填则只跑 boss_cmd 里的单个关键词，行为与以前完全一致。
+  boss_keywords:
+    - "示例岗位A"
+    - "示例岗位B"
 
 general:
   data_dir: "./data/job_one_stop"
@@ -153,6 +161,15 @@ scoring:
 
 followup:
   stale_days: 5   # fit/面试中超过该天数无活动 → 标记「需跟进」
+
+schedule:
+  digest:
+    enabled: false  # true 时每天 hour:minute 把看板到期动作 + 需跟进岗位推送到 Telegram（仅机主本人）
+    hour: 8
+    minute: 20
+    collect_first: true  # 推送前先跑一次 BOSS 采集（按 boss_keywords 多关键词），
+                         # 让当天清单带上「🆕 新入库岗位」段。这是红线 §3.3 唯一的定时抓取例外，
+                         # 频率上限即每日一次；采集失败只记日志、不重试，清单照常推送
 ```
 
 ### 个人操作仓库（只读 + 一键写回收集箱）

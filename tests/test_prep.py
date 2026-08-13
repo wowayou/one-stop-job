@@ -30,6 +30,22 @@ class _FakeClient:
         self.chat = type("Chat", (), {"completions": completions})()
 
 
+def _minimal_ai_config(monkeypatch, tmp_path):
+    """把 `ai.enabled` 打开、且**不配 providers**，让 `is_ai_available()` 走
+    `OPENAI_API_KEY` 环境变量这条路。
+
+    不隔离的话会继承开发机真实 config.yaml 的 `ai.providers`——按 `services/ai.py::_providers`
+    的语义，一旦配了 providers 就不再回退 `OPENAI_*` 环境变量，于是本文件里"设了 key 就该
+    调模型"的用例全部拿到 None（曾导致 2 个用例失败）。
+    """
+    from backend.app import config
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("ai:\n  enabled: true\n", encoding="utf-8")
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    config.get_settings.cache_clear()
+
+
 def test_build_interview_prep_returns_all_template_keys():
     job = Job(source="fixture", external_id="1", title="独立站运营", company_name="示例公司", city="示例市", skills="独立站,SEO,数据分析")
     payload = build_interview_prep(job, Company(name="示例公司"), UserProfile())
@@ -37,13 +53,17 @@ def test_build_interview_prep_returns_all_template_keys():
     assert all(isinstance(value, str) and value for value in payload.values())
 
 
-def test_tailor_returns_none_when_ai_unavailable(monkeypatch):
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+def test_tailor_returns_none_when_ai_unavailable(monkeypatch, tmp_path):
+    _minimal_ai_config(monkeypatch, tmp_path)
+    # 置空而非 delenv：delenv 掉的变量会被 get_settings 里的 load_dotenv 从真 .env 填回。
+    monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setenv("OPENAI_BASE_URL", "")
     base = {key: f"BASE-{key}" for key in PREP_KEYS}
     assert ai.tailor_interview_prep_llm({"title": "独立站运营"}, base) is None
 
 
-def test_tailor_merges_full_ai_output(monkeypatch):
+def test_tailor_merges_full_ai_output(monkeypatch, tmp_path):
+    _minimal_ai_config(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     full = {key: f"AI-{key}" for key in PREP_KEYS}
     monkeypatch.setattr(ai, "_client", lambda: _FakeClient(json.dumps(full, ensure_ascii=False)))
@@ -52,7 +72,8 @@ def test_tailor_merges_full_ai_output(monkeypatch):
     assert out == full
 
 
-def test_tailor_falls_back_per_missing_or_empty_key(monkeypatch):
+def test_tailor_falls_back_per_missing_or_empty_key(monkeypatch, tmp_path):
+    _minimal_ai_config(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     partial = {"communication_draft": "你好，专门为示例公司写的打招呼", "jd_summary": "AI 摘要", "resume_points": "   "}
     monkeypatch.setattr(ai, "_client", lambda: _FakeClient(json.dumps(partial, ensure_ascii=False)))

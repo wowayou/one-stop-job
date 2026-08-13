@@ -297,17 +297,92 @@ async def _telegram_poll_loop() -> None:
                         await run_in_threadpool(telegram.send_message, token, chat_id, advice_text)
 
 
+async def _daily_digest_loop() -> None:
+    """每日晨间日清单：看板到期动作 + 库内需跟进岗位，经 Telegram 发给机主本人。
+
+    默认关闭；仅当 config.yaml schedule.digest.enabled=true 且 Telegram 渠道可用
+    （telegram.allowed_chat_id + TELEGRAM_BOT_TOKEN）时启动。只给机主本人发提醒
+    （红线 §2 机主回执豁免），绝不向招聘方或任何第三方发消息；看板本身只读。
+    """
+    from datetime import date, datetime
+
+    from .services import daily_digest, telegram
+    from .services.context_repository import ContextRepositoryError
+    from .services.daily_digest import build_daily_digest
+
+    raw_digest_cfg = settings.schedule_config.get("digest")
+    digest_cfg = raw_digest_cfg if isinstance(raw_digest_cfg, dict) else {}
+    try:
+        hour = int(digest_cfg.get("hour", 8))
+        minute = int(digest_cfg.get("minute", 20))
+    except (TypeError, ValueError):
+        hour, minute = 8, 20
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        hour, minute = 8, 20
+
+    token = telegram.bot_token()
+    raw_chat_id = settings.telegram_config.get("allowed_chat_id")
+    try:
+        allowed_chat_id = int(str(raw_chat_id).strip()) if str(raw_chat_id or "").strip() else None
+    except ValueError:
+        allowed_chat_id = None
+    if not token or allowed_chat_id is None:
+        logger.warning(
+            "晨间日清单已启用但未启动：%s",
+            "缺少 TELEGRAM_BOT_TOKEN（.env）" if not token else f"telegram.allowed_chat_id 无效：{raw_chat_id!r}",
+        )
+        return
+
+    # 15 分钟轮询 + 状态文件，而不是长睡到明早：机器在发送时点关机/休眠时，
+    # 长睡永远醒不到点；轮询保证开机后一个周期内补发当天清单，且当天只发一次。
+    state_path = settings.data_dir / "daily_digest_state.json"
+    collect_first = bool(digest_cfg.get("collect_first"))
+    while True:
+        now = datetime.now()
+        if daily_digest.should_send_now(now, daily_digest.read_last_sent(state_path), hour, minute):
+            if collect_first:
+                # 本人显式配置的每日一次定时采集（合规边界见 CLAUDE.md §3.3）；
+                # 失败只记日志，日清单照常发——采集挂了不应连提醒一起丢。
+                try:
+                    from .services.collect_ops import run_source
+
+                    with Session(engine) as session:
+                        await run_in_threadpool(run_source, session, "boss")
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    logger.warning("晨间定时采集失败，跳过本日采集", exc_info=True)
+            try:
+                with Session(engine) as session:
+                    payload = await run_in_threadpool(build_daily_digest, session, date.today())
+                text = payload.get("digest_text") or ""
+                if text:
+                    await run_in_threadpool(telegram.send_long_message, token, allowed_chat_id, text)
+                await run_in_threadpool(daily_digest.write_last_sent, state_path, date.today().isoformat())
+            except asyncio.CancelledError:
+                raise
+            except ContextRepositoryError as exc:
+                logger.warning("晨间日清单跳过：看板不可读（%s）", exc)
+            except Exception:  # noqa: BLE001 - 单次失败不终止循环，下个周期重试
+                logger.warning("晨间日清单生成或发送失败", exc_info=True)
+        await asyncio.sleep(900)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
-    task: asyncio.Task | None = None
+    tasks: list[asyncio.Task] = []
     if settings.telegram_config.get("enabled"):
-        task = asyncio.create_task(_telegram_poll_loop())
+        tasks.append(asyncio.create_task(_telegram_poll_loop()))
+    raw_digest_cfg = settings.schedule_config.get("digest")
+    if isinstance(raw_digest_cfg, dict) and raw_digest_cfg.get("enabled"):
+        tasks.append(asyncio.create_task(_daily_digest_loop()))
     try:
         yield
     finally:
-        if task is not None:
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:
@@ -338,7 +413,7 @@ app.include_router(scoring.router)
 app.include_router(misc.router)
 
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram", "schedule"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 
