@@ -34,7 +34,9 @@
 - `backend/app/services/importer.py` — `upsert_job_records` / `get_or_create_company`
 - `backend/app/services/<source>.py` — 单来源的抓取/解析细节(如 `wechat.py` / `bebee.py` / `ai.py` / `yuanbao.py`)
 - `backend/app/services/context_repository.py` — 外部个人操作仓库的只读白名单适配器；不得绕过它读取任意路径
-- `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
+- `backend/app/services/board_sla.py` — 看板「下一步」日期解析（纯函数，只读）：活跃列卡片 → 到期动作（send/follow/close），供日清单使用。日期只从「下一步：」之后、「[详情]」链接之前的动作区提取。
+- `backend/app/services/daily_digest.py` — 晨间日清单组装（看板到期动作 + followup stale 岗位 → digest 文本）；被 `routers/followups.py` 的 `/api/follow-ups/board-sla` 端点与 main.py 的 `_daily_digest_loop` 共用。推送仅发机主本人（红线 §2 豁免），配置在 `config.yaml schedule.digest`（默认关闭）。循环为 15 分钟轮询 + `data 目录/daily_digest_state.json` 状态文件：到点未发才发、当天只发一次，发送时点关机则开机后补发。
+- `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + 晨间日清单循环（`_daily_digest_loop`，`schedule.digest` 开启时启动）+ SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
 - `backend/app/routers/<域>.py` — 按域拆分的 `APIRouter`（jobs/chat/collect/scoring/misc/companies/drafts/followups/interviews），main.py `include_router` 挂载。路由只依赖 `deps/models/schemas/services/config`，**绝不 import main**（循环）。
 - `backend/app/services/queries.py` — 跨路由共享的查询/落盘 helper（`query_jobs`/`get_profile`/`score_job_into_db`/`application_events`/`download_response`/`job_response`/`validate_weights`）。
 - `backend/app/services/{job_ops,collect_ops,prep_ops,sprint_ops,chat_support}.py` — 各域从 main 下沉的专属 helper（岗位状态重算/删除、采集运行、面试准备、冲刺包、聊天上下文）。
@@ -66,7 +68,7 @@
 1. **本地优先 / 单用户**:无多用户、无登录体系;数据只存本机 SQLite。
 2. **不自动化对外动作**:不自动投递、不自动发消息、不自动外发任何联系方式。抓到的招聘人微信/电话/邮箱**仅本地留存供查看**。
    - **例外(仅此一种):给机主本人发系统回执。** Telegram 渠道只向白名单 `allowed_chat_id`(机主自己那个 chat)回执「识别到 N 个候选，请在 Web 确认入库」、随回执附上的**初步决策建议**,以及机主用 `?`/`/ask` 主动提问时的**回答**——都属于本机→本人的状态通知/判断结果,**不是对外动作**。绝不向招聘方或任何第三方发任何消息;回执内容不得包含未经本人触发就外发的联系方式。**ingest 默认不写 Job 表**，用户在聊天里点「入库选中」才 upsert;建议与追问同样只读,不入库、不改岗位状态。
-3. **抓取合规**:只抓**公开**内容;低频、人工触发;**不破解验证码 / 风控页 / 付费墙**;尊重 robots 与各平台 ToS;**不二次分发**抓到的内容。被风控拦截就跳过并记录原因,不硬刚。
+3. **抓取合规**:只抓**公开**内容;低频、人工触发(唯一例外:本人在 `config.yaml schedule.digest.collect_first` 显式开启的**每日一次**晨间定时采集,频率上限即每日一次,失败只记日志不重试);**不破解验证码 / 风控页 / 付费墙**;尊重 robots 与各平台 ToS;**不二次分发**抓到的内容。被风控拦截就跳过并记录原因,不硬刚。
 4. **不泄密**:`.env`、`*.sqlite3`、`data/`、日志、`*.xlsx`、登录态(`.yuanbao/`、`*storage_state*`)一律不提交;改 `.gitignore` 前先确认不会带出隐私。
 5. **不用 `create_all` 偷改表结构**:`init_db()` 走 `SQLModel.metadata.create_all`——**新增表 OK,但给现有表加列不会自动迁移**。优先复用 `Job` 现有字段;确需加列/改列,写显式 alembic 迁移并在 PR 说明,不可假设旧库会自动升级。
 6. **管线唯一**:新增来源必须经 `normalizer` + `importer`,不得绕过;不得在采集器里直接 `session.add(Job(...))`。
@@ -120,7 +122,7 @@ Windows 宿主机可用 `run_backend.bat` / `run_frontend.bat`。**不要混用�
 
 | 来源 (`Job.source`) | 采集器 | 触发 | 取数方式 |
 |---|---|---|---|
-| `BOSS直聘` | `BossOpenCLICollector` | `POST /api/collect/runs?source=boss` | 调 opencli 子进程(Windows) |
+| `BOSS直聘` | `BossOpenCLICollector` / `OpenCLIMultiCommandCollector` | `POST /api/collect/runs?source=boss`;或 `schedule.digest.collect_first` 每日一次晨间定时 | 调 opencli 子进程(Windows)。配了 `opencli.boss_keywords` 走多关键词收集器:逐关键词替换 `boss_cmd` 里 `search` 后的词、命令间限速 2 秒、按 `external_id` 跨关键词去重;单关键词失败进 `report.skipped`,全失败才 `SourceRun.failed` |
 | `导入文件` | `TabularFileCollector` | `POST /api/jobs/import` | 上传 CSV/XLSX |
 | `manual` | — | `POST /api/jobs` | 手动单条 |
 | `公众号` | `WeChatPasteCollector` | `POST /api/collect/wechat` | 粘贴元宝回答/链接 → 抓 mp.weixin 正文 → 拆多岗位(正则,LLM 兜底);可选元宝 Playwright 自动化 |
