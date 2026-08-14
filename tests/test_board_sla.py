@@ -206,8 +206,22 @@ def test_format_collect_failure_is_single_line_and_truncated():
     assert "Browser Bridge" in note
     assert note.startswith("⚠️")
     long_note = format_collect_failure("失败原因" * 200)
-    assert "…" in long_note and len(long_note) < 220  # 截断，但仍带尾注
-    assert long_note.endswith("（下面的岗位可能不是最新的）")
+    assert "…" in long_note and len(long_note) < 200  # 截断，但仍带尾注
+    assert long_note.endswith("（详情见 Web 采集面板；下面的岗位可能不是最新的）")
+
+
+def test_format_collect_failure_drops_repr_dump():
+    """多关键词采集器把每个关键词的 dict repr 塞进 error（几 KB + cmd.exe 乱码），
+    手机上只该看到抬头；逐条原因留在 backend.log 与 Web 采集面板。"""
+    from backend.app.services.daily_digest import format_collect_failure
+
+    raw = (
+        "全部关键词采集失败: [{'command': 'boss search 独立站运营', 'reason': \"Command "
+        "'['cmd.exe', '/c', 'opencli.cmd']' timed out after 120 seconds\"}]"
+    )
+    note = format_collect_failure(raw)
+    assert note == "⚠️ 今日晨间采集未成功：全部关键词采集失败（详情见 Web 采集面板；下面的岗位可能不是最新的）"
+    assert "cmd.exe" not in note and "{" not in note
 
 
 def test_parse_board_companies_buckets_closed_and_active():

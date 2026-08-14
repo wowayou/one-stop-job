@@ -205,19 +205,23 @@ def last_collected_note(state: dict, day: str) -> str:
     return note if isinstance(note, str) else ""
 
 
-_COLLECT_NOTE_MAX = 160
+_COLLECT_NOTE_MAX = 120
 
 
 def format_collect_failure(reason: object) -> str:
-    """把晨间采集失败压成一行附注；原因为空时返回空串（不在摘要里占位）。
+    """把晨间采集失败压成一行**手机上能读**的附注；原因为空时返回空串（不在摘要里占位）。
 
     为什么要进推送正文：`run_source` 采集失败只把 SourceRun 置 `failed` 后返回，**不抛异常**，
     于是「新岗位」段静默为空——本人看到的是「今天没有合适岗位」，而不是「今天根本没采到」。
-    原因可能有几 KB（opencli 会把整段帮助文本塞进 error），这里压成单行并截断。
+
+    为什么要砍掉结构化 dump：多关键词采集器失败时会把每个关键词的 dict repr 全塞进 error
+    （几 KB，还夹着 cmd.exe 的乱码），照抄前 160 字符等于把噪音推到手机上。只留 `[{` 之前的
+    抬头，完整原因去 backend.log 和 Web 采集面板看——那里本来就有 `report.skipped` 逐条记录。
     """
     text = " ".join(str(reason or "").split())
     if not text:
         return ""
-    if len(text) > _COLLECT_NOTE_MAX:
-        text = f"{text[:_COLLECT_NOTE_MAX]}…"
-    return f"⚠️ 今日晨间采集未成功：{text}（下面的岗位可能不是最新的）"
+    headline = text.split("[{", 1)[0].strip(" :：,，") or text[:_COLLECT_NOTE_MAX]
+    if len(headline) > _COLLECT_NOTE_MAX:
+        headline = f"{headline[:_COLLECT_NOTE_MAX]}…"
+    return f"⚠️ 今日晨间采集未成功：{headline}（详情见 Web 采集面板；下面的岗位可能不是最新的）"
