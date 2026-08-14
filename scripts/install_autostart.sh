@@ -40,6 +40,7 @@ if [[ ! -d "$STARTUP_DIR" ]]; then
     exit 1
 fi
 TARGET="${STARTUP_DIR}/${BAT_NAME}"
+OLD_VBS="${STARTUP_DIR}/one-stop-job.vbs"
 
 if [[ "${1:-}" == "--remove" ]]; then
     if [[ -f "$TARGET" ]]; then
@@ -49,7 +50,6 @@ if [[ "${1:-}" == "--remove" ]]; then
         echo "未安装，无需卸载。"
     fi
     # 清理可能残留的旧 .vbs 文件
-    OLD_VBS="${STARTUP_DIR}/one-stop-job.vbs"
     [[ -f "$OLD_VBS" ]] && rm -f "$OLD_VBS" && echo "已清理旧版 .vbs 文件"
     exit 0
 fi
@@ -62,6 +62,14 @@ printf '%s\r\n' \
     '@echo off' \
     "start /min wsl.exe -d ${WSL_DISTRO_NAME} -u ${USER} -- ${PROJECT_DIR}/scripts/app.sh start" \
     >"$TARGET"
+
+# 装的时候也必须清掉旧 .vbs：两个启动项会在同一次登录里各拉一次 app.sh start，
+# 竞态下真的会起出两三个 uvicorn，并在 source_runs 里留下卡在 running 的采集记录
+# （2026-08-14 实测）。只在 --remove 里清是不够的。
+if [[ -f "$OLD_VBS" ]]; then
+    rm -f "$OLD_VBS"
+    echo "已清理旧版 .vbs（否则和 .bat 一起在登录时双重启动）"
+fi
 
 echo "已安装自启：$TARGET"
 echo "  发行版：${WSL_DISTRO_NAME}｜用户：${USER}｜项目：${PROJECT_DIR}"
