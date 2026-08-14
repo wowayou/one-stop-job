@@ -11,10 +11,13 @@
 #
 # 所有机器相关的值（发行版名、Linux 用户名、项目路径、Windows 用户名）都在运行时探测，
 # 不写死——换机器重跑一次即可，不需要手改脚本。
+#
+# 实现：.vbs 在 Startup 文件夹常遇 WSH 安全策略拦截（"内存不足"假报错）；
+# 改用 .bat 批处理——Startup 原生支持、无额外依赖、0 窗口隐藏靠 start /min。
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-VBS_NAME="one-stop-job.vbs"
+BAT_NAME="one-stop-job.bat"
 
 if [[ -z "${WSL_DISTRO_NAME:-}" ]]; then
     echo "只在 WSL 内运行（未检测到 WSL_DISTRO_NAME）。" >&2
@@ -36,26 +39,29 @@ if [[ ! -d "$STARTUP_DIR" ]]; then
     echo "启动文件夹不存在：$STARTUP_DIR" >&2
     exit 1
 fi
-TARGET="${STARTUP_DIR}/${VBS_NAME}"
+TARGET="${STARTUP_DIR}/${BAT_NAME}"
 
 if [[ "${1:-}" == "--remove" ]]; then
     if [[ -f "$TARGET" ]]; then
         rm -f "$TARGET"
-        echo "已卸载自启：$VBS_NAME"
+        echo "已卸载自启：$BAT_NAME"
     else
         echo "未安装，无需卸载。"
     fi
+    # 清理可能残留的旧 .vbs 文件
+    OLD_VBS="${STARTUP_DIR}/one-stop-job.vbs"
+    [[ -f "$OLD_VBS" ]] && rm -f "$OLD_VBS" && echo "已清理旧版 .vbs 文件"
     exit 0
 fi
 
-# WScript.Shell 的 Run 用 0 隐藏窗口、False 表示不等待——登录时不闪黑框、不阻塞登录。
-# app.sh start 幂等（已在运行则直接返回），所以重复触发无副作用。
-cat >"$TARGET" <<EOF
-' one-stop-job 开机自启（由 scripts/install_autostart.sh 生成，删除本文件即取消）
-' 登录时静默启动 WSL 内的求职助手；app.sh start 幂等，已在运行则直接返回。
-Set ws = CreateObject("Wscript.Shell")
-ws.Run "wsl.exe -d ${WSL_DISTRO_NAME} -u ${USER} -- ${PROJECT_DIR}/scripts/app.sh start", 0, False
-EOF
+# @echo off 关闭命令回显
+# start /min 最小化窗口（会闪一下任务栏，但不弹黑框前台）
+# wsl.exe ... 进 WSL 跑 app.sh start（幂等，已运行则直接返回）
+# CRLF 行尾是 Windows 批处理标准，虽然 LF-only 也能跑，但保持规范。
+printf '%s\r\n' \
+    '@echo off' \
+    "start /min wsl.exe -d ${WSL_DISTRO_NAME} -u ${USER} -- ${PROJECT_DIR}/scripts/app.sh start" \
+    >"$TARGET"
 
 echo "已安装自启：$TARGET"
 echo "  发行版：${WSL_DISTRO_NAME}｜用户：${USER}｜项目：${PROJECT_DIR}"
