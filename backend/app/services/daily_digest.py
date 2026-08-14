@@ -176,15 +176,48 @@ def should_send_now(now: datetime, last_sent_day: str | None, hour: int, minute:
     return now >= fire_at and last_sent_day != now.date().isoformat()
 
 
-def read_last_sent(state_path: Path) -> str | None:
-    """读取最近一次成功发送的日期（YYYY-MM-DD）；文件缺失或损坏按从未发过处理。"""
+def read_state(state_path: Path) -> dict:
+    """读推送状态文件；缺失/损坏一律按空状态处理（宁可多发一次，也不要因为状态坏了永远不发）。
+
+    键：`last_sent`（最近一次**确认送达**的日期）、`last_collected`（最近一次晨间采集
+    的日期）、`collect_note`（当日采集失败的一行附注）。两个日期必须分开记——发送失败
+    要按周期重试，而定时采集的频率上限是每日一次（CLAUDE.md §3.3），不能跟着重试。
+    """
     try:
-        value = json.loads(state_path.read_text(encoding="utf-8")).get("last_sent")
+        state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return None
-    return value if isinstance(value, str) else None
+        return {}
+    return state if isinstance(state, dict) else {}
 
 
-def write_last_sent(state_path: Path, day: str) -> None:
+def write_state(state_path: Path, **updates: str) -> None:
+    """合并写回：只覆盖传入的键，保留其余键（否则写 last_sent 会把 last_collected 抹掉）。"""
+    state = {**read_state(state_path), **updates}
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(json.dumps({"last_sent": day}), encoding="utf-8")
+    state_path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+
+
+def last_collected_note(state: dict, day: str) -> str:
+    """当日晨间采集失败的一行附注；不是今天采的就返回空串（昨天的失败不许漏进今天的清单）。"""
+    if state.get("last_collected") != day:
+        return ""
+    note = state.get("collect_note")
+    return note if isinstance(note, str) else ""
+
+
+_COLLECT_NOTE_MAX = 160
+
+
+def format_collect_failure(reason: object) -> str:
+    """把晨间采集失败压成一行附注；原因为空时返回空串（不在摘要里占位）。
+
+    为什么要进推送正文：`run_source` 采集失败只把 SourceRun 置 `failed` 后返回，**不抛异常**，
+    于是「新岗位」段静默为空——本人看到的是「今天没有合适岗位」，而不是「今天根本没采到」。
+    原因可能有几 KB（opencli 会把整段帮助文本塞进 error），这里压成单行并截断。
+    """
+    text = " ".join(str(reason or "").split())
+    if not text:
+        return ""
+    if len(text) > _COLLECT_NOTE_MAX:
+        text = f"{text[:_COLLECT_NOTE_MAX]}…"
+    return f"⚠️ 今日晨间采集未成功：{text}（下面的岗位可能不是最新的）"

@@ -167,14 +167,47 @@ def test_should_send_now_catch_up_semantics():
 
 
 def test_digest_state_roundtrip(tmp_path):
-    from backend.app.services.daily_digest import read_last_sent, write_last_sent
+    from backend.app.services.daily_digest import read_state, write_state
 
     state = tmp_path / "state.json"
-    assert read_last_sent(state) is None  # 缺文件按从未发过
-    write_last_sent(state, "2026-08-13")
-    assert read_last_sent(state) == "2026-08-13"
+    assert read_state(state) == {}  # 缺文件按从未发过
+    write_state(state, last_sent="2026-08-13")
+    assert read_state(state)["last_sent"] == "2026-08-13"
     state.write_text("not json", encoding="utf-8")
-    assert read_last_sent(state) is None  # 损坏文件不炸循环
+    assert read_state(state) == {}  # 损坏文件不炸循环
+
+
+def test_digest_state_write_merges_instead_of_replacing(tmp_path):
+    """写 last_sent 不能抹掉 last_collected：两个日期分开记才能「重试发送但不重复采集」。"""
+    from backend.app.services.daily_digest import last_collected_note, read_state, write_state
+
+    state = tmp_path / "state.json"
+    write_state(state, last_collected="2026-08-14", collect_note="⚠️ 采集炸了")
+    write_state(state, last_sent="2026-08-14")
+    saved = read_state(state)
+    assert saved == {
+        "last_collected": "2026-08-14",
+        "collect_note": "⚠️ 采集炸了",
+        "last_sent": "2026-08-14",
+    }
+    assert last_collected_note(saved, "2026-08-14") == "⚠️ 采集炸了"
+    assert last_collected_note(saved, "2026-08-15") == ""  # 昨天的失败不漏进今天的清单
+    state.write_text("[]", encoding="utf-8")  # 合法 JSON 但不是对象
+    assert read_state(state) == {}
+
+
+def test_format_collect_failure_is_single_line_and_truncated():
+    from backend.app.services.daily_digest import format_collect_failure
+
+    assert format_collect_failure(None) == ""
+    assert format_collect_failure("   ") == ""
+    note = format_collect_failure("全部关键词采集失败:\n  Browser Bridge extension not connected")
+    assert "\n" not in note  # 压成一行，别把几 KB 的 opencli 帮助文本铺进推送
+    assert "Browser Bridge" in note
+    assert note.startswith("⚠️")
+    long_note = format_collect_failure("失败原因" * 200)
+    assert "…" in long_note and len(long_note) < 220  # 截断，但仍带尾注
+    assert long_note.endswith("（下面的岗位可能不是最新的）")
 
 
 def test_parse_board_companies_buckets_closed_and_active():

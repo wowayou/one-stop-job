@@ -339,26 +339,50 @@ async def _daily_digest_loop() -> None:
     collect_first = bool(digest_cfg.get("collect_first"))
     while True:
         now = datetime.now()
-        if daily_digest.should_send_now(now, daily_digest.read_last_sent(state_path), hour, minute):
-            if collect_first:
-                # 本人显式配置的每日一次定时采集（合规边界见 CLAUDE.md §3.3）；
-                # 失败只记日志，日清单照常发——采集挂了不应连提醒一起丢。
+        state = daily_digest.read_state(state_path)
+        today_iso = date.today().isoformat()
+        if daily_digest.should_send_now(now, state.get("last_sent"), hour, minute):
+            if collect_first and state.get("last_collected") != today_iso:
+                # 本人显式配置的每日一次定时采集（合规边界见 CLAUDE.md §3.3）；失败只记日志
+                # 不重试，日清单照常发——采集挂了不应连提醒一起丢。采集日期与发送日期分开记：
+                # 发送失败会在下个周期重试，采集绝不能跟着重跑（频率上限就是每日一次）。
+                collect_note = ""
                 try:
                     from .services.collect_ops import run_source
 
                     with Session(engine) as session:
-                        await run_in_threadpool(run_source, session, "boss")
+                        result = await run_in_threadpool(run_source, session, "boss")
+                    if isinstance(result, dict) and result.get("status") != "success":
+                        # run_source 只把 SourceRun 置 failed 并返回，不抛异常，所以必须查返回值。
+                        logger.warning("晨间定时采集失败：%s", result.get("error"))
+                        collect_note = daily_digest.format_collect_failure(result.get("error"))
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001
                     logger.warning("晨间定时采集失败，跳过本日采集", exc_info=True)
+                    collect_note = daily_digest.format_collect_failure(exc)
+                daily_digest.write_state(state_path, last_collected=today_iso, collect_note=collect_note)
+                state = daily_digest.read_state(state_path)
             try:
                 with Session(engine) as session:
                     payload = await run_in_threadpool(build_daily_digest, session, date.today())
                 text = payload.get("digest_text") or ""
+                # 采集失败附注只在「就是今天采的」时候带上，避免昨天的失败漏进今天的清单。
+                note = daily_digest.last_collected_note(state, today_iso)
+                if note:
+                    text = f"{text}\n\n{note}" if text else note
+                delivered = True
                 if text:
-                    await run_in_threadpool(telegram.send_long_message, token, allowed_chat_id, text)
-                await run_in_threadpool(daily_digest.write_last_sent, state_path, date.today().isoformat())
+                    results = await run_in_threadpool(telegram.send_long_message, token, allowed_chat_id, text)
+                    # send_message 吞异常返回 None（回执失败不该炸主流程），所以「发出去了」只能
+                    # 看返回值。分段里有一段成功就算已发：重试会把成功那段重复发一遍，更糟。
+                    delivered = any(item is not None for item in results)
+                if delivered:
+                    daily_digest.write_state(state_path, last_sent=today_iso)
+                else:
+                    # 关键：发送失败绝不能写 last_sent。早期版本无条件写，于是网络不通那天的
+                    # 清单被永久标记为「已发」，直接丢掉（实测：Telegram 不可达当天一条没收到）。
+                    logger.warning("晨间日清单未送达（Telegram 不可达？），保留未发状态，下个周期重试")
             except asyncio.CancelledError:
                 raise
             except ContextRepositoryError as exc:

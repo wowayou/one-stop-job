@@ -27,8 +27,13 @@ cp .env.template .env
 | `OPENAI_API_KEY` 或 `ai.providers` 对应的 `*_KEY_*` | 决策聊天、截图抽取、面试准备定制 | 退化为规则引擎/模板，主流程仍可用 |
 | `TELEGRAM_BOT_TOKEN` | 手机入库、晨间日清单推送 | 这两个功能整体关闭 |
 | `JOB_ONE_STOP_CONTEXT_REPO_PATH` | 读个人看板/决策规则/画像 | 决策聊天少了个人规则；**晨间日清单直接不可用** |
+| `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` | 出站访问 `api.telegram.org` | 国内网络下长轮询与推送全部失败，日志报 `[Errno 101] Network is unreachable` |
 
 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 必须写**当前运行环境**能识别的绝对路径：WSL 里是 `/mnt/<盘符>/<目录>`，Windows 上是 `<盘符>:\<目录>`。同一份 .env 在两边通用（代码会把盘符路径转成 `/mnt/...`）。
+
+代理为什么必须进 `.env` 而不是靠 shell：自启是 Windows 启动文件夹的 `.bat` → `wsl.exe` 拉起的**非登录 shell**，`~/.profile` 里的 `proxy_on` 根本不会执行，进程里一个代理变量都没有。`.env` 由 `config.py` 的 `load_dotenv` 灌进 `os.environ`，httpx 自动采用，跟进程怎么启动无关。`NO_PROXY` 里保留国内域名（`aliyuncs.com,deepseek.com,qq.com,zhipin.com`），别让 AI 与公众号绕代理。
+
+验证（不发任何消息）：`curl -s -x "$HTTPS_PROXY" "https://api.telegram.org/bot<token>/getMe"` 返回 `"ok":true`。
 
 验证：`curl -s http://127.0.0.1:8000/api/context/status`（启动后）应返回 `"available": true` 且四个白名单文件全为 true。
 

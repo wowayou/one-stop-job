@@ -2191,3 +2191,104 @@ def test_application_events_drive_funnel_and_status(monkeypatch, tmp_path):
             assert statuses_after_delete[job1["id"]] == "applied"
 
     asyncio.run(scenario())
+
+
+def _digest_loop_main(monkeypatch, tmp_path):
+    """把 main 重载到一套 tmp 配置上，返回 (main 模块, 状态文件路径)。
+
+    日清单状态文件落在 `settings.data_dir`，默认就是真实的 `./data/job_one_stop`——
+    用例必须先把 data_dir 指到 tmp，否则会覆盖机主真实的 daily_digest_state.json。
+    """
+    import yaml
+
+    data_dir = tmp_path / "digest-data"
+    config_path = tmp_path / "digest-config.yaml"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "general": {"data_dir": str(data_dir)},
+                "telegram": {"enabled": False, "allowed_chat_id": "99"},
+                "schedule": {"digest": {"enabled": True, "hour": 0, "minute": 0, "collect_first": True}},
+            },
+            allow_unicode=True,
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    monkeypatch.setenv("JOB_ONE_STOP_DATABASE_URL", f"sqlite:///{tmp_path / 'digest-loop.sqlite3'}")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    from backend.app import config
+
+    config.get_settings.cache_clear()
+    import backend.app.db as db
+    import backend.app.main as main
+
+    db = importlib.reload(db)
+    main = importlib.reload(main)
+    db.init_db()
+    return main, data_dir / "daily_digest_state.json"
+
+
+def test_daily_digest_loop_retries_until_delivered_and_collects_once(monkeypatch, tmp_path):
+    """发送失败不许标记「今天已发」，下个周期要重试；重试时不能再跑一遍晨间采集。
+
+    现网踩过的两个坑：Telegram 不可达那天，`send_message` 吞异常返回 None，循环照旧写
+    last_sent，当天清单被永久丢弃（本人一条没收到）；而采集若跟着发送一起重试，定时采集
+    就破掉了「每日一次」的合规上限（CLAUDE.md §3.3）。顺带断言采集失败要写进推送正文——
+    `run_source` 失败只置 SourceRun.failed 并返回，静默的结果是「今天没有合适岗位」。
+    """
+    import contextlib
+    import json
+    from datetime import date
+
+    main, state_path = _digest_loop_main(monkeypatch, tmp_path)
+
+    from backend.app.services import collect_ops, daily_digest, telegram
+
+    collect_calls: list[str] = []
+    sent_texts: list[str] = []
+    delivery = {"ok": False}
+
+    def fake_run_source(session, source_key):
+        collect_calls.append(source_key)
+        return {"status": "failed", "error": "全部关键词采集失败:\n  Browser Bridge extension not connected"}
+
+    def fake_send_long(token, chat_id, text):
+        sent_texts.append(text)
+        return [11] if delivery["ok"] else [None]
+
+    async def direct(func, *args, **kwargs):  # 绕开 AnyIO 线程池（本环境下会卡住，见 CLAUDE.md §4）
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(collect_ops, "run_source", fake_run_source)
+    monkeypatch.setattr(daily_digest, "build_daily_digest", lambda session, today: {"digest_text": "今天要做的事"})
+    monkeypatch.setattr(telegram, "send_long_message", fake_send_long)
+    monkeypatch.setattr(main, "run_in_threadpool", direct)
+
+    async def one_cycle():
+        before = len(sent_texts)
+        task = asyncio.create_task(main._daily_digest_loop())
+        for _ in range(200):
+            await asyncio.sleep(0.005)
+            if len(sent_texts) > before:
+                break
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    today = date.today().isoformat()
+
+    asyncio.run(one_cycle())
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert "last_sent" not in state  # 没送达就不能算已发，明早之前还有机会补
+    assert state["last_collected"] == today  # 采集当天已做，重试不许再跑
+    assert "Browser Bridge" in state["collect_note"]
+    assert "⚠️ 今日晨间采集未成功" in sent_texts[0]  # 「今天没岗位」必须给出可见原因
+
+    delivery["ok"] = True
+    asyncio.run(one_cycle())
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["last_sent"] == today  # 这次真送出去了
+    assert collect_calls == ["boss"]  # 全程只采集一次
+    assert len(sent_texts) == 2
