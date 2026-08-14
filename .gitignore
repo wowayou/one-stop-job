@@ -1,4 +1,7 @@
 .env
+# .env 的任何变体与临时备份都不许入库（今天一次临时备份差点把密钥带出仓库）；模板例外
+.env.*
+!.env.template
 .claude/
 *:Zone.Identifier
 .opencli/

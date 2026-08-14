@@ -120,6 +120,17 @@ wait_for_health() {
 }
 
 do_start() {
+  # 并发启动要串行化:登录时若有两个启动项(或手动连点两次),两个 start 会同时穿过
+  # is_running 与端口检查之间的窗口——2026-08-14 早上就这样起出了三个 uvicorn,还在
+  # source_runs 里留下两条卡在 running 的采集记录。文件锁持有到本进程退出,后到的那个
+  # 拿到锁时 is_running 已为真,直接打印"已在运行"。flock 不可用时退化为原来的行为。
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$RUNTIME_DIR/start.lock"
+    # -w 60 是硬要求:绝不能无限等。谁要是握着锁不放(比如被 kill -9 前 fork 出的进程),
+    # 无限等会把开机自启永久堵死——那比它要防的竞态更糟。等不到就往下走,让 is_running 判断。
+    flock -w 60 9 || echo "警告: 60 秒内没拿到启动锁,继续检查是否已在运行" >&2
+  fi
+
   if is_running "$BACKEND_PID_FILE"; then
     echo "已在运行,pid $(cat "$BACKEND_PID_FILE"),http://127.0.0.1:${PORT}/"
     return 0
@@ -139,7 +150,9 @@ do_start() {
 
   (
     cd "$ROOT_DIR"
-    nohup .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >>"$BACKEND_LOG" 2>&1 &
+    # 9>&- 必须有:uvicorn 会继承 fd 9,也就跟着一直握着启动锁,下一次 app.sh start
+    # 就会一直等到服务退出为止(实测:第二个 start 直接卡死,不是打印"已在运行")。
+    nohup .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >>"$BACKEND_LOG" 2>&1 9>&- &
     echo "$!" >"$BACKEND_PID_FILE"
   )
 
