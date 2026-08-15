@@ -88,21 +88,33 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = DEFA
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
-    ...init,
-    headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...(init?.headers ?? {}) }
-  });
-  if (!response.ok) {
-    throw new ApiError(response.status, await parseApiError(response));
+  let lastError: Error | null = null;
+  // Retry on connection failure (backend not ready yet) - max 3 attempts
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const response = await fetchWithTimeout(`${API_BASE}${path}`, {
+        ...init,
+        headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...(init?.headers ?? {}) }
+      });
+      if (!response.ok) {
+        throw new ApiError(response.status, await parseApiError(response));
+      }
+      const text = await response.text();
+      if (!text) return undefined as T;
+      try {
+        return JSON.parse(text) as T;
+      } catch {
+        throw new ApiError(response.status, { message: "响应解析失败：服务器返回了非 JSON 内容" });
+      }
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err));
+      // Only retry on connection errors (status 0 = network failure), not on HTTP errors
+      if (err instanceof ApiError && err.status !== 0) throw err;
+      // Wait before retry: 1s, 2s
+      if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
+    }
   }
-  const text = await response.text();
-  if (!text) return undefined as T;
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    throw new ApiError(response.status, { message: "响应解析失败：服务器返回了非 JSON 内容" });
-  }
-}
+  throw lastError ?? new Error("请求失败");
 
 export function errorMessage(err: unknown, fallback: string) {
   if (err instanceof ApiError) return err.message;

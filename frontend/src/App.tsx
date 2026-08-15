@@ -279,7 +279,19 @@ function App() {
   }
 
   useEffect(() => {
-    loadAll().catch((err) => notify("error", errorMessage(err, "加载数据失败")));
+    // 等待后端健康检查通过后再加载数据（Tauri 启动时后端可能需要几秒）
+    async function waitForBackend() {
+      for (let i = 0; i < 20; i++) {
+        try {
+          await api("/api/health");
+          break;
+        } catch {
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
+      await loadAll().catch((err) => notify("error", errorMessage(err, "加载数据失败")));
+    }
+    waitForBackend();
   }, []);
 
   useEffect(() => {
