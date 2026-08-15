@@ -1,16 +1,13 @@
 // 后端固定在 127.0.0.1:8000。
 // - 生产模式（后端挂载前端 :8000）：同源，API_BASE 为空
-// - Vite 开发模式（:5173）：同源 + Vite proxy 转发 /api -> :8000，API_BASE 为空
-// - Tauri 生产模式（无 Vite）：需要显式指向 :8000
+// - 其他模式（Vite dev / Tauri dev / Tauri prod）：直接指向 :8000
 // - 自定义：通过 VITE_API_BASE 环境变量覆盖
 function detectApiBase(): string {
   const envBase = import.meta.env.VITE_API_BASE;
   if (envBase) return envBase;
-  // Vite 开发模式有 proxy，不需要前缀
-  if (import.meta.env.DEV) return "";
-  // 如果当前页面就在 :8000 上（后端挂载模式），同源不需要前缀
+  // 后端挂载模式（scripts/app.sh）：同源不需要前缀
   if (typeof window !== "undefined" && window.location.port === "8000") return "";
-  // Tauri 生产模式：后端在 :8000
+  // 开发模式和 Tauri 模式：直接指向后端
   return "http://127.0.0.1:8000";
 }
 const API_BASE = detectApiBase();
@@ -98,7 +95,6 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new ApiError(response.status, await parseApiError(response));
   }
-  // 204 No Content 或空 body 安全处理
   const text = await response.text();
   if (!text) return undefined as T;
   try {
@@ -145,8 +141,6 @@ export function jsonBody(payload: unknown): RequestInit {
   return { body: JSON.stringify(payload) };
 }
 
-// 统一复制：优先 navigator.clipboard（需 https/localhost），失败回退 execCommand。
-// 返回是否成功，调用方据此给出反馈，避免在普通 HTTP 或旧浏览器下静默失败。
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {
