@@ -1,13 +1,16 @@
 // 后端固定在 127.0.0.1:8000。
-// - 生产模式（后端挂载前端）：同源，API_BASE 为空
-// - 开发模式（Vite :5173 / Tauri dev webview）：需要显式指向 :8000
+// - 生产模式（后端挂载前端 :8000）：同源，API_BASE 为空
+// - Vite 开发模式（:5173）：同源 + Vite proxy 转发 /api -> :8000，API_BASE 为空
+// - Tauri 生产模式（无 Vite）：需要显式指向 :8000
 // - 自定义：通过 VITE_API_BASE 环境变量覆盖
 function detectApiBase(): string {
   const envBase = import.meta.env.VITE_API_BASE;
   if (envBase) return envBase;
+  // Vite 开发模式有 proxy，不需要前缀
+  if (import.meta.env.DEV) return "";
   // 如果当前页面就在 :8000 上（后端挂载模式），同源不需要前缀
   if (typeof window !== "undefined" && window.location.port === "8000") return "";
-  // 开发模式（Vite :5173）或 Tauri webview：后端在 :8000
+  // Tauri 生产模式：后端在 :8000
   return "http://127.0.0.1:8000";
 }
 const API_BASE = detectApiBase();
