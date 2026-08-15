@@ -1,19 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec: 把 FastAPI 后端打包成单文件可执行二进制，供 Tauri sidecar 使用。
+"""PyInstaller spec: package FastAPI backend as a standalone binary for Tauri sidecar.
 
-用法：
+Usage:
     cd src-tauri
     pyinstaller job-one-stop-backend.spec --noconfirm
 
-产物：dist/job-one-stop-backend (Linux/Mac) 或 dist/job-one-stop-backend.exe (Windows)
+Output: dist/job-one-stop-backend (Linux/Mac) or dist/job-one-stop-backend.exe (Windows)
 """
 
 import os
-import sys
 from pathlib import Path
 
-# 项目根目录
-ROOT = Path(__file__).resolve().parent.parent
+# Project root is one level up from src-tauri
+ROOT = Path(os.getcwd()).parent
 
 block_cipher = None
 
@@ -22,11 +21,13 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        # 前端 dist 挂载在后端 static 路径
+        # Frontend dist is mounted by backend static handler
         (str(ROOT / "frontend" / "dist"), "frontend/dist"),
-        # Alembic 迁移脚本
+        # Alembic migration scripts
         (str(ROOT / "backend" / "alembic"), "backend/alembic"),
-        (str(ROOT / "backend" / "alembic.ini"), "backend/alembic.ini"),
+        (str(ROOT / "backend" / "alembic.ini"), "."),
+        # Config example as fallback
+        (str(ROOT / "config.example.yaml"), "."),
     ],
     hiddenimports=[
         "uvicorn",
@@ -39,6 +40,7 @@ a = Analysis(
         "uvicorn.lifespan",
         "uvicorn.lifespan.on",
         "fastapi",
+        "fastapi.middleware",
         "sqlmodel",
         "alembic",
         "pandas",
@@ -49,6 +51,7 @@ a = Analysis(
         "yaml",
         "dotenv",
         "openai",
+        "multipart",
     ],
     hookspath=[],
     hooksconfig={},
@@ -83,7 +86,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,  # 后端进程需要 console（Tauri 会隐藏它）
+    console=True,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
