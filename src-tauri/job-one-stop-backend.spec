@@ -17,7 +17,7 @@ ROOT = Path(os.getcwd()).parent
 block_cipher = None
 
 a = Analysis(
-    [str(ROOT / "backend" / "app" / "main.py")],
+    [str(ROOT / "backend" / "entry.py")],
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
