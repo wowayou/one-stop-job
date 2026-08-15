@@ -33,36 +33,36 @@ fn dev_python() -> String {
 
 fn start_backend(app: &tauri::App) -> Result<u16, String> {
     let root = project_root();
-    let resource_path = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+    let port = 8000u16;
 
-    let backend_path = resource_path.join("resources").join(BACKEND_BIN);
-
-    let (port, child) = if backend_path.exists() {
-        // Production: run the PyInstaller binary
-        // 用 inherit 让后端的 stdout/stderr 直接输出到 Tauri 进程的终端，
-        // 不用 piped（piped 的 pipe 没人读，buffer 满了后端会挂死）。
-        let child = Command::new(&backend_path)
+    // In debug/dev builds, ALWAYS use venv python + uvicorn.
+    // Only in release builds do we look for the PyInstaller binary.
+    // This prevents stale binaries from being picked up during development.
+    let child = if cfg!(debug_assertions) {
+        let python = dev_python();
+        Command::new(&python)
+            .current_dir(&root)
+            .args(["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", &port.to_string()])
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("Failed to start dev backend ({}): {}", python, e))?
+    } else {
+        let resource_path = app
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("Failed to get resource dir: {}", e))?;
+        let backend_path = resource_path.join("resources").join(BACKEND_BIN);
+        if !backend_path.exists() {
+            return Err(format!("Backend binary not found: {:?}", backend_path));
+        }
+        Command::new(&backend_path)
             .current_dir(&root)
             .env("JOB_ONE_STOP_TAURI_MODE", "1")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
             .spawn()
-            .map_err(|e| format!("Failed to start backend: {}", e))?;
-        (8000u16, child)
-    } else {
-        // Dev mode: run uvicorn with the venv Python from project root
-        let python = dev_python();
-        let child = Command::new(&python)
-            .current_dir(&root)
-            .args(["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"])
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .map_err(|e| format!("Failed to start dev backend ({}): {}", python, e))?;
-        (8000u16, child)
+            .map_err(|e| format!("Failed to start backend: {}", e))?
     };
 
     // Wait for backend health check
