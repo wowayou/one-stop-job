@@ -115,6 +115,7 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
     }
   }
   throw lastError ?? new Error("请求失败");
+}
 
 export function errorMessage(err: unknown, fallback: string) {
   if (err instanceof ApiError) return err.message;
