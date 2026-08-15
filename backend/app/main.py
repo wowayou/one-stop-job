@@ -385,6 +385,16 @@ async def _daily_digest_loop() -> None:
         state = daily_digest.read_state(state_path)
         today_iso = date.today().isoformat()
         if daily_digest.should_send_now(now, state.get("last_sent"), hour, minute):
+            # 回收站自动清理：晨间日清单时顺便清理超过保留期的软删除记录
+            try:
+                from .services.job_ops import auto_purge_trash
+                with Session(engine) as session:
+                    purged = auto_purge_trash(session)
+                if purged["jobs"] or purged["companies"]:
+                    logger.info("回收站自动清理：永久删除 %d 个岗位、%d 个公司", purged["jobs"], purged["companies"])
+            except Exception:  # noqa: BLE001
+                logger.warning("回收站自动清理失败", exc_info=True)
+
             if collect_first and state.get("last_collected") != today_iso:
                 # 本人显式配置的每日一次定时采集（合规边界见 CLAUDE.md §3.3）；失败只记日志
                 # 不重试，日清单照常发——采集挂了不应连提醒一起丢。采集日期与发送日期分开记：

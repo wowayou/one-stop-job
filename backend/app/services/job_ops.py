@@ -16,6 +16,7 @@ from ..config import get_settings
 from ..models import (
     ApplicationEvent,
     ChatThread,
+    Company,
     Draft,
     FitScore,
     FollowUpTask,
@@ -23,6 +24,8 @@ from ..models import (
     InterviewPrep,
     Job,
     JobSourceLink,
+    ResearchItem,
+    SourceRun,
     utc_now,
 )
 from .collectors import TabularFileCollector
@@ -106,6 +109,81 @@ def delete_jobs_with_related(session: Session, job_ids: list[int]) -> int:
         session.delete(job)
     session.commit()
     return len(jobs)
+
+
+# 回收站自动清理：软删除超过此天数的岗位/公司自动永久删除。
+TRASH_RETENTION_DAYS = 30
+
+
+def auto_purge_trash(session: Session) -> dict[str, int]:
+    """清理回收站里超过 TRASH_RETENTION_DAYS 天的软删除记录。
+
+    在 init_db() 启动时和 daily_digest 循环中调用。返回 {"jobs": N, "companies": M}。
+    清理失败不影响启动——这是辅助清理，不该阻断数据库初始化。
+    """
+    from datetime import timedelta
+    cutoff = utc_now() - timedelta(days=TRASH_RETENTION_DAYS)
+
+    try:
+        # 永久删除过期的软删除岗位
+        expired_jobs = session.exec(
+            select(Job).where(Job.deleted_at.is_not(None)).where(Job.deleted_at < cutoff)
+        ).all()
+        if expired_jobs:
+            purge_jobs(session, [job.id for job in expired_jobs if job.id is not None])
+
+        # 永久删除过期的软删除公司
+        expired_companies = session.exec(
+            select(Company).where(Company.deleted_at.is_not(None)).where(Company.deleted_at < cutoff)
+        ).all()
+        for company in expired_companies:
+            if company.id is None:
+                continue
+            # 关联岗位的 company_id 置空
+            for job in session.exec(select(Job).where(Job.company_id == company.id)).all():
+                job.company_id = None
+                job.updated_at = utc_now()
+                session.add(job)
+            # 调研证据直接删
+            for item in session.exec(select(ResearchItem).where(ResearchItem.company_id == company.id)).all():
+                session.delete(item)
+            session.delete(company)
+        if expired_companies:
+            session.commit()
+
+        return {"jobs": len(expired_jobs), "companies": len(expired_companies)}
+    except Exception:  # noqa: BLE001
+        # 回收站清理是辅助功能，任何异常都不该阻断 init_db 或 daily_digest
+        import logging
+        logging.getLogger(__name__).warning("回收站自动清理失败", exc_info=True)
+        return {"jobs": 0, "companies": 0}
+
+
+# SourceRun 保留条数：超过此数的旧采集记录自动清理（可选功能，默认不启用）。
+DEFAULT_SOURCE_RUN_KEEP = 100
+
+
+def cleanup_source_runs(session: Session, keep: int = DEFAULT_SOURCE_RUN_KEEP) -> int:
+    """清理旧的 SourceRun 记录，只保留最近 keep 条。
+
+    可选功能：在 init_db() 启动时和 daily_digest 循环中调用。
+    SourceRun 只是采集运行的历史日志，不影响岗位数据。
+    """
+    try:
+        total = session.exec(select(SourceRun)).all()
+        if len(total) <= keep:
+            return 0
+        # 按 started_at 降序排，保留最近 keep 条，删其余
+        total.sort(key=lambda r: r.started_at, reverse=True)
+        to_delete = total[keep:]
+        for run in to_delete:
+            session.delete(run)
+        session.commit()
+        return len(to_delete)
+    except Exception:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("SourceRun 清理失败", exc_info=True)
+        return 0
 
 
 def score_and_prune_imported_jobs(session: Session, job_ids: list[int], keep_top: int) -> dict[str, int]:

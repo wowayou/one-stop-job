@@ -95,6 +95,8 @@ async def update_company(company_id: int, payload: CompanyUpdate, session: Sessi
     company = session.get(Company, company_id)
     if not company:
         raise HTTPException(status_code=404, detail="Company not found")
+    if company.deleted_at is not None:
+        raise HTTPException(status_code=400, detail="公司已移入回收站，请先恢复再编辑")
     for key, value in payload.model_dump(exclude_unset=True).items():
         setattr(company, key, value)
     company.updated_at = utc_now()

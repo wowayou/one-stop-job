@@ -55,6 +55,10 @@ def init_db() -> None:
                 if profile is None:
                     session.add(UserProfile(weights=settings.scoring_weights))
                     session.commit()
+                # 回收站自动清理：启动时清理超过 30 天的软删除记录
+                from .services.job_ops import auto_purge_trash, cleanup_source_runs
+                auto_purge_trash(session)
+                cleanup_source_runs(session)
             return
         except OperationalError as exc:
             if not _is_sqlite_locked(exc):

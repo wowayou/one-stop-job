@@ -47,6 +47,7 @@ async def export_data(
     status: str | None = None,
     source: str | None = None,
     favorite: bool | None = None,
+    include_trashed: bool = Query(default=False),
 ) -> Response:
     generated_at = utc_now().strftime("%Y%m%d-%H%M%S")
     format = format.lower().strip()
@@ -63,10 +64,15 @@ async def export_data(
 
     if kind == "archive":
         profile = get_profile(session)
+        job_stmt = select(Job)
+        company_stmt = select(Company)
+        if not include_trashed:
+            job_stmt = job_stmt.where(Job.deleted_at.is_(None))
+            company_stmt = company_stmt.where(Company.deleted_at.is_(None))
         archive = build_archive_payload(
             profile=profile,
-            jobs=session.exec(select(Job).where(Job.deleted_at.is_(None)).order_by(Job.collected_at.desc())).all(),
-            companies=session.exec(select(Company).where(Company.deleted_at.is_(None)).order_by(Company.updated_at.desc())).all(),
+            jobs=session.exec(job_stmt.order_by(Job.collected_at.desc())).all(),
+            companies=session.exec(company_stmt.order_by(Company.updated_at.desc())).all(),
             research_items=session.exec(select(ResearchItem).order_by(ResearchItem.captured_at.desc())).all(),
             scores=session.exec(select(FitScore).order_by(FitScore.created_at.desc())).all(),
             preps=session.exec(select(InterviewPrep).order_by(InterviewPrep.created_at.desc())).all(),

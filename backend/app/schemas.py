@@ -222,7 +222,7 @@ class ChatThreadCreate(SQLModel):
     job_id: Optional[int] = None
     title: Optional[str] = None
 
-    _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job", "ingest"}))
+    _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job", "ingest", "collect"}))
     _normalize_title = field_validator("title", mode="before")(
         lambda cls, value: validate_optional_text("title", value) if isinstance(value, str) or value is None else value
     )
