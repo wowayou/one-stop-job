@@ -20,6 +20,7 @@ export function JobsView({
   onOpen,
   onPatch,
   onBulkPatch,
+  onBulkDelete,
   onScoreJob,
   busy,
   onExport
@@ -37,6 +38,7 @@ export function JobsView({
   onOpen: (job: Job) => void;
   onPatch: (job: Job, updates: Partial<Job>) => Promise<void>;
   onBulkPatch: (ids: number[], updates: Pick<Partial<Job>, "status" | "favorite">) => Promise<void>;
+  onBulkDelete: (ids: number[]) => Promise<void>;
   onScoreJob: (jobId: number) => Promise<void>;
   busy: BusyState;
   onExport: () => Promise<void>;
@@ -164,6 +166,10 @@ export function JobsView({
           <button className="small-action" onClick={() => runBulk({ favorite: false })} disabled={!selectedCount || bulkBusy}>
             <RotateCcw size={14} />
             取消置顶
+          </button>
+          <button className="small-action danger-text" onClick={() => onBulkDelete(Array.from(selectedIds))} disabled={!selectedCount || bulkBusy}>
+            <Trash2 size={14} />
+            移入回收站
           </button>
         </div>
       </div>

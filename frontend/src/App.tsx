@@ -602,6 +602,21 @@ function App() {
     });
   }
 
+  async function bulkDeleteJobs(ids: number[]) {
+    if (!ids.length) return;
+    if (!window.confirm(`将选中的 ${ids.length} 个岗位移入回收站？`)) return;
+    await runBusy("bulk", async () => {
+      try {
+        const result = await api<{ deleted: number }>("/api/jobs/bulk-delete", { method: "POST", ...jsonBody({ ids }) });
+        setJobs((items) => items.filter((item) => !ids.includes(item.id)));
+        notify("info", `已移入回收站：${result.deleted} 个岗位`, ["可在「回收站」恢复或永久删除。"]);
+        await reloadTrash();
+      } catch (err) {
+        notify("error", errorMessage(err, "批量删除失败"));
+      }
+    });
+  }
+
   async function createScore() {
     if (!selectedJob) return;
     await runBusy("score", async () => {
@@ -1032,6 +1047,7 @@ function App() {
               onOpen={openJob}
               onPatch={patchJob}
               onBulkPatch={bulkPatchJobs}
+              onBulkDelete={bulkDeleteJobs}
               onScoreJob={scoreJobById}
               busy={busy}
               onExport={() => exportFile(`/api/exports/jobs?format=csv&status=${status === "all" ? "" : status}&source=${sourceFilter === "all" ? "" : sourceFilter}`, "jobs.csv", "岗位池已导出")}

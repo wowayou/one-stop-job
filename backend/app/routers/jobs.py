@@ -81,6 +81,16 @@ async def bulk_update_jobs(payload: JobBulkUpdate, session: SessionDep) -> dict:
     }
 
 
+@router.post("/api/jobs/bulk-delete")
+async def bulk_delete_jobs(payload: JobBulkUpdate, session: SessionDep) -> dict:
+    """批量软删除岗位（移入回收站）。"""
+    ids = list(dict.fromkeys(payload.ids))
+    if not ids:
+        return {"deleted": 0}
+    count = soft_delete_jobs(session, ids)
+    return {"deleted": count, "ids": ids}
+
+
 @router.patch("/api/jobs/{job_id}")
 async def update_job(job_id: int, payload: JobUpdate, session: SessionDep) -> dict:
     job = session.get(Job, job_id)
