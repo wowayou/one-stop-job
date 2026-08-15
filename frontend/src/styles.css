@@ -2711,6 +2711,19 @@ meter {
   font-size: 11px;
 }
 
+.chat-thread-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 14px 4px;
+  flex-shrink: 0;
+}
+
+.chat-thread-toolbar .chat-select-all {
+  margin-left: auto;
+}
+
 .chat-thread-list {
   display: grid;
   align-content: start;
@@ -2755,45 +2768,20 @@ meter {
    .chat-thread-list 的 flex:1 始终贴在「对话」面板最底部，读起来是这一列自己的操作栏，
    和主导航 rail 底部的 .run-strip（不同列）划清视觉边界。分隔线/底色沿用侧栏其它分区
    （.chat-sidebar-head / .chat-job-create）已有的 border-top #e1e7e1 + 背景 #f7faf7。 */
-.chat-thread-batch-bar {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 0 0 auto;
-  padding: 12px 14px;
-  border-top: 1px solid var(--c-border-subtle);
-  background: #f3f7f3;
-  color: #445048;
-  font-size: 13px;
-}
-
-.chat-thread-batch-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 2px 0;
-}
-
 .chat-select-all {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  font-size: 12px;
   font-weight: 700;
   color: #26332b;
   cursor: pointer;
   white-space: nowrap;
-  padding: 4px 0;
 }
 
 .chat-select-all input {
   width: auto;
   min-height: 0;
-}
-
-.chat-thread-batch-bar > .primary-action {
-  width: 100%;
-  justify-content: center;
 }
 
 .chat-thread {

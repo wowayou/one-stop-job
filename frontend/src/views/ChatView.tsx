@@ -380,24 +380,47 @@ export function ChatView({
     <section className="chat-shell" aria-label="决策聊天">
       <aside className="chat-sidebar">
         <div className="chat-sidebar-head">
-          <div><strong>对话</strong><small>刷新页面后仍会保留</small></div>
-          <div className="row-actions">
-            <button
-              type="button"
-              className={manageMode ? "icon-button compact marked" : "icon-button compact"}
-              title={manageMode ? "退出管理" : "管理对话"}
-              aria-label={manageMode ? "退出管理" : "管理对话"}
-              onClick={toggleManageMode}
-              disabled={sending}
-            >
-              <ListChecks size={15} />
-            </button>
-            <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
-          </div>
+          <div><strong>对话</strong><small>刷新后保留</small></div>
+          <button className="small-action" type="button" onClick={() => createThread("general")} disabled={sending}><Plus size={15} /> 新对话</button>
         </div>
         <div className="chat-job-create">
           <JobPickerCombobox jobs={jobs} value={jobId} onChange={setJobId} disabled={sending} />
           <button className="small-action" type="button" onClick={() => createThread("job")} disabled={!jobId || sending}>创建 / 打开</button>
+        </div>
+        <div className="chat-thread-toolbar">
+          <button
+            type="button"
+            className={manageMode ? "small-action marked" : "small-action"}
+            onClick={toggleManageMode}
+            disabled={sending}
+          >
+            <ListChecks size={14} />
+            {manageMode ? "完成管理" : "批量管理"}
+          </button>
+          {manageMode && threads.length > 0 && (
+            <label className="chat-select-all">
+              <input
+                ref={selectAllThreadsRef}
+                type="checkbox"
+                checked={allThreadsSelected}
+                onChange={(event) => toggleAllThreads(event.target.checked)}
+                disabled={!threads.length}
+                aria-label="全选对话"
+              />
+              全选
+            </label>
+          )}
+          {manageMode && selectedThreadIds.size > 0 && (
+            <button
+              className="small-action danger-text"
+              type="button"
+              disabled={!selectedThreadIds.size || batchDeleting}
+              onClick={() => void batchDeleteThreads()}
+            >
+              {batchDeleting ? <Loader2 className="spin" size={14} /> : <Trash2 size={14} />}
+              删除选中（{selectedThreadIds.size}）
+            </button>
+          )}
         </div>
         <div className="chat-thread-list">
           {threads.map((thread) => (
@@ -432,28 +455,6 @@ export function ChatView({
           ))}
           {!loading && !threads.length && <p className="muted chat-empty-copy">先创建一个通用聊天，或者给某个岗位开专属聊天。</p>}
         </div>
-        {manageMode && (
-          <div className="chat-thread-batch-bar">
-            <div className="chat-thread-batch-top">
-              <label className="chat-select-all">
-                <input
-                  ref={selectAllThreadsRef}
-                  type="checkbox"
-                  checked={allThreadsSelected}
-                  onChange={(event) => toggleAllThreads(event.target.checked)}
-                  disabled={!threads.length}
-                  aria-label="全选对话"
-                />
-                全选
-              </label>
-              <span>已选 {selectedThreadIds.size} 个</span>
-            </div>
-            <button className="primary-action" type="button" disabled={!selectedThreadIds.size || batchDeleting} onClick={() => void batchDeleteThreads()}>
-              {batchDeleting ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
-              删除选中（{selectedThreadIds.size}）
-            </button>
-          </div>
-        )}
       </aside>
 
       <div className="chat-main">
