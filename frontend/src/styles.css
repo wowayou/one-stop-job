@@ -364,18 +364,23 @@ nav {
    子项之间还留着两段固定 12px 死间距把按钮挤偏；折叠按钮靠 .sidebar-toggle 自带的
    margin-left:auto 加下面 `.sidebar-collapsed .sidebar-toggle{margin:0 auto}` 的双重
    居中，落在收窄后的 rail 正中，和 nav 图标共用同一条宽度基准（width:100%，见下）。 */
+/* 折叠态（Obsidian 风格）：brand 变成纵向排列——logo 在顶部居中，
+   折叠按钮在下方居中，两个元素各自独占一行，和 nav 图标共用同一条中心线。 */
 .sidebar-collapsed .brand {
-  gap: 0;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   width: 100%;
 }
 
 .sidebar-collapsed .brand-mark {
-  margin: 0 auto;
+  margin: 0;
 }
 
-/* 折叠态：toggle 按钮保持可见，居中显示在 logo 下方 */
 .sidebar-collapsed .sidebar-toggle {
-  margin: 0 auto;
+  margin: 0;
+  width: 36px;
+  height: 36px;
 }
 
 /* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
@@ -3756,9 +3761,6 @@ meter {
 
   .sidebar-collapsed .brand {
     flex-direction: row;
-    /* 窄屏没有折叠 rail，.brand 要和 nav 并排挤在同一行里；desktop 折叠态给 .brand 加的
-       width:100%/gap:0 是 rail 内收起 logo 方块专用的，这里必须还原成正常间距，否则
-       挨着显示的 logo 方块和文字会贴在一起。 */
     width: auto;
     gap: 12px;
   }
@@ -3772,22 +3774,17 @@ meter {
 
   .sidebar-collapsed .sidebar-toggle {
     display: grid;
+    margin: 0;
+    width: 32px;
+    height: 32px;
   }
 
   .sidebar-collapsed .nav-label {
     display: block;
-    /* 桌面端折叠态把这两个收到 opacity:0/max-width:0；窄屏没有折叠按钮，桌面态的收起值
-       不该带过来，否则文字会在移动端布局里变透明消失。 */
     opacity: 1;
     max-width: none;
+    margin-left: 8px;
     pointer-events: auto;
-  }
-
-  .sidebar-collapsed .brand-copy {
-    /* 桌面折叠态给 .brand-copy 加的 white-space:nowrap 是配合 max-width:0 防止文字
-       竖排撑高用的；窄屏这里文案正常显示、宽度不再收到 0，必须还原成 normal，否则
-       "job-one-stop" 这类长文案会在窄屏溢出而不是正常换行。 */
-    white-space: normal;
   }
 
   .sidebar-collapsed .nav-label {
