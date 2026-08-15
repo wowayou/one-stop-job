@@ -57,15 +57,40 @@ async function parseApiError(response: Response): Promise<ParsedApiError> {
   return { message: text };
 }
 
+const DEFAULT_TIMEOUT_MS = 30000;
+
+/** fetch with timeout: 超时自动 abort，避免 UI 永久等待后端响应。 */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new ApiError(0, { message: `请求超时（${timeoutMs / 1000}s）` });
+    }
+    throw new ApiError(0, { message: err instanceof Error ? err.message : "网络请求失败" });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     ...init,
     headers: init?.body instanceof FormData ? init.headers : { "Content-Type": "application/json", ...(init?.headers ?? {}) }
   });
   if (!response.ok) {
     throw new ApiError(response.status, await parseApiError(response));
   }
-  return response.json() as Promise<T>;
+  // 204 No Content 或空 body 安全处理
+  const text = await response.text();
+  if (!text) return undefined as T;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new ApiError(response.status, { message: "响应解析失败：服务器返回了非 JSON 内容" });
+  }
 }
 
 export function errorMessage(err: unknown, fallback: string) {
@@ -81,7 +106,7 @@ function filenameFromDisposition(value: string | null, fallback: string) {
 }
 
 export async function downloadApiFile(path: string, fallbackName: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(`${API_BASE}${path}`, {
+  const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     ...init,
     headers: init?.body instanceof FormData ? init.headers : { ...(init?.headers ?? {}) }
   });

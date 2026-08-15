@@ -41,25 +41,42 @@ def query_jobs(
     favorite: bool | None = None,
     include_deleted: bool = False,
 ) -> tuple[list[Job], dict[int, list[JobSourceLink]]]:
+    from sqlalchemy import or_
+
     stmt = select(Job)
     if not include_deleted:
         stmt = stmt.where(Job.deleted_at.is_(None))
+    # 将过滤推到 SQL 层，避免全表加载到 Python 再过滤
+    if status:
+        stmt = stmt.where(Job.status == status)
+    if favorite is not None:
+        stmt = stmt.where(Job.favorite == favorite)
+    if search:
+        needle = f"%{search.lower()}%"
+        stmt = stmt.where(
+            or_(
+                Job.title.ilike(needle),
+                Job.company_name.ilike(needle),
+                Job.skills.ilike(needle),
+                Job.area.ilike(needle),
+                Job.city.ilike(needle),
+            )
+        )
     stmt = stmt.order_by(Job.favorite.desc(), Job.collected_at.desc())
     jobs = session.exec(stmt).all()
-    source_links = source_links_map(session, [job.id for job in jobs if job.id])
-    if search:
-        needle = search.lower()
-        jobs = [job for job in jobs if needle in " ".join(filter(None, [job.title, job.company_name, job.skills, job.area])).lower()]
-    if status:
-        jobs = [job for job in jobs if job.status == status]
+
+    # source 过滤需要 join source_links，先批量加载再在 Python 里过滤
     if source:
+        job_ids = [job.id for job in jobs if job.id]
+        source_links = source_links_map(session, job_ids)
         jobs = [
             job
             for job in jobs
             if job.source == source or any(link.source == source for link in source_links.get(job.id or 0, []))
         ]
-    if favorite is not None:
-        jobs = [job for job in jobs if job.favorite == favorite]
+    else:
+        source_links = source_links_map(session, [job.id for job in jobs if job.id])
+
     return jobs, source_links
 
 

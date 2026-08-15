@@ -213,7 +213,11 @@ function App() {
       { key: "ai", label: "AI 状态", run: () => api<AiStatus>("/api/ai/status"), apply: (value) => setAiStatus(value as AiStatus) },
       { key: "contextStatus", label: "个人上下文仓库", run: () => api<ContextRepoStatus>("/api/context/status"), apply: (value) => setContextStatus(value as ContextRepoStatus) }
     ];
-    const active = keys ? tasks.filter((task) => keys.includes(task.key)) : tasks;
+    // 核心数据每次都加载；非核心数据按需加载（传 keys 或视图激活时）。
+    const CORE_KEYS = ["jobs", "funnel", "profile", "ai", "sources", "contextStatus"];
+    const active = keys
+      ? tasks.filter((task) => keys.includes(task.key))
+      : tasks.filter((task) => CORE_KEYS.includes(task.key));
     const results = await Promise.allSettled(active.map((task) => task.run()));
     if (requestId !== loadAllRequestRef.current) return;
     const failed = results
@@ -281,7 +285,17 @@ function App() {
   useEffect(() => {
     if (activeNav === "trash") {
       reloadTrash();
+      return;
     }
+    // 按视图按需加载非核心数据，避免首屏打 12 个请求
+    const viewKeys: Record<string, string[]> = {
+      companies: ["companies"],
+      prep: ["drafts"],
+      interviews: ["interviews"],
+      tasks: ["tasks", "stale"],
+    };
+    const keys = viewKeys[activeNav];
+    if (keys) reload(keys);
   }, [activeNav]);
 
   useEffect(() => {
