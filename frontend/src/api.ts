@@ -1,6 +1,16 @@
-// Tauri 桌面模式下后端固定在 127.0.0.1:8000；Web 模式走 VITE_API_BASE
-const _w = window as unknown as { __TAURI_INTERNALS__?: unknown };
-const API_BASE = import.meta.env.VITE_API_BASE ?? (_w.__TAURI_INTERNALS__ ? "http://127.0.0.1:8000" : "");
+// 后端固定在 127.0.0.1:8000。
+// - 生产模式（后端挂载前端）：同源，API_BASE 为空
+// - 开发模式（Vite :5173 / Tauri dev webview）：需要显式指向 :8000
+// - 自定义：通过 VITE_API_BASE 环境变量覆盖
+function detectApiBase(): string {
+  const envBase = import.meta.env.VITE_API_BASE;
+  if (envBase) return envBase;
+  // 如果当前页面就在 :8000 上（后端挂载模式），同源不需要前缀
+  if (typeof window !== "undefined" && window.location.port === "8000") return "";
+  // 开发模式（Vite :5173）或 Tauri webview：后端在 :8000
+  return "http://127.0.0.1:8000";
+}
+const API_BASE = detectApiBase();
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
