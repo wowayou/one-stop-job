@@ -836,11 +836,7 @@ function App() {
     <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${activeNav === "chat" ? " chat-active" : ""}`}>
       <aside className="sidebar" aria-label="主导航">
         <div className="brand">
-          <div className="brand-mark">J1</div>
-          <div className="brand-copy">
-            <strong>job-one-stop</strong>
-            <span>本地求职助手</span>
-          </div>
+          <div className="brand-mark" title="job-one-stop · 本地求职助手" aria-label="job-one-stop · 本地求职助手">J1</div>
           <button
             type="button"
             className="sidebar-toggle"

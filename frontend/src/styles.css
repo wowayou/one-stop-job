@@ -182,11 +182,8 @@ button:disabled,
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  /* 侧栏内容放得下时（常规笔记本视口）无需滚动；真的矮到装不下时用滚轮/触控仍可滚，但
-     不显示滚动条——深色侧栏上一条滚动条既丑又容易被误读成「多了一条」。scrollbar-width:none
-     (Firefox) + ::-webkit-scrollbar display:none (Chrome/Edge) 把它视觉隐藏，同时保留可滚动。 */
   scrollbar-width: none;
-  background: #17201b;
+  background: #1a1f1c;
   color: #f8faf7;
   transition: gap 0.2s ease-out, padding 0.2s ease-out;
 }
@@ -198,53 +195,28 @@ button:disabled,
 .brand {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   min-height: 44px;
   min-width: 0;
-  /* 和 nav/.run-strip 一样禁止收缩：矮视口下宁可让 .sidebar 整体滚动，也不让
-     头部被压扁。 */
   flex-shrink: 0;
   transition: gap 0.2s ease-out;
 }
 
 .brand-mark {
   display: grid;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
   place-items: center;
   border-radius: var(--r-md);
-  background: linear-gradient(135deg, #f5c15c, #e8a93e);
-  color: #18211c;
+  background: #147d74;
+  color: #ffffff;
+  font-size: 13px;
   font-weight: 800;
+  letter-spacing: -0.02em;
   overflow: hidden;
-  box-shadow: 0 2px 8px rgba(245, 193, 92, 0.3);
-  /* logo 方块本身绝不能被旁边的 .brand-copy 挤没：.brand 在极窄场景（比如窄屏没有折叠
-     rail、.brand 和 nav 挤在同一条横向可滚动栏里）自身宽度可能不够两个子项都按 100%
-     显示，默认的 flex-shrink:1 会按 flex-basis 比例分摊收缩，.brand-copy 的文本越长，
-     .brand-mark 分到的挤压就可能越多，极端情况下会被压成 0 宽度直接消失。方块固定
-     flex-shrink:0 之后，缺的空间只从 .brand-copy（允许收缩到 0）那边扣，logo 本身
-     的尺寸/可见性不再受文案长短或容器宽度影响。 */
+  cursor: default;
   flex-shrink: 0;
-  transition: opacity 0.2s ease-out, max-width 0.2s ease-out;
-}
-
-.brand strong,
-.brand span {
-  display: block;
-  /* .brand-copy 折叠时 max-width 收到 0（见下），这两个块级子元素若不禁止换行，文本会
-     在近乎 0 宽度里逐字/逐词折成一长串竖排（中文按字断行更明显，接近每个字单独一行），
-     把 .brand-copy 乃至 .brand 整体的高度顶起来，折叠头部因此变高，把下面的 nav 图标
-     顶下去。和 .nav-label 同款处理：不允许换行，超出部分交给 .brand-copy 的
-     overflow:hidden 直接裁切，而不是换行占用额外高度。 */
-  white-space: nowrap;
-}
-
-.brand-copy {
-  min-width: 0;
-  max-width: 160px;
-  opacity: 1;
-  overflow: hidden;
-  transition: opacity 0.2s ease-out, max-width 0.2s ease-out;
+  transition: opacity 0.2s ease-out;
 }
 
 .brand span,
@@ -398,15 +370,16 @@ nav {
 }
 
 .sidebar-collapsed .brand-mark {
-  opacity: 0;
-  max-width: 0;
-  pointer-events: none;
+  margin: 0 auto;
+}
+
+.sidebar-collapsed .sidebar-toggle {
+  display: none;
 }
 
 /* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
    宽度还要再花 ~200ms 才收完，中间那几帧就是一个「宽壳子、空内容」的闪帧。改成和宽度
    同一个 200ms ease-out 一起收缩到 0（opacity + max-width/max-height）。 */
-.sidebar-collapsed .brand-copy,
 .sidebar-collapsed .nav-label {
   opacity: 0;
   max-width: 0;
@@ -3792,14 +3765,15 @@ meter {
 
   .sidebar-collapsed .brand-mark {
     margin: 0;
-    /* 桌面端折叠态把 logo 方块收到 opacity:0/max-width:0；窄屏没有折叠按钮，logo 方块
-       和文案一样正常显示，这里必须还原，否则 mobile 上 logo 会变透明消失。 */
     opacity: 1;
     max-width: none;
     pointer-events: auto;
   }
 
-  .sidebar-collapsed .brand-copy,
+  .sidebar-collapsed .sidebar-toggle {
+    display: grid;
+  }
+
   .sidebar-collapsed .nav-label {
     display: block;
     /* 桌面端折叠态把这两个收到 opacity:0/max-width:0；窄屏没有折叠按钮，桌面态的收起值
