@@ -4322,16 +4322,43 @@ meter {
 
 .trash-panel {
   display: grid;
-  grid-template-rows: auto auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  align-content: start;
+  overflow: hidden;
+}
+
+.trash-head {
+  flex-shrink: 0;
+}
+
+.trash-head-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.trash-head-top strong {
+  font-size: 15px;
 }
 
 .trash-tabs {
   width: fit-content;
+}
+
+.trash-list-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 4px;
+}
+
+.trash-list {
+  display: grid;
+  gap: 8px;
+  align-content: start;
 }
 
 .trash-item {
@@ -4339,8 +4366,8 @@ meter {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px;
-  border: 1px solid #edf0ed;
+  padding: 10px 12px;
+  border: 1px solid var(--c-border-light);
   border-radius: var(--r-md);
   background: var(--c-bg-subtle);
   transition: border-color var(--t-fast), box-shadow var(--t-fast);
@@ -4353,7 +4380,7 @@ meter {
 
 .trash-item-info {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
 }
 
@@ -4371,6 +4398,12 @@ meter {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.trash-foot {
+  flex-shrink: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--c-border-light);
 }
 
 /* 公司卡片头部：标题 + 删除按钮 */
