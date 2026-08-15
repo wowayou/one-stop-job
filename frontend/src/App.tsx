@@ -833,7 +833,7 @@ function App() {
   }
 
   return (
-    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${activeNav === "chat" ? " chat-active" : ""}`}>
+    <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar" aria-label="主导航">
         <div className="brand">
           <div className="brand-mark" title="job-one-stop · 本地求职助手" aria-label="job-one-stop · 本地求职助手">J1</div>

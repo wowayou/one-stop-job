@@ -153,13 +153,6 @@ button:disabled,
   --sidebar-w: 76px;
 }
 
-.app-shell.chat-active {
-  --sidebar-w: 208px;
-}
-
-.app-shell.chat-active.sidebar-collapsed {
-  --sidebar-w: 76px;
-}
 
 /* 侧栏本身整体可滚动兜底：之前试过「nav 内部滚动 + .sidebar 外层 overflow:hidden」
    的 sticky-footer 方案，指望 nav 自己的 flex-shrink 吸收多余高度、footer
@@ -478,10 +471,6 @@ nav {
   overflow: hidden;
 }
 
-.chat-active .sidebar {
-  gap: 16px;
-  padding: 16px 14px;
-}
 
 .topbar {
   display: flex;
@@ -2998,15 +2987,14 @@ meter {
 
 .chat-message {
   display: grid;
-  grid-template-columns: 32px minmax(0, 760px);
+  grid-template-columns: 32px minmax(0, 1fr);
   gap: 9px;
   align-items: start;
-  margin: 0 auto 14px;
-  max-width: 900px;
+  margin: 0 0 14px;
 }
 
 .chat-message.user {
-  grid-template-columns: minmax(0, 650px) 32px;
+  grid-template-columns: minmax(0, 1fr) 32px;
   justify-content: end;
 }
 
@@ -3101,9 +3089,8 @@ meter {
 .chat-preview {
   display: flex;
   flex-direction: column;
-  width: min(900px, 100%);
+  width: 100%;
   max-height: 40vh;
-  margin: 0 auto;
   overflow: hidden;
   border: 1px solid #d7e2dc;
   border-radius: 8px;
@@ -3216,8 +3203,7 @@ meter {
 }
 
 .chat-composer textarea {
-  width: min(900px, 100%);
-  margin: 0 auto;
+  width: 100%;
   resize: none;
 }
 
@@ -3226,8 +3212,7 @@ meter {
   grid-template-columns: 56px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  width: min(900px, 100%);
-  margin: 0 auto;
+  width: 100%;
   padding: 8px;
   border: 1px solid #d7e2dc;
   border-radius: 8px;
@@ -3251,8 +3236,7 @@ meter {
 
 .chat-composer-foot,
 .chat-error {
-  width: min(900px, 100%);
-  margin: 0 auto;
+  width: 100%;
 }
 
 .chat-composer-foot small {
@@ -3728,10 +3712,6 @@ meter {
     grid-template-columns: 1fr;
   }
 
-  .app-shell.chat-active,
-  .app-shell.chat-active.sidebar-collapsed {
-    grid-template-columns: 1fr;
-  }
 
   .sidebar {
     position: static;
@@ -3744,10 +3724,6 @@ meter {
     overflow-y: hidden;
   }
 
-  .chat-active .sidebar {
-    gap: 12px;
-    padding: 12px 14px;
-  }
 
   .sidebar-toggle {
     display: none;
