@@ -373,8 +373,9 @@ nav {
   margin: 0 auto;
 }
 
+/* 折叠态：toggle 按钮保持可见，居中显示在 logo 下方 */
 .sidebar-collapsed .sidebar-toggle {
-  display: none;
+  margin: 0 auto;
 }
 
 /* 不用 display:none 瞬间摘掉这三块——它们过去和宽度过渡不同步：内容在第 1 帧就消失，
@@ -398,10 +399,6 @@ nav {
 
 .sidebar-collapsed nav {
   width: 100%;
-}
-
-.sidebar-collapsed .sidebar-toggle {
-  margin: 0 auto;
 }
 
 .run-strip {
@@ -2767,11 +2764,11 @@ meter {
 .chat-thread-batch-bar {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
   flex: 0 0 auto;
-  padding: 10px 14px;
-  border-top: 1px solid #e1e7e1;
-  background: #f7faf7;
+  padding: 12px 14px;
+  border-top: 1px solid var(--c-border-subtle);
+  background: #f3f7f3;
   color: #445048;
   font-size: 13px;
 }
@@ -2780,17 +2777,19 @@ meter {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  padding: 2px 0;
 }
 
 .chat-select-all {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-weight: 700;
   color: #26332b;
   cursor: pointer;
   white-space: nowrap;
+  padding: 4px 0;
 }
 
 .chat-select-all input {
@@ -2800,6 +2799,7 @@ meter {
 
 .chat-thread-batch-bar > .primary-action {
   width: 100%;
+  justify-content: center;
 }
 
 .chat-thread {
@@ -4349,10 +4349,12 @@ meter {
 
 .trash-panel {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
   gap: 12px;
   min-height: 0;
-  overflow: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-content: start;
 }
 
 .trash-tabs {
