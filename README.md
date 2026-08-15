@@ -58,7 +58,16 @@ docker compose up -d --build
 
 访问 http://127.0.0.1:8000/
 
-### 方式三：日常使用（已装好依赖后）
+### 方式三：桌面应用下载（无需任何开发环境）
+
+前往 [Releases](../../releases) 页面，下载对应平台的安装包：
+- **Windows**: 下载 .msi 或 .exe，双击安装
+- **macOS**: 下载 .dmg，拖入 Applications（首次打开需右键 -> 打开）
+- **Linux**: 下载 .AppImage，chmod +x 后双击运行
+
+> 首次启动可能提示未知开发者——这是正常的（未签名），按系统提示确认即可。
+
+### 方式四：日常使用（已装好依赖后）
 
 ```bash
 scripts/app.sh start    # 启动（单进程，同时提供页面与 API）

@@ -40,3 +40,10 @@ data/.yuanbao/
 
 # 本地个人配置(从 config.example.yaml 生成);不入 Git,避免每次 pull 冲突
 config.yaml
+
+# Tauri build artifacts
+src-tauri/target/
+src-tauri/resources/
+src-tauri/gen/
+src-tauri/build/
+src-tauri/dist/
