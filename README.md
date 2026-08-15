@@ -1,43 +1,91 @@
-# one-stop-job
+<div align="center">
 
-本地优先的个人求职助手：把拿不准的事情或岗位材料放进聊天，先按个人规则判断，再继续管理岗位、公司证据、跟进和面试准备。
+# job-one-stop
 
-> 隐私边界：公开仓库只包含程序、空白默认画像和合成测试数据。真实 `.env`、SQLite、个人上下文仓库、聊天记录、岗位卡和截图不得提交。详见 [PRIVACY.md](PRIVACY.md)。
+### 本地优先的个人求职助手
+
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#-快速开始)
+[![Built with FastAPI](https://img.shields.io/badge/built%20with-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
+[![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-617.svg)](https://vitejs.dev/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+数据不出本机 · 不自动投递 · 不自动发消息
+
+</div>
+
+## 📷 截图
+
+|                    聊天决策                    |                    岗位管理                    |
+| :--------------------------------------------: | :--------------------------------------------: |
+| ![聊天决策](assets/screenshots/chat-view.jpg)  | ![岗位管理](assets/screenshots/jobs-view.jpg)  |
+
+|                    岗位详情                    |
+| :--------------------------------------------: |
+| ![岗位详情](assets/screenshots/drawer-view.jpg) |
 
 ## ✨ 核心功能
 
-- **决策聊天**：通用聊天 + 岗位专属聊天，可重命名；支持文字、链接旁正文及选择/粘贴截图，先运行硬规则，再由可选 AI 给出优先级、风险、唯一下一步和回复草稿
-- **岗位池管理**：多来源采集（BOSS/智联/公众号/beBee/CSV）、跨来源去重、状态流转
-- **采集人工初筛**：采集回来的**全新**岗位先过区域白名单（`config.yaml` 的 `collect.area_filter`），剩下的按匹配分排好序挂进「聊天」里的采集线索，你勾选「入库选中」才进岗位池；已在池中的岗位照旧刷新快照。噪音不再自动落盘
+- **决策聊天**：通用聊天 + 岗位专属聊天；支持文字、链接、截图，先运行本地硬规则，再由可选 AI 给出优先级、风险和下一步
+- **岗位池管理**：多来源采集（BOSS / 智联 / 公众号 / beBee / CSV）、跨来源去重、状态流转、批量操作、软删除回收站
+- **采集人工初筛**：采集回来的全新岗位先过区域白名单，按匹配分排序挂进聊天候选，你勾选后才入库；噪音不再自动落盘
 - **公司调研**：沉淀官网、招聘页、小红书、脉脉、看准等证据
 - **智能评分**：按岗位匹配、薪资、成长性、稳定性、口碑等维度输出 100 分解释
-- **面试准备**：生成 JD 摘要、技能差距、优势话术、STAR 素材、反问问题；配置 AI 后按 JD + 个人画像定制打招呼语、简历重排与反问（不配 AI 回退模板）
-- **跟进任务 & 提醒**：把投递、沟通、调研动作沉淀为本地任务；fit/面试中久无进展的岗位自动标记「需跟进」
-- **晨间日清单（可选）**：每天定时解析个人看板「下一步」里的到期日期，按「今日必发 / 今日跟进 / 今日收口」三段汇总，连同库内需跟进岗位与**待筛岗位**经 Telegram 推给本人（`config.yaml` 的 `schedule.digest`；看板只读，动作仍由本人执行）。发送时点机器没开机也不会丢：应用启动后 15 分钟内自动补发当天清单，且当天只发一次
+- **面试准备**：生成 JD 摘要、技能差距、优势话术、STAR 素材、反问问题；配置 AI 后按 JD + 个人画像定制
+- **跟进任务 & 提醒**：把投递、沟通、调研动作沉淀为本地任务；fit / 面试中久无进展的岗位自动标记「需跟进」
+- **晨间日清单**（可选）：每天定时把看板到期动作 + 需跟进岗位经 Telegram 推给本人
+- **回收站**：删除岗位 / 公司不丢数据，30 天内可恢复或永久删除
 
 ## 🚀 快速开始
 
-**单进程部署（推荐，日常使用，Linux/WSL/macOS）：**
+### 方式一：一条命令启动（Linux / WSL / macOS）
 
 ```bash
-scripts/app.sh start
+git clone https://github.com/你的用户名/one-stop-job.git
+cd one-stop-job
+./quickstart.sh
 ```
 
-首次运行会自动装依赖、建虚拟环境、构建前端，然后启动一个后端进程同时提供页面与 API。访问 `http://127.0.0.1:8000/`；查看状态用 `scripts/app.sh status`，停止用 `scripts/app.sh stop`。
+自动完成：Python 虚拟环境 → 前端依赖 → 配置文件 → 前端构建 → 后端启动。访问 http://127.0.0.1:8000/
 
-**备用（Windows 无 WSL 环境时）：** 用 Docker 一键脚本，先启动 Docker Desktop，双击 `start_app.bat`（首次或代码更新后用 `rebuild_app.bat`）。
+### 方式二：Docker
 
-**详细说明（含本地开发热更新模式、Docker 命令行方式）：** 见 [QUICKSTART.md](QUICKSTART.md)
+```bash
+git clone https://github.com/你的用户名/one-stop-job.git
+cd one-stop-job
+cp .env.template .env   # 按需填入 API Key
+docker compose up -d --build
+```
+
+访问 http://127.0.0.1:8000/
+
+### 方式三：日常使用（已装好依赖后）
+
+```bash
+scripts/app.sh start    # 启动（单进程，同时提供页面与 API）
+scripts/app.sh status   # 状态
+scripts/app.sh stop     # 停止
+scripts/app.sh logs     # 日志
+scripts/app.sh backup   # 数据备份
+```
+
+> **Windows 用户**：双击 `start_app.bat`，或使用 WSL。
+
+<details>
+<summary><b>详细说明（含本地开发热更新模式）</b></summary>
+
+见 [QUICKSTART.md](QUICKSTART.md)
+
+</details>
 
 ## 📖 主要文档
 
 | 文档 | 说明 |
 |------|------|
-| [QUICKSTART.md](QUICKSTART.md) | **快速开始指南**（本地/Docker/Windows/Linux） |
-| [CLAUDE.md](CLAUDE.md) | **项目架构标准**（AI 与人类共同遵守） |
+| [QUICKSTART.md](QUICKSTART.md) | 快速开始指南（本地 / Docker / Windows / Linux） |
+| [CLAUDE.md](CLAUDE.md) | 项目架构标准（AI 与人类共同遵守） |
 | [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
-| [docs/operations.md](docs/operations.md) | 运行部署（单进程/本地开发/Docker）、数据备份、运行排障 |
-| [docs/restore-on-new-machine.md](docs/restore-on-new-machine.md) | **换机/重装还原清单**（配置与数据都不入库，按此重建） |
+| [docs/operations.md](docs/operations.md) | 运行部署、数据备份、运行排障 |
+| [docs/restore-on-new-machine.md](docs/restore-on-new-machine.md) | 换机 / 重装还原清单 |
 
 <details>
 <summary>开发者文档</summary>
@@ -52,81 +100,53 @@ scripts/app.sh start
 
 1. **本地优先**：单用户、SQLite、无账号体系、数据不出本机
 2. **不自动化对外动作**：不自动投递、不自动发消息、联系方式仅本地留存
-3. **来源解耦**：统一数据管线，新增来源不影响评分/面试准备逻辑
+3. **来源解耦**：统一数据管线，新增来源不影响评分 / 面试准备逻辑
 4. **AI 可选**：决策聊天、公众号抽取、面试准备可接 AI；聊天先执行本地规则，调用失败时保留规则判断
 5. **合规抓取**：仅公开内容、低频、人工触发、不破解验证码、不二次分发
-6. **KISS 优先**：聊天保持主入口，低频求职管理能力按需展开；能复用就不新增页面、服务和依赖
+6. **KISS 优先**：聊天保持主入口，低频求职管理能力按需展开
 
 ## 🔌 数据来源
 
-所有来源最终汇入同一条管线（采集器 → 规范化 → 区域过滤 → 已知刷新 / 全新进候选 → 你勾选后入库 → 评分），互不耦合。
-采集器路径（BOSS/智联/公众号/beBee）**不会**把新岗位直接写进岗位池；CSV 导入与手动录入是你主动挑的输入，照旧直接入库。
+所有来源汇入同一条管线（采集器 → 规范化 → 区域过滤 → 已知刷新 / 全新进候选 → 你勾选后入库 → 评分），互不耦合。
 
 | 来源 | 触发方式 | 说明 |
 |------|---------|------|
-| **BOSS 直聘** | 宿主机脚本／每日一次定时／Telegram `/collect` | 需安装 OpenCLI，Windows 双击 `tools\host_collect_boss.bat`；配 `opencli.boss_keywords` 可一次跑多个关键词并跨关键词去重；`schedule.digest.collect_first: true` 时每天晨间日清单前自动采集一次（上限每日一次，红线 §3.3）；那次失败时在手机上发 `/collect` 手动补采一次（人工触发，不会自动重试） |
-| **智联招聘** | 宿主机脚本 | 需安装 OpenCLI，默认禁用，配置后启用 |
-| **公众号** | 粘贴导入 | 粘贴元宝回答或 mp.weixin 链接，自动拆分多岗位 |
-| **beBee** | 配置采集 | 解析页面 JobPosting JSON-LD 或 Next.js payload |
-| **CSV/Excel** | 文件上传 | 支持自定义字段映射；直接入库，不走初筛 |
-| **手动录入** | 表单填写 | 单条岗位快速录入；直接入库，不走初筛 |
-| **Telegram 截图/文本** | 手机发消息 | 见下方「手机一键入库」；先写聊天候选 + 给建议，本人确认后才入库 |
+| **BOSS 直聘** | 宿主机脚本 / 定时 / Telegram `/collect` | 需安装 OpenCLI |
+| **智联招聘** | 宿主机脚本 | 需安装 OpenCLI，默认禁用 |
+| **公众号** | 粘贴导入 | 粘贴元宝回答或链接，自动拆分多岗位 |
+| **beBee** | 配置采集 | 解析页面 JobPosting JSON-LD |
+| **CSV / Excel** | 文件上传 | 支持自定义字段映射，直接入库 |
+| **手动录入** | 表单填写 | 单条岗位快速录入，直接入库 |
+| **Telegram 截图 / 文本** | 手机发消息 | 先写聊天候选，本人确认后入库 |
 
-**采集初筛怎么用**：采集完成后，「聊天」里会出现一条 `采集 · <来源> · MM-DD HH:MM` 线索，候选按匹配分从高到低排好；勾选要沉淀的岗位点「入库选中」，剩下的点「全部跳过」。跳过的岗位 30 天内不会再被同一采集器列出来（改主意了可以在候选卡上点「恢复为待选」）。区域白名单挡掉的条数记在采集面板的运行报告里（`area_filter`），不会静默消失。
+<details>
+<summary><b>📱 手机一键入库 + 在线建议（Telegram，可选）</b></summary>
 
-### 📱 手机一键入库 + 在线建议（Telegram，可选）
+离开电脑时，用 Telegram 把岗位链接或截图发给自己的 bot。后端只抽取候选并写入本地聊天，默认不入库；你在 Web 聊天里勾选要沉淀的岗位再点「入库选中」。
 
-离开电脑时，用 Telegram 把岗位链接或截图发给自己的 bot。后端**只抽取候选并写入本地聊天**，**默认不入库**；你在 Web「聊天」里勾选要沉淀的岗位再点「入库选中」。这是「手机发过来 → 自动处理 → 本人确认后落盘」的入口。
+**回执里直接带判断**：识别到候选后，后端会按你的个人决策规则 + 画像给出初步建议（优先级 / 方向 / 下一步），随回执一起发到手机。
 
-**回执里直接带判断**：识别到候选后，后端会按你的个人决策规则 + 画像给出初步建议（优先级 / 方向 / 下一步 / 先问什么），随回执一起发到手机——不打开 Web 也能先知道「值不值得推进」。走的是和 Web 决策聊天**完全相同**的规则+模型链路，`ai.enabled=false` 时退化为规则模板结论。开关见 `config.yaml` 的 `ingest.advice`（默认开，只给前 `advice_max_candidates` 个候选生成）。
-
-**在手机上追问**：以 `?`、`？` 或 `/ask` 开头发一条消息，就是向 AI 提问而不是补充材料（例：`? 这个岗位值得聊吗`、`/ask 薪资怎么谈`）。回答落进本地聊天，同时发回手机。
-
-- 回复某条回执再提问 → 落进那条线索，模型能看到该线索的岗位与对话上下文；
-- 直接提问（没有回复任何回执）→ 落进固定的「手机提问」通用线程，不会每问一句就刷出一条新线程；
-- **不带前缀的消息一律仍按材料处理**（链接/JD 文本/截图），所以「回复回执补一段 JD」的老用法完全不受影响。
-
-**问的是哪个岗位**：候选在你确认入库前没有 Job 记录，线程本身挂不住岗位，所以锚点来自**这条线索已识别的候选**——
-
-- 一条线索只有一个候选 → 直接就是它；
-- 有多个 → 默认第一个，用 `?2 你的问题` 指名问第几个（序号就是建议里的 ①②，回答里也会提示还能换）；
-- 回答开头固定回显「针对 ② 广告优化师 · 示例科技」，不会让你对着一句「B / 邻近可接受」猜是哪个岗位；
-- 候选已经入库的，锚点自动切到真实岗位记录（字段更全，和 Web 里打开这个岗位看到的一致）。
-
-Web 上对应的入口是候选卡上的「问这个」按钮：点完输入框上方出现「针对 ① …」，这一条提问就锁定到那个候选，发送后自动清除。
-
-**为什么用 Telegram 长轮询**：后端主动向 `api.telegram.org` 拉取消息，**不需要对外暴露端口、不需要内网穿透**——`127.0.0.1` 本机运行即可。
-
-**链接不是唯一事实源**：很多平台（BOSS 等）有风控/付费墙、抓不到公开页。所以 ingest 同时支持三种输入——
-- **认识的链接**（公众号 `mp.weixin` / beBee）→ 走专用采集器抓取解析；
-- **复制的文本**（如手动复制的 BOSS JD）→ 走 LLM 抽取；
-- **一张截图** → 走 LLM 视觉抽取。
-三者可任意组合。原文与截图会保留在对应聊天线程里（不因「不入库」而删除）。freeform 抽出的岗位 `Job.source` 用 `ingest.manual_source`（默认 `manual`），仅在你确认入库后才写入 Job 表。
+**在手机上追问**：以 `?` 或 `/ask` 开头发消息即为提问，回答落进本地聊天同时发回手机。多候选时用 `?2` 指名问第几个。
 
 **启用步骤**：
-1. 在 Telegram 找 `@BotFather` 创建一个 bot，拿到 token。
-2. `.env` 加：
-   ```
-   TELEGRAM_BOT_TOKEN=你的token
-   ```
-3. 给你的 bot 发一条消息，用 `@userinfobot` 查到**你本人**的 chat id，填进 `config.yaml`：
+
+1. 在 Telegram 找 `@BotFather` 创建 bot，拿到 token
+2. `.env` 加 `TELEGRAM_BOT_TOKEN=你的token`
+3. 给 bot 发一条消息，用 `@userinfobot` 查到你的 chat id
+4. `config.yaml` 配置：
    ```yaml
    telegram:
      enabled: true
-     allowed_chat_id: 123456789   # 你本人的 chat id（整数）
-     poll_timeout_seconds: 30
+     allowed_chat_id: 123456789   # 你的 chat id
    ```
-4. 重启后端。手机发链接/截图后 bot 回执「识别到 N 个候选…打开 Web 确认」并附上初步建议；在聊天线程里勾选入库。发 `/start` 可随时看用法提示；晨间采集失败时发 `/collect` 可手动重跑一次采集（回执报「抓取 / 区域过滤 / 已在池刷新 / 待筛」条数与待筛岗位列表）。
+5. 重启后端
 
-> **隐私与边界（红线 §2）**：bot 只处理 `allowed_chat_id`（你本人）的消息，陌生人发来的会被静默忽略。回执、建议与追问回答**只发给你本人**；**绝不向招聘方发消息**。开启 AI 抽取后，文本和截图会发送给你配置的模型服务商。
-
-也可以不配 Telegram，直接 `POST /api/ingest`（body: `{"text": "…"}` 和/或 `{"image_data_url": "data:..."}`）写入聊天候选，再在 Web 确认入库。
+</details>
 
 ## ⚙️ 配置说明
 
-### 基础配置
-
-编辑 `config.yaml`：
+<details>
+<summary><b>基础配置（config.yaml）</b></summary>
 
 ```yaml
 opencli:
@@ -134,21 +154,13 @@ opencli:
     - "opencli"
     - "boss"
     - "search"
-    - "示例岗位" # 使用前仅在本机替换
+    - "示例岗位"
     - "--city"
     - "示例市"
-    - "--salary"
-    - "8-20k"
     - "--limit"
     - "200"
     - "--format"
     - "csv"
-  # 可选：一次采集跑多个关键词。填了就用它替换 boss_cmd 里 `search` 后面的那个词，
-  # 逐个关键词依次执行（命令间限速 2 秒），结果按 external_id 跨关键词去重。
-  # 不填则只跑 boss_cmd 里的单个关键词，行为与以前完全一致。
-  boss_keywords:
-    - "示例岗位A"
-    - "示例岗位B"
 
 general:
   data_dir: "./data/job_one_stop"
@@ -164,75 +176,46 @@ scoring:
     interview_roi: 10
 
 followup:
-  stale_days: 5   # fit/面试中超过该天数无活动 → 标记「需跟进」
+  stale_days: 5
 
 schedule:
   digest:
-    enabled: false  # true 时每天 hour:minute 把看板到期动作 + 需跟进岗位推送到 Telegram（仅机主本人）
+    enabled: false
     hour: 8
     minute: 20
-    collect_first: true  # 推送前先跑一次 BOSS 采集（按 boss_keywords 多关键词），
-                         # 让当天清单带上「🆕 新入库岗位」段。这是红线 §3.3 唯一的定时抓取例外，
-                         # 频率上限即每日一次；采集失败只记日志、不重试，清单照常推送
+    collect_first: true
 ```
 
-### 个人操作仓库（只读 + 一键写回收集箱）
+</details>
 
-如需让应用读取独立维护的个人画像、求职规则、岗位看板和岗位卡，在 `.env` 配置当前运行环境可识别的绝对路径：
+<details>
+<summary><b>AI 配置（可选）</b></summary>
 
-```bash
-# Windows
-JOB_ONE_STOP_CONTEXT_REPO_PATH=D:\path\to\personal-context
+打开「设置 → AI」，点「添加 Provider」，填 Base URL、Model、API Key。Key 只写入本机 `.env`，单进程部署下即时生效。
 
-# WSL（与 Windows 示例二选一）
-# JOB_ONE_STOP_CONTEXT_REPO_PATH=/mnt/d/path/to/personal-context
-```
-
-启动后访问 `GET /api/context/status` 检查只读连接。接口只返回白名单文件是否可用，不返回绝对路径、文件数量、更新时间或 Markdown 正文。决策聊天会读取规则、画像和看板；聊天里确认入库的候选岗位，还可以在候选卡上点一次「写入看板」——点击前先看到将要写入的那一行预览，点击后把这一行追加到看板（Obsidian Kanban 看板文件）的「收集箱」列，只新增这一行，不改写既有卡片。**不点「写入看板」就不会写入一个字节**；岗位状态本身仍由本人在 Obsidian 里拖动看板卡片决定，应用不会替你移动卡片。
-
-### AI 配置（可选）
-
-用于决策聊天、公众号岗位抽取和面试准备。推荐在设置页配置，也可以手动改 `.env`。
-
-**方式一（推荐）：设置页 → AI → Provider 卡**
-
-打开「设置 → AI」，点「添加 Provider」，在弹窗里填名称（可选）、Base URL、Model、API Key，点「保存」。Key 只写入本机 `.env`，**单进程部署模式下即时生效，无需重启**；界面全程不回显已保存的 Key，卡片只显示「已配置/未配置」徽标。国内可用示例（阿里百炼 Qwen，兼容 OpenAI 协议）：Base URL 填 `https://dashscope.aliyuncs.com/compatible-mode/v1`，视觉任务用 `qwen-vl-max`、纯文本任务用 `qwen-plus`，Key 从阿里云 DashScope 控制台获取。
-
-多张 Provider 卡按顺序尝试，前一个调用失败会先退避重试几次，仍失败才换下一个；全部失败才会走既有的规则/模板降级。同一个 Key 服务多张卡时，弹窗里「这次填写的 Key 也同时写入其它 Provider」可以一次写多个 `.env` 变量。
-
-最后在「设置 → AI」勾选「启用 AI 兜底」（对应 `config.yaml` 的 `ai.enabled: true`）。
-
-**方式二（手动）：直接编辑 `.env`**
-
-不想用设置页时，也可以自己在项目根目录 `.env` 里加：
+也可手动在 `.env` 加：
 
 ```bash
 OPENAI_API_KEY=sk-xxx
 OPENAI_BASE_URL=https://api.openai.com/v1  # 可选
 ```
 
-这是不配置任何 Provider 卡时的兜底环境变量；`config.yaml` 只保存 `ai.enabled` 和每张 Provider 卡的 `label`/`api_key_env`/`base_url`/`model`，**从不保存 Key 本身**。
+不配置 AI 不影响主流程：聊天保留规则判断，公众号回退纯正则，面试准备回退模板。
 
----
+</details>
 
-启用后，「决策聊天」会把本次材料、最近对话、岗位事实和白名单个人上下文发送给配置的模型服务商；截图分析要求模型支持视觉输入。模型结果不能覆盖规则引擎发现的硬性失败。「面试准备」仍可按岗位 JD 和个人画像定制材料。
+<details>
+<summary><b>个人操作仓库（只读 + 一键写回收集箱）</b></summary>
 
-不配置 AI 不影响主流程：聊天保留规则判断，公众号回退到纯正则解析，面试准备回退到模板生成。仅粘贴一个登录态或受限网页链接时，聊天不会假装已经读取页面，而会要求补充正文或截图。
+在 `.env` 配置 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 指向你的 Obsidian 仓库，应用只读读取规则、画像和看板。聊天里确认入库的候选岗位，可以在候选卡上点「写入看板」把一行追加到看板收集箱列——不点就不写入一个字节。
 
-### 聊天数据与截图
-
-- 会话、规则运行结果和附件元数据保存在本地 SQLite。
-- 截图原文件保存在 `data/job_one_stop/chat_attachments/`（或 `general.data_dir` 对应目录），不会写入 Git；单张前端限制 4 MB，仅接受 PNG、JPEG、WebP。
-- Archive JSON 会包含聊天文字和分析结果，但不嵌入截图文件。导出文件仍可能包含个人信息，不能直接发布。
+</details>
 
 ## 🧪 测试与质量
 
 ```bash
-# 完整质量门禁（提交前必跑）
+# 完整质量门禁
 scripts/quality_gate.sh
-
-# 或 Windows 双击
-run_quality_check.bat
 
 # 单独运行后端测试
 .venv/bin/python -m pytest -q
@@ -241,49 +224,48 @@ run_quality_check.bat
 scripts/deploy_check.sh
 ```
 
-## 🔧 常见问题
-
-**Q: Docker 构建太慢或 `Read timed out`？**
-
-A: 推荐使用本地开发模式（5-10 秒启动）。如需 Docker，在 `.env` 配置镜像源。详见 [docs/docker-optimization.md](docs/docker-optimization.md)。
-
-**Q: `No module named uvicorn` 或 `.venv/bin/activate` 不存在？**
-
-A: 不要用系统 Python 启动后端，也不要 `source .venv/bin/python`。直接运行 `.venv/bin/python -m uvicorn ...`。如果 `.venv` 缺少 `bin/activate`，执行 `python3 -m venv --clear .venv && .venv/bin/python -m pip install -r requirements.txt` 重建虚拟环境。
-
-**Q: database is locked？**
-
-A: 不要同时运行本地开发和 Docker。选择一种方式运行。
-
-**Q: BOSS 采集失败？**
-
-A: 确保宿主机已安装 OpenCLI 且浏览器登录态有效。见 [QUICKSTART.md](QUICKSTART.md)。
-
-**Q: 公众号抓取被拦截？**
-
-A: 被风控时会跳过并记录原因，可用「手动粘正文」方式导入。
-
-更多问题见 [QUICKSTART.md](QUICKSTART.md) 和 [docs/operations.md](docs/operations.md)。
-
 ## 📊 求职冲刺流程
 
-1. **配置个人画像**：在「匹配评分」页填写目标岗位、技能、工作经历
-2. **导入岗位**：通过 BOSS/公众号/CSV 等方式收集岗位
-3. **生成冲刺包**：点顶栏「生成今日求职冲刺包」，系统自动补评分、筛 Top 岗位、生成面试准备
-4. **执行行动**：复制 Markdown 清单，调研 Top 5，决定投递/拒绝/归档
-5. **跟进收口**：冲刺包与「跟进任务」页会列出「需跟进」岗位（fit/面试中超 `stale_days` 天无进展），及时联系或更新状态
-
-详细执行节奏见 [docs/12-hour-sprint-playbook.md](docs/12-hour-sprint-playbook.md)。
+1. **配置个人画像**：在「设置」页填写目标岗位、技能、工作经历
+2. **导入岗位**：通过 BOSS / 公众号 / CSV 等方式收集岗位
+3. **生成冲刺包**：点顶栏「生成今日求职冲刺包」，自动补评分、筛 Top 岗位、生成面试准备
+4. **执行行动**：复制 Markdown 清单，调研 Top 5，决定投递 / 拒绝 / 归档
+5. **跟进收口**：冲刺包与「待办」页列出「需跟进」岗位，及时联系或更新状态
 
 ## 🎨 技术栈
 
-- **后端**：FastAPI + SQLModel + SQLite + Alembic
-- **前端**：React + Vite + TypeScript
-- **AI**：OpenAI 兼容协议（可选）
-- **采集**：httpx + BeautifulSoup + OpenCLI（宿主机）
-- **部署**：Docker Compose（可选）
+| 层 | 技术 |
+|----|------|
+| 后端 | FastAPI · SQLModel · SQLite · Alembic |
+| 前端 | React · Vite · TypeScript |
+| AI | OpenAI 兼容协议（可选） |
+| 采集 | httpx · BeautifulSoup · OpenCLI |
+| 部署 | Docker Compose / 单进程 shell 脚本 |
 
-## 🤝 贡献指南
+## 🔧 常见问题
+
+<details>
+<summary><b>Docker 构建太慢？</b></summary>
+
+推荐使用本地开发模式（5-10 秒启动）。如需 Docker，在 `.env` 配置镜像源。详见 [docs/docker-optimization.md](docs/docker-optimization.md)。
+
+</details>
+
+<details>
+<summary><b>No module named uvicorn？</b></summary>
+
+不要用系统 Python 启动后端。执行 `python3 -m venv --clear .venv && .venv/bin/python -m pip install -r requirements.txt` 重建虚拟环境。
+
+</details>
+
+<details>
+<summary><b>database is locked？</b></summary>
+
+不要同时运行本地开发和 Docker。选择一种方式运行。
+
+</details>
+
+## 🤝 贡献
 
 1. 阅读 [CLAUDE.md](CLAUDE.md) 了解架构红线
 2. 新增功能前先跑 `scripts/quality_gate.sh`
@@ -293,12 +275,6 @@ A: 被风控时会跳过并记录原因，可用「手动粘正文」方式导�
 ## 📄 许可
 
 MIT
-
-## 🔗 相关资源
-
-- [OpenCLI](https://github.com/KeJunMao/openreader) - 多平台招聘信息采集工具
-- [腾讯元宝](https://yuanbao.tencent.com/) - 公众号语料搜索
-- [beBee](https://bebee.com/) - 国际招聘平台
 
 ---
 
