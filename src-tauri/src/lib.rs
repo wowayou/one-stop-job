@@ -19,7 +19,6 @@ fn project_root() -> std::path::PathBuf {
 /// In dev mode, find the venv Python.
 fn dev_python() -> String {
     let root = project_root();
-    // Try .venv/bin/python, then .venv/Scripts/python.exe (Windows), then system python3
     let candidates = [
         root.join(".venv").join("bin").join("python"),
         root.join(".venv").join("Scripts").join("python.exe"),
@@ -43,11 +42,13 @@ fn start_backend(app: &tauri::App) -> Result<u16, String> {
 
     let (port, child) = if backend_path.exists() {
         // Production: run the PyInstaller binary
+        // 用 inherit 让后端的 stdout/stderr 直接输出到 Tauri 进程的终端，
+        // 不用 piped（piped 的 pipe 没人读，buffer 满了后端会挂死）。
         let child = Command::new(&backend_path)
             .current_dir(&root)
             .env("JOB_ONE_STOP_TAURI_MODE", "1")
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to start backend: {}", e))?;
         (8000u16, child)
@@ -57,8 +58,8 @@ fn start_backend(app: &tauri::App) -> Result<u16, String> {
         let child = Command::new(&python)
             .current_dir(&root)
             .args(["-m", "uvicorn", "backend.app.main:app", "--host", "127.0.0.1", "--port", "8000"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to start dev backend ({}): {}", python, e))?;
         (8000u16, child)
