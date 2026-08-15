@@ -53,6 +53,7 @@ import {
   jobEditPayload,
   jobSourceLabels,
   rankedJobs,
+  runCountsText,
   runDetailLines,
   runHasNoJobs,
   skippedItems
@@ -179,10 +180,15 @@ function App() {
       return;
     }
     const skipped = skippedItems(run).length;
+    const pending = run.raw_config?.pending;
+    const details = runDetailLines(run);
+    if (skipped) details.push(`另有 ${skipped} 个页面/链接被跳过，可查看最近采集或弹窗详情。`);
     notify(
-      "success",
-      `${label}完成：抓到 ${run.fetched_count} 条，新增 ${run.created_count} / 更新 ${run.updated_count} 个岗位。`,
-      skipped ? [`另有 ${skipped} 个页面/链接被跳过，可查看最近采集或弹窗详情。`] : undefined
+      pending ? "info" : "success",
+      pending
+        ? `${label}完成：抓到 ${run.fetched_count} 条，${pending} 条待筛。去「聊天」里的采集线索勾选入库。`
+        : `${label}完成：抓到 ${run.fetched_count} 条，没有新岗位待筛（已在池的 ${run.updated_count} 条已刷新）。`,
+      details.length ? details : undefined
     );
   }
 
@@ -828,7 +834,7 @@ function App() {
           <strong>{latestRun?.status ?? "未运行"}</strong>
           <small>
             {latestRun
-              ? `${latestRun.fetched_count} 抓取 / ${latestRun.created_count} 新增 / ${latestRun.updated_count} 更新${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
+              ? `${runCountsText(latestRun)}${latestSkipped ? ` / ${latestSkipped} 跳过` : ""}`
               : "等待首次采集"}
           </small>
         </div>
@@ -1167,7 +1173,8 @@ function App() {
                 <p>
                   本次：识别链接 <b>{wechatResult.raw_config?.input_links ?? "-"}</b>，
                   成功 <b>{wechatResult.raw_config?.urls_ok ?? "-"}</b> 篇，
-                  新增 <b>{wechatResult.created_count}</b> / 更新 <b>{wechatResult.updated_count}</b> 个岗位。
+                  待筛 <b>{wechatResult.raw_config?.pending ?? 0}</b> 个（去「聊天」勾选入库）
+                  {!!wechatResult.updated_count && <> / 已在池刷新 <b>{wechatResult.updated_count}</b> 个</>}。
                 </p>
                 {!!wechatResult.raw_config?.skipped?.length && (
                   <details>

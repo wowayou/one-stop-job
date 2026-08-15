@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime
 from pathlib import Path
 
-from sqlmodel import Session, select
+from sqlmodel import Session
 
 from ..config import get_settings
-from ..models import Job, utc_now
+from ..models import utc_now
 from .board_sla import BoardCompanyIndex, format_digest, parse_board_actions, parse_board_companies, split_due
 from .context_repository import ContextRepository
 from .followup import find_stale_jobs
@@ -22,60 +22,31 @@ from .followup import find_stale_jobs
 logger = logging.getLogger(__name__)
 
 
-def _naive_utc(value: datetime | None) -> datetime | None:
-    if value is None:
-        return None
-    if value.tzinfo is not None:
-        return value.astimezone(timezone.utc).replace(tzinfo=None)
-    return value
+def pending_candidate_rows(session: Session) -> list[dict]:
+    """待你初筛的采集候选 → 清单行（按匹配分降序）。
 
+    采集不再直接落盘（见 `collect_ops`），所以「今天有什么新岗位」的事实源不再是 Job 表，
+    而是采集线索里 `status=pending` 的候选。分数是采集时就算好的（`attach_candidate_scores`，
+    与岗位池 FitScore 同一个 `scoring.score_job`），这里只读，不重算、不落库。
 
-def score_new_jobs(session: Session, *, hours: int = 26) -> list[dict]:
-    """近 hours 小时新入库、仍为 new 状态的岗位，**全部**按分数降序返回（不截断）。
-
-    只读展示，不改岗位状态。26 小时窗口略大于 24，避免每日采集时刻的小幅漂移漏掉岗位。
-
-    评分复用既有最新 FitScore，只给**尚无评分**的岗位调用 `score_job_into_db`：
-    该函数每次调用都追加一行（历史流水语义，所有消费端只读 `latest_score_map`），
-    若每次生成摘要都重评一遍，`fit_scores` 会随每次请求线性膨胀。
+    不限「今天」：昨天没筛完的照样该出现在今天的清单里——它是待办，不是流水。
     """
-    from .jobs import latest_score_map
-    from .queries import get_profile, score_job_into_db
+    from .chat_ingest import recent_collect_candidates
 
-    cutoff = _naive_utc(utc_now()) - timedelta(hours=hours)
-    jobs = session.exec(select(Job).where(Job.status == "new").order_by(Job.created_at.desc()).limit(300)).all()
-    fresh = [job for job in jobs if (_naive_utc(job.created_at) or cutoff) >= cutoff]
-    if not fresh:
-        return []
-    existing = latest_score_map(session, [job.id for job in fresh if job.id is not None])
-    profile = get_profile(session)
-    scored: list[dict] = []
-    for job in fresh:
-        known = existing.get(job.id or 0)
-        if known is not None:
-            total = float(known.total)
-        else:
-            try:
-                total = float(score_job_into_db(session, job, profile).total)
-            except Exception:  # noqa: BLE001 - 单岗位评分失败不影响摘要
-                total = 0.0
-        scored.append(
-            {
-                "title": job.title,
-                "company_name": job.company_name,
-                "salary": job.salary_text,
-                "area": " · ".join(filter(None, [job.city, job.area])),
-                "score": round(total, 1),
-                "url": job.url,
-            }
-        )
-    scored.sort(key=lambda item: item["score"], reverse=True)
-    return scored
-
-
-def collect_new_jobs(session: Session, *, hours: int = 26, top_n: int = 8) -> list[dict]:
-    """不与看板对账的新岗位前 top_n（保留给不做对账的调用方与测试）。"""
-    return score_new_jobs(session, hours=hours)[:top_n]
+    rows = [
+        {
+            "title": str(item.get("title") or "未命名岗位"),
+            "company_name": str(item.get("company_name") or "未知公司"),
+            "salary": item.get("salary_text"),
+            "area": " · ".join(filter(None, [item.get("city"), item.get("area")])),
+            "score": item.get("score"),
+            "url": item.get("url"),
+        }
+        for item in recent_collect_candidates(session)
+        if str(item.get("status") or "pending") == "pending"
+    ]
+    rows.sort(key=lambda row: row["score"] if row["score"] is not None else -1, reverse=True)
+    return rows
 
 
 def board_company_index(content: str) -> BoardCompanyIndex | None:
@@ -116,28 +87,56 @@ def reconcile_new_jobs(
     return kept[:top_n], filtered_closed
 
 
-def format_new_jobs(new_jobs: list[dict], filtered_closed: int = 0) -> str:
-    """新岗位段文本；无岗位且无过滤时返回空串（不在摘要里占位）。"""
+def format_new_jobs(new_jobs: list[dict], filtered_closed: int = 0, total: int | None = None) -> str:
+    """待筛岗位段文本；无岗位且无过滤时返回空串（不在摘要里占位）。
+
+    这些岗位**还没入库**：采集只把新岗位挂成候选，勾选后才写 Job 表（见 `collect_ops`）。
+    所以段尾必须给出去哪儿处理，否则手机上读到一串岗位却不知道下一步做什么。
+    `total` 是截断前的待筛总数，比列出来的多时补一句，免得以为只有这几条。
+    """
     if not new_jobs and not filtered_closed:
         return ""
-    lines = ["", "🆕 新入库岗位（评分前列）"]
+    lines = ["", "🆕 待筛岗位（评分前列，未入库）"]
     for item in new_jobs:
         parts = [item["title"], item["company_name"], item.get("salary") or "薪资未知"]
         if item.get("area"):
             parts.append(item["area"])
         marker = "｜看板已有" if item.get("board_state") == "active" else ""
-        lines.append(f"· {' - '.join(parts)}（{item['score']} 分{marker}）")
+        score = item.get("score")
+        score_text = f"{score} 分" if score is not None else "未评分"
+        lines.append(f"· {' - '.join(parts)}（{score_text}{marker}）")
         if item.get("url"):
             lines.append(f"  {item['url']}")
     if filtered_closed:
         lines.append(f"（已过滤 {filtered_closed} 条已收口公司的岗位）")
+    if total is not None and total > len(new_jobs):
+        lines.append(f"（共 {total} 条待筛）")
+    if new_jobs:
+        lines.append("在 Web「聊天」的采集线索里勾选入库；不勾的不会进岗位池。")
     return "\n".join(lines)
+
+
+def build_new_jobs_text(session: Session, *, top_n: int = 8) -> str:
+    """只取「待筛岗位」段（手动 `/collect` 补采后的回执用），无待筛项时返回空串。
+
+    看板读不出来就不做对账：多显示几条已收口公司，好过整条补采回执失败——与
+    `build_daily_digest` 里对账解析失败的降级口径一致。
+    """
+    index: BoardCompanyIndex | None = None
+    try:
+        document = ContextRepository(get_settings().context_repo_path).read_document("board")
+        index = board_company_index(document.content)
+    except Exception:  # noqa: BLE001 - 看板不可读只降级为不对账，不影响补采回执本身
+        logger.warning("补采回执：看板不可读，本次不过滤待筛岗位", exc_info=True)
+    rows = pending_candidate_rows(session)
+    kept, filtered_closed = reconcile_new_jobs(rows, index, top_n=top_n)
+    return format_new_jobs(kept, filtered_closed, total=len(rows) - filtered_closed)
 
 
 def build_daily_digest(session: Session, today: date, *, include_new_jobs: bool = True) -> dict:
     """组装日清单。看板不可读时抛 ContextRepositoryError，由调用方决定报错方式。
 
-    新岗位段与看板对账（只读）：已结束/归档列的公司剔除并计入 `filtered_closed`，
+    待筛岗位段与看板对账（只读）：已结束/归档列的公司剔除并计入 `filtered_closed`，
     活跃列的公司保留并标注「看板已有」。
     """
     settings = get_settings()
@@ -147,12 +146,13 @@ def build_daily_digest(session: Session, today: date, *, include_new_jobs: bool 
     stale = find_stale_jobs(session, now=utc_now(), stale_days=settings.followup_stale_days)
     new_jobs: list[dict] = []
     filtered_closed = 0
+    pending_total = 0
     if include_new_jobs:
-        new_jobs, filtered_closed = reconcile_new_jobs(
-            score_new_jobs(session), board_company_index(document.content)
-        )
+        rows = pending_candidate_rows(session)
+        new_jobs, filtered_closed = reconcile_new_jobs(rows, board_company_index(document.content))
+        pending_total = len(rows) - filtered_closed
     text = format_digest(sections, stale, today)
-    new_jobs_text = format_new_jobs(new_jobs, filtered_closed)
+    new_jobs_text = format_new_jobs(new_jobs, filtered_closed, total=pending_total)
     if new_jobs_text:
         text = f"{text}\n{new_jobs_text}"
     return {
@@ -162,6 +162,7 @@ def build_daily_digest(session: Session, today: date, *, include_new_jobs: bool 
         "stale_jobs": stale,
         "new_jobs": new_jobs,
         "filtered_closed": filtered_closed,
+        "pending_total": pending_total,
         "digest_text": text,
     }
 
@@ -176,12 +177,18 @@ def should_send_now(now: datetime, last_sent_day: str | None, hour: int, minute:
     return now >= fire_at and last_sent_day != now.date().isoformat()
 
 
+def digest_state_path(data_dir: Path) -> Path:
+    """推送状态文件路径。日清单循环与手动补采共用同一份状态，文件名不许在两处各写一遍。"""
+    return data_dir / "daily_digest_state.json"
+
+
 def read_state(state_path: Path) -> dict:
     """读推送状态文件；缺失/损坏一律按空状态处理（宁可多发一次，也不要因为状态坏了永远不发）。
 
-    键：`last_sent`（最近一次**确认送达**的日期）、`last_collected`（最近一次晨间采集
-    的日期）、`collect_note`（当日采集失败的一行附注）。两个日期必须分开记——发送失败
-    要按周期重试，而定时采集的频率上限是每日一次（CLAUDE.md §3.3），不能跟着重试。
+    键：`last_sent`（最近一次**确认送达**的日期）、`last_collected`（最近一次采集成功/
+    尝试的日期，含机主手动 `/collect` 补采）、`collect_note`（当日采集失败的一行附注）。
+    两个日期必须分开记——发送失败要按周期重试，而定时采集的频率上限是每日一次
+    （CLAUDE.md §3.3），不能跟着重试。
     """
     try:
         state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -205,14 +212,23 @@ def last_collected_note(state: dict, day: str) -> str:
     return note if isinstance(note, str) else ""
 
 
+def mark_collect_success(data_dir: Path, day: str) -> None:
+    """记下「今天已经成功采过一次」（机主手动 `/collect` 补采成功后调用）。
+
+    两件事必须一起做：
+    - 清掉 `collect_note`——日清单发送失败会在下个周期重发，带着一条已经不成立的
+      「今日晨间采集未成功」会误导；
+    - 写 `last_collected`——今天已经采到了，定时那次不必再跑一遍（频率上限每日一次，
+      见 CLAUDE.md §3.3）。补采失败时**不写**，定时那次照旧还有机会。
+    """
+    write_state(digest_state_path(data_dir), last_collected=day, collect_note="")
+
+
 _COLLECT_NOTE_MAX = 120
 
 
-def format_collect_failure(reason: object) -> str:
-    """把晨间采集失败压成一行**手机上能读**的附注；原因为空时返回空串（不在摘要里占位）。
-
-    为什么要进推送正文：`run_source` 采集失败只把 SourceRun 置 `failed` 后返回，**不抛异常**，
-    于是「新岗位」段静默为空——本人看到的是「今天没有合适岗位」，而不是「今天根本没采到」。
+def collect_failure_headline(reason: object) -> str:
+    """把采集失败原因压成一行**手机上能读**的抬头；原因为空时返回空串。
 
     为什么要砍掉结构化 dump：多关键词采集器失败时会把每个关键词的 dict repr 全塞进 error
     （几 KB，还夹着 cmd.exe 的乱码），照抄前 160 字符等于把噪音推到手机上。只留 `[{` 之前的
@@ -224,4 +240,19 @@ def format_collect_failure(reason: object) -> str:
     headline = text.split("[{", 1)[0].strip(" :：,，") or text[:_COLLECT_NOTE_MAX]
     if len(headline) > _COLLECT_NOTE_MAX:
         headline = f"{headline[:_COLLECT_NOTE_MAX]}…"
-    return f"⚠️ 今日晨间采集未成功：{headline}（详情见 Web 采集面板；下面的岗位可能不是最新的）"
+    return headline
+
+
+def format_collect_failure(reason: object) -> str:
+    """把晨间采集失败压成日清单正文里的一行附注；原因为空时返回空串（不在摘要里占位）。
+
+    为什么要进推送正文：`run_source` 采集失败只把 SourceRun 置 `failed` 后返回，**不抛异常**，
+    于是「新岗位」段静默为空——本人看到的是「今天没有合适岗位」，而不是「今天根本没采到」。
+
+    为什么带上 `/collect`：定时采集失败不自动重跑（红线 §3.3），此前手机上读到这条附注也
+    无从补救，只能等回到电脑前开 Web。补采入口写在失败现场，才是一条能立刻行动的通知。
+    """
+    headline = collect_failure_headline(reason)
+    if not headline:
+        return ""
+    return f"⚠️ 今日晨间采集未成功：{headline}（下面的岗位可能不是最新的）；修好后发送 /collect 可重跑一次，详情见 Web 采集面板"

@@ -56,6 +56,7 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
         "existing_job_id": 7,
         "duplicate_in_thread_id": 3,
         "advice": {"priority": "B", "direction": "邻近可接受", "next_action": "继续沟通"},
+        "score": 78.5,
     }
     stripped = strip_ui_only_fields(candidate)
     assert stripped == {
@@ -68,7 +69,7 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
     assert "existing_job_id" in candidate
     assert "duplicate_in_thread_id" in candidate
     assert "advice" in candidate
-    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice"}
+    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice", "score"}
 
 
 def _isolated_data_dir(monkeypatch, tmp_path):
@@ -1042,6 +1043,174 @@ def test_poll_loop_start_command_sends_usage_and_skips_ingest(monkeypatch, tmp_p
 
     with db.Session(db.engine) as session:
         assert session.exec(select(ChatThread)).first() is None
+
+
+def _fail_on_ingest(message: str):
+    """把 `_persist_ingest_to_chat` 换成断言：命令消息不是材料，不该走 ingest 落盘。"""
+
+    def _fail(*args, **kwargs):
+        raise AssertionError(message)
+
+    return _fail
+
+
+def test_parse_command_only_matches_bare_slash_commands():
+    """光杆命令才算命令：`/ask 这个值得聊吗` 必须仍走追问，否则问题会被当成命令吃掉。"""
+    assert telegram.parse_command("/collect") == "collect"
+    assert telegram.parse_command("  /Collect@my_bot ") == "collect"
+    assert telegram.parse_command("/start") == "start"
+    assert telegram.parse_command("/ask 这个岗位值得聊吗") is None
+    assert telegram.parse_command("collect") is None
+    assert telegram.parse_command("") is None
+
+
+def test_summarize_collect_run_reports_counts_and_trims_failure_dump():
+    ok = telegram.summarize_collect_run(
+        {
+            "source": "BOSS直聘",
+            "status": "success",
+            "fetched_count": 89,
+            "raw_config": {"area_filter": {"enabled": True, "filtered": 19}, "known_refreshed": 58, "pending": 12},
+        }
+    )
+    # 初筛口径：抓了多少、挡掉多少、刷新多少、待筛多少，外加「去哪儿处理」。
+    assert "BOSS直聘" in ok and "区域过滤 19 条" in ok and "已在岗位池 58 条" in ok and "待筛 12 条" in ok
+    assert "勾选入库" in ok
+
+    nothing_new = telegram.summarize_collect_run(
+        {"source": "BOSS直聘", "status": "success", "fetched_count": 3, "raw_config": {"pending": 0}}
+    )
+    assert "待筛 0 条" in nothing_new and "勾选入库" not in nothing_new  # 没有待办就别催
+
+    failed = telegram.summarize_collect_run(
+        {
+            "source": "BOSS直聘",
+            "status": "failed",
+            "error": "全部关键词采集失败: [{'command': 'boss search 独立站运营', 'reason': 'timed out'}]",
+        }
+    )
+    assert "全部关键词采集失败" in failed
+    assert "{" not in failed  # 几 KB 的 dict repr 不许推到手机上
+    assert "原因未知" in telegram.summarize_collect_run({"status": "failed"})
+
+
+def test_poll_loop_collect_command_reruns_collection_and_reports(monkeypatch, tmp_path):
+    """/collect：晨间采集失败后在手机上手动补采一次，并把补上的新岗位一起回执。
+
+    这是本人显式触发的人工采集（红线 §3.3 允许，等价于 Web 上那颗按钮），不是自动重试；
+    也绝不能顺手走 ingest 落盘——命令不是材料。
+    """
+    import json
+    from datetime import date
+
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-collect.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [[{"update_id": 40, "message": {"chat": {"id": 42}, "text": "/collect"}}]]
+    calls = {"sent": [], "sources": []}
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    def fake_run_source(session, source_key):
+        calls["sources"].append(source_key)
+        return {
+            "source": "BOSS直聘",
+            "status": "success",
+            "fetched_count": 12,
+            "created_count": 0,
+            "updated_count": 9,
+            "raw_config": {"area_filter": {"enabled": True, "filtered": 2}, "known_refreshed": 9, "pending": 1},
+        }
+
+    from dataclasses import replace
+
+    from backend.app.services import collect_ops, daily_digest
+    from backend.app.services import telegram as telegram_svc
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: calls["sent"].append(text))
+    monkeypatch.setattr(
+        telegram_svc, "send_long_message", lambda token, chat_id, text: calls["sent"].append(text) or [7]
+    )
+    monkeypatch.setattr(collect_ops, "run_source", fake_run_source)
+    monkeypatch.setattr(daily_digest, "build_new_jobs_text", lambda session: "\n🆕 待筛岗位（评分前列，未入库）\n· 独立站运营 - 某公司")
+    monkeypatch.setattr(main, "_persist_ingest_to_chat", _fail_on_ingest("/collect 不应触发 ingest 落盘"))
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+
+    assert calls["sources"] == ["boss"]  # 跑的就是晨间那次的来源
+    assert len(calls["sent"]) == 2
+    assert "开始" in calls["sent"][0]  # 先回一句「在跑了」，否则手机端只能盲等一两分钟
+    assert "待筛 1 条" in calls["sent"][1] and "待筛岗位" in calls["sent"][1]
+
+    state = json.loads(
+        daily_digest.digest_state_path(main.settings.data_dir).read_text(encoding="utf-8")
+    )
+    assert state["last_collected"] == date.today().isoformat()  # 今天已采到，定时那次不必再跑
+    assert state["collect_note"] == ""  # 补采成功后，失败附注不许留到重发的日清单里
+
+
+def test_poll_loop_collect_command_failure_keeps_scheduled_run(monkeypatch, tmp_path):
+    """补采又失败：回执给出可读原因，但**不写** last_collected——定时那次照旧还有机会。"""
+    _db, main = _fresh_modules(monkeypatch, tmp_path, "telegram-collect-failed.sqlite3")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+
+    batches = [[{"update_id": 41, "message": {"chat": {"id": 42}, "text": "/collect"}}]]
+    calls = {"sent": []}
+
+    def fake_get_updates(token, offset, timeout):
+        if batches:
+            return batches.pop(0)
+        raise KeyboardInterrupt
+
+    def fake_run_source(session, source_key):
+        return {
+            "source": "BOSS直聘",
+            "status": "failed",
+            "error": "全部关键词采集失败: [{'reason': 'Browser Bridge extension not connected'}]",
+        }
+
+    from dataclasses import replace
+
+    from backend.app.services import collect_ops, daily_digest
+    from backend.app.services import telegram as telegram_svc
+
+    monkeypatch.setattr(telegram_svc, "get_updates", fake_get_updates)
+    monkeypatch.setattr(telegram_svc, "send_message", lambda token, chat_id, text: calls["sent"].append(text))
+    monkeypatch.setattr(
+        telegram_svc, "send_long_message", lambda token, chat_id, text: calls["sent"].append(text) or [7]
+    )
+    monkeypatch.setattr(collect_ops, "run_source", fake_run_source)
+    monkeypatch.setattr(main, "_persist_ingest_to_chat", _fail_on_ingest("/collect 不应触发 ingest 落盘"))
+    main.settings = replace(
+        main.settings,
+        config={**main.settings.config, "telegram": {"enabled": True, "allowed_chat_id": 42, "poll_timeout": 1}},
+    )
+
+    async def run_once():
+        try:
+            await main._telegram_poll_loop()
+        except KeyboardInterrupt:
+            pass
+
+    asyncio.run(run_once())
+
+    assert "全部关键词采集失败" in calls["sent"][-1]
+    assert "{" not in calls["sent"][-1]
+    assert not daily_digest.digest_state_path(main.settings.data_dir).exists()
 
 
 def test_poll_loop_persists_chat_not_jobs(monkeypatch, tmp_path):

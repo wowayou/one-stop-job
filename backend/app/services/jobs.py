@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import logging
 from collections import defaultdict
 
 from sqlmodel import Session, select
 
 from ..models import Company, FitScore, InterviewPrep, Job, JobSourceLink, ResearchItem
+
+logger = logging.getLogger(__name__)
 
 
 def latest_score_map(session: Session, job_ids: list[int]) -> dict[int, FitScore]:
@@ -71,6 +74,48 @@ def research_items_map(session: Session, company_ids: list[int]) -> dict[int, li
     for item in items:
         grouped[item.company_id].append(item)
     return dict(grouped)
+
+
+def attach_candidate_scores(session: Session, candidates: list[dict]) -> list[dict]:
+    """给候选算匹配分（写进纯 UI 字段 `score`）并按分降序返回。
+
+    采集初筛用：一次采回十几条，没有分数就只能一行行读标题。分数口径与岗位池里的
+    `FitScore` **完全一致**——同一个 `scoring.score_job` 纯函数，不新写第二套。
+
+    只读：`score_job` 不碰 session；公司/调研只按名字做只读查询，绝不 `get_or_create`
+    （候选还没决定入库，不该先建出公司行）。算不出分的候选 `score=None`，排在最后，
+    绝不因为单条评分异常丢掉整批候选。
+    """
+    # 局部导入：queries → jobs、advice → queries，模块级引用会成环。
+    from .advice import candidate_job
+    from .queries import get_profile
+    from .scoring import score_job
+
+    if not candidates:
+        return []
+    profile = get_profile(session)
+    names = {str(item.get("company_name") or "").strip() for item in candidates}
+    names.discard("")
+    companies = (
+        {company.name: company for company in session.exec(select(Company).where(Company.name.in_(names))).all()}
+        if names
+        else {}
+    )
+    research = research_items_map(session, [company.id for company in companies.values() if company.id is not None])
+    for candidate in candidates:
+        company = companies.get(str(candidate.get("company_name") or "").strip())
+        try:
+            result = score_job(
+                candidate_job(candidate),
+                company,
+                research.get(company.id, []) if company and company.id is not None else [],
+                profile,
+            )
+            candidate["score"] = round(float(result.total), 1)
+        except Exception:  # noqa: BLE001 - 单条评分失败不影响其余候选，排序时沉底
+            logger.warning("候选评分失败：%s", candidate.get("title"), exc_info=True)
+            candidate["score"] = None
+    return sorted(candidates, key=lambda item: item.get("score") if item.get("score") is not None else -1, reverse=True)
 
 
 def job_payload(job: Job, latest: FitScore | None = None, source_links: list[JobSourceLink] | None = None) -> dict:

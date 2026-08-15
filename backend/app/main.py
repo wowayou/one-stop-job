@@ -54,6 +54,9 @@ settings = get_settings()
 FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
 logger = logging.getLogger(__name__)
 
+# 晨间定时采集与 Telegram `/collect` 手动补采跑的是同一个来源；写死两遍迟早漂移。
+_DIGEST_COLLECT_SOURCE = "boss"
+
 
 async def _telegram_poll_loop() -> None:
     """后台长轮询：拉取机主消息 → 抽取候选写入聊天 → 回执给机主本人。
@@ -165,7 +168,11 @@ async def _telegram_poll_loop() -> None:
                     )
                 continue
 
-            if text.strip() == "/start":
+            # 命令只在纯文字消息上生效：一张截图配 `/collect` 这样的 caption 仍是材料，
+            # 当成命令会把那张截图静默丢掉（§7 不静默丢数据）。
+            has_attachment = bool(extracted.photo_file_id or extracted.document_file_id)
+            command = None if has_attachment else telegram.parse_command(text)
+            if command == "start":
                 # 使用说明：不建 ingest 线程，只回一条本机→本人的操作提示（§2 机主回执豁免）。
                 await run_in_threadpool(
                     telegram.send_message,
@@ -175,8 +182,44 @@ async def _telegram_poll_loop() -> None:
                     "识别结果需在 Web 聊天确认后才入库。"
                     "回复某条回执可把补充材料归入同一条线索。"
                     "想直接问我，就用 ? 或 /ask 开头（例：? 这个岗位值得聊吗）；"
-                    "回复某条回执提问时，我会带上那条线索的上下文。",
+                    "回复某条回执提问时，我会带上那条线索的上下文。"
+                    "晨间采集失败时，发送 /collect 可手动重跑一次。",
                 )
+                continue
+
+            if command == "collect":
+                # 手动补采：晨间定时采集失败后手机上唯一的补救手段（此前只能等回到电脑前开 Web）。
+                # 这是**本人显式触发**的一次人工采集，与 Web 上那颗采集按钮等价，红线 §3.3 一直
+                # 允许；不是自动重试——定时那次失败仍然只记日志，绝不自行重跑。
+                from datetime import date
+
+                from .services.collect_ops import run_source
+                from .services.daily_digest import build_new_jobs_text, mark_collect_success
+
+                # 先回一句「开始了」：opencli 多关键词一跑就是一两分钟，其间轮询被占住，
+                # 手机端没有任何反馈会以为消息石沉大海。
+                await run_in_threadpool(
+                    telegram.send_message, token, chat_id, "开始重跑采集，完成后回执（可能要一两分钟）。"
+                )
+                try:
+                    with Session(engine) as session:
+                        run = await run_in_threadpool(run_source, session, _DIGEST_COLLECT_SOURCE)
+                        reply = telegram.summarize_collect_run(run)
+                        if run.get("status") == "success":
+                            await run_in_threadpool(mark_collect_success, settings.data_dir, date.today().isoformat())
+                            # 补采成功就把日清单里空掉的「新岗位」段补上，否则还是得开 Web 才看得到。
+                            new_jobs_text = await run_in_threadpool(build_new_jobs_text, session)
+                            if new_jobs_text:
+                                reply = f"{reply}\n{new_jobs_text}"
+                except HTTPException as exc:
+                    # run_source 对未知/禁用/未配置来源抛 HTTPException，detail 才是人话。
+                    reply = f"采集未启动：{exc.detail}"
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - 补采失败只回一条可读原因，不影响轮询继续
+                    logger.warning("Telegram 手动补采失败", exc_info=True)
+                    reply = f"采集失败：{exc}"
+                await run_in_threadpool(telegram.send_long_message, token, chat_id, reply)
                 continue
 
             image_data_url: str | None = None
@@ -335,7 +378,7 @@ async def _daily_digest_loop() -> None:
 
     # 15 分钟轮询 + 状态文件，而不是长睡到明早：机器在发送时点关机/休眠时，
     # 长睡永远醒不到点；轮询保证开机后一个周期内补发当天清单，且当天只发一次。
-    state_path = settings.data_dir / "daily_digest_state.json"
+    state_path = daily_digest.digest_state_path(settings.data_dir)
     collect_first = bool(digest_cfg.get("collect_first"))
     while True:
         now = datetime.now()
@@ -351,7 +394,7 @@ async def _daily_digest_loop() -> None:
                     from .services.collect_ops import run_source
 
                     with Session(engine) as session:
-                        result = await run_in_threadpool(run_source, session, "boss")
+                        result = await run_in_threadpool(run_source, session, _DIGEST_COLLECT_SOURCE)
                     if isinstance(result, dict) and result.get("status") != "success":
                         # run_source 只把 SourceRun 置 failed 并返回，不抛异常，所以必须查返回值。
                         logger.warning("晨间定时采集失败：%s", result.get("error"))
@@ -437,7 +480,7 @@ app.include_router(scoring.router)
 app.include_router(misc.router)
 
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "scoring", "followup", "ai", "ingest", "telegram", "schedule"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 

@@ -153,6 +153,13 @@ export function CandidateListCard({
                 <span className="candidate-body">
                   <span className="candidate-title-row">
                     <strong>{item.title || "未命名岗位"}</strong>
+                    {item.score != null && (
+                      // 采集初筛候选带匹配分（与岗位池 FitScore 同一套 scoring.score_job）；
+                      // 一次采回十几条时，没有分数只能一行行读标题。ingest 候选没有这个字段。
+                      <span className="candidate-score-badge" title="匹配分（与岗位池同一套评分）">
+                        {item.score} 分
+                      </span>
+                    )}
                     {item.existing_job_id != null && (
                       <span className="candidate-existing-badge" title={`已在岗位池 · #${item.existing_job_id}`}>
                         已在岗位池

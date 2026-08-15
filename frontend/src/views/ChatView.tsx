@@ -29,6 +29,20 @@ import type {
   Job
 } from "../types";
 
+// 线索类型标签（后端 ChatThread.kind）。collect = 采集初筛：采集只把新岗位挂成候选，
+// 勾选后才入库，所以它和手机发来的 ingest 材料要能一眼分开。
+const THREAD_KIND_LABELS: Record<string, { short: string; long: string }> = {
+  job: { short: "岗位", long: "岗位聊天" },
+  ingest: { short: "入库", long: "入库候选" },
+  collect: { short: "采集", long: "采集待筛" },
+};
+
+function threadKindLabel(kind: string, long = false): string {
+  const entry = THREAD_KIND_LABELS[kind];
+  if (!entry) return long ? "通用聊天" : "通用";
+  return long ? entry.long : entry.short;
+}
+
 export function ChatView({
   jobs,
   onOpenJob,
@@ -389,7 +403,7 @@ export function ChatView({
           {threads.map((thread) => (
             <div className="chat-thread-row" key={thread.id}>
               <button type="button" className={thread.id === activeThreadId ? "chat-thread active" : "chat-thread"} onClick={() => setActiveThreadId(thread.id)} disabled={sending}>
-                <span>{thread.kind === "job" ? "岗位" : thread.kind === "ingest" ? "入库" : "通用"}</span>
+                <span>{threadKindLabel(thread.kind)}</span>
                 <strong>{thread.title}</strong>
                 <small>{thread.last_message || "还没有消息"}</small>
               </button>
@@ -448,7 +462,7 @@ export function ChatView({
             <header className="chat-head">
               <div className="chat-head-info">
                 <div className="chat-title-line">
-                  <span className="chat-kind">{activeThread.kind === "job" ? "岗位聊天" : activeThread.kind === "ingest" ? "入库候选" : "通用聊天"}</span>
+                  <span className="chat-kind">{threadKindLabel(activeThread.kind, true)}</span>
                   {renaming ? (
                     <form className="chat-rename" onSubmit={renameThread}>
                       <input autoFocus maxLength={120} value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} aria-label="聊天名称" />

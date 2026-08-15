@@ -250,6 +250,9 @@ export type IngestCandidate = {
   /** 按个人决策规则给出的初步建议（后端 services/advice.py，只对前几个候选生成）；
    * 纯展示字段，提交入库时会被后端剔除。手机端回执里是同一份判断的文本排版。 */
   advice?: CandidateAdvice | null;
+  /** 采集初筛候选的匹配分（后端 services/jobs.attach_candidate_scores，与岗位池 FitScore 同源）；
+   * 候选卡按它降序排列。纯展示字段，提交入库时会被后端剔除（入库后由 commit 端点正式评分）。 */
+  score?: number | null;
 };
 
 /** 候选岗位的初步决策建议：与 Web 决策卡同源（同一条规则+模型链路），只是字段更少。 */
@@ -386,6 +389,23 @@ export type SourceRunReport = {
   jobs?: number;
   input_links?: number;
   skipped?: { url?: string; reason?: string }[];
+  /** 采集初筛的分流计数（后端 collect_ops._triage_records）。采集器路径下 created_count 恒为 0：
+   * 新岗位进 `kind="collect"` 聊天线索当候选，勾选后才入库。 */
+  area_filter?: {
+    enabled: boolean;
+    kept?: number;
+    filtered?: number;
+    unknown_area?: number;
+    samples?: string[];
+  };
+  /** 命中岗位池、只刷新了快照的条数。 */
+  known_refreshed?: number;
+  /** 已在待筛列表或此前被跳过、本次不再重复列出的条数。 */
+  already_pending?: number;
+  /** 本次新挂出的待筛候选数。 */
+  pending?: number;
+  /** 候选落在哪条聊天线索上。 */
+  thread_id?: number | null;
 };
 
 export type SourceRun = {

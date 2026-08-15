@@ -1,9 +1,17 @@
 """采集触发路由专属 helper（Phase R · R2）。
 
 `run_collector` / `run_source` / `run_wechat_collection` / `latest_run_for_source` /
-`source_status_payload`：原本堆在 main.py，只被 `routers/collect.py` 使用。这些函数会
-调用 `upsert_job_records`——这是**用户主动触发的采集入库**（红线 §2 允许的路径，等价于
-BOSS/beBee/公众号采集器一直以来的行为），不是 ingest 的自动入库；因此不得并入
+`source_status_payload`：原本堆在 main.py，只被 `routers/collect.py` 使用。
+
+**采集不再直接落盘**（人工初筛）：一次采集回来的记录分三路——
+1. 区域白名单挡掉的（`collect_filter`）：只记数进 `SourceRun.raw_config`，不静默丢（§7）；
+2. 已在岗位池的：照旧 `upsert_job_records` 刷新快照（薪资/在招状态/last_seen_at）。这是
+   你早就筛过的岗位，刷新不等于新增噪音，`created` 恒为 0；
+3. 全新的：进 `kind="collect"` 聊天线索当候选，等你在 Web 勾选「入库选中」才 upsert
+   （复用 ingest 那套候选卡与 commit 端点）。
+
+因此本模块仍会 import `upsert_job_records`——只用于第 2 路的刷新，属于红线 §2 允许的
+用户主动触发路径；但**新岗位不再由采集直接建 Job**。也因此不得并入
 `services/chat_ingest.py`（那个模块的绊线测试禁止引用 importer/upsert）。
 
 纯逻辑、无 FastAPI app 依赖；只碰 session / models / services / config。
@@ -16,11 +24,15 @@ from datetime import datetime, timezone
 from fastapi import HTTPException
 from sqlmodel import Session, select
 
+from ..candidates import CANDIDATE_PENDING, Candidate
 from ..config import get_settings
 from ..models import SourceRun
 from .ai import is_ai_available
+from .chat_ingest import _candidate_dedupe_key, persist_collect_candidates, recent_collect_candidate_keys
+from .collect_filter import apply_area_filter
 from .collectors import WeChatPasteCollector
-from .importer import upsert_job_records
+from .importer import split_known_records, upsert_job_records
+from .jobs import attach_candidate_scores
 from .sources import build_source_collector, get_source_definition, source_health, source_public_config
 
 
@@ -47,26 +59,103 @@ def source_status_payload(session: Session, source) -> dict:
     }
 
 
+def _dedupe_fresh(records: list[dict], seen: dict[str, str]) -> tuple[list[dict], int]:
+    """去掉「已经在待筛列表里 / 已被你跳过」的记录，同时抹平本批次内部的重复。
+
+    `seen` 是 `recent_collect_candidate_keys` 的结果（判重 key → 候选状态）。
+    返回 (保留的记录, 挡掉的条数)。没有判重 key 的记录一律保留——宁可多看一条，不漏。
+    """
+    kept: list[dict] = []
+    batch_keys: set[str] = set()
+    dropped = 0
+    for record in records:
+        key = _candidate_dedupe_key(record)
+        if key and (key in seen or key in batch_keys):
+            dropped += 1
+            continue
+        if key:
+            batch_keys.add(key)
+        kept.append(record)
+    return kept, dropped
+
+
+def _triage_records(session: Session, source_label: str, records: list[dict]) -> dict:
+    """采集记录 → (刷新已知岗位 + 全新岗位进候选)，返回汇总报告。
+
+    `run_collector` 与 `run_wechat_collection` 共用；报告直接并进 `SourceRun.raw_config`，
+    也是手机回执的数据来源（见 `telegram.summarize_collect_run`）。
+    """
+    settings = get_settings()
+    kept, area_report = apply_area_filter(records, settings.area_filter_config)
+
+    known, fresh = split_known_records(session, kept)
+    refresh = upsert_job_records(session, known) if known else {"created": 0, "updated": 0}
+
+    fresh, already_pending = _dedupe_fresh(fresh, recent_collect_candidate_keys(session))
+    candidates: list[Candidate] = [{**record, "status": CANDIDATE_PENDING, "job_id": None} for record in fresh]
+    candidates = attach_candidate_scores(session, candidates)
+
+    report = {
+        "area_filter": area_report,
+        "known_refreshed": len(known),
+        "already_pending": already_pending,
+        "pending": len(candidates),
+    }
+    persisted = persist_collect_candidates(
+        session,
+        source_label,
+        candidates,
+        f"{collect_run_summary(len(records), report)}请在下方勾选要入库的项；未勾选的不会进岗位池。",
+    )
+    thread = persisted.get("thread")
+    if isinstance(thread, dict):
+        report["thread_id"] = thread.get("id")
+    report["refresh"] = refresh
+    return report
+
+
+def collect_run_summary(fetched: int, report: dict) -> str:
+    """一次采集的计数摘要（一句话，以句号结尾）。
+
+    采集线索里的正文与手机回执共用同一份措辞——两处各写一遍，改了一处另一处必然漂移。
+    调用方各自在后面接自己的行动指引（Web 说「在下方勾选」，手机说「打开 Web 勾选」）。
+    """
+    area = report.get("area_filter") if isinstance(report.get("area_filter"), dict) else {}
+    parts = [f"本次采集 {fetched} 条"]
+    if area.get("enabled") and area.get("filtered"):
+        parts.append(f"区域过滤 {area['filtered']} 条")
+    if report.get("known_refreshed"):
+        parts.append(f"已在岗位池 {report['known_refreshed']} 条（已刷新）")
+    if report.get("already_pending"):
+        parts.append(f"已在待筛/已跳过 {report['already_pending']} 条")
+    parts.append(f"待筛 {int(report.get('pending') or 0)} 条")
+    return "，".join(parts) + "。"
+
+
 def run_collector(session: Session, source_label: str, collector, raw_config: dict | None = None) -> dict:
-    """公用:跑一个配置驱动的采集器并记录一次 SourceRun(boss/beBee 等共用)。"""
+    """公用:跑一个配置驱动的采集器并记录一次 SourceRun(boss/beBee 等共用)。
+
+    `created_count` 在初筛模式下恒为 0——新岗位进候选，不由采集直接建 Job；
+    `updated_count` 是已在池中岗位的刷新条数。
+    """
     run = SourceRun(source=source_label, raw_config=raw_config or {})
     session.add(run)
     session.commit()
     session.refresh(run)
+    triage: dict = {}
     try:
         records = collector.collect()
-        result = upsert_job_records(session, records)
+        triage = _triage_records(session, source_label, records)
         run.status = "success"
         run.fetched_count = len(records)
-        run.created_count = result["created"]
-        run.updated_count = result["updated"]
+        run.created_count = triage["refresh"]["created"]
+        run.updated_count = triage["refresh"]["updated"]
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
         run.error = str(exc)
     finally:
         report = getattr(collector, "report", None)
-        if report:
-            run.raw_config = {**(raw_config or {}), **report}
+        run.raw_config = {**(raw_config or {}), **(report or {}), **{k: v for k, v in triage.items() if k != "refresh"}}
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)
         session.commit()
@@ -94,7 +183,10 @@ def run_source(session: Session, source_key: str) -> dict:
 
 
 def run_wechat_collection(session: Session, links: list[str], bodies: dict[str, str], source_label: str) -> dict:
-    """公用：给定 mp.weixin 链接（+可选手动正文），跑采集器并记录一次 SourceRun。"""
+    """公用：给定 mp.weixin 链接（+可选手动正文），跑采集器并记录一次 SourceRun。
+
+    与 `run_collector` 同一套初筛口径：新岗位进候选等勾选，已在池中的照旧刷新。
+    """
     settings = get_settings()
     wechat_cfg = settings.wechat_config
     ai_cfg = settings.config.get("ai", {})
@@ -107,6 +199,7 @@ def run_wechat_collection(session: Session, links: list[str], bodies: dict[str, 
     session.refresh(run)
 
     collector: WeChatPasteCollector | None = None
+    triage: dict = {}
     try:
         collector = WeChatPasteCollector(
             links=links,
@@ -118,17 +211,20 @@ def run_wechat_collection(session: Session, links: list[str], bodies: dict[str, 
             source=source_label,
         )
         records = collector.collect()
-        result = upsert_job_records(session, records)
+        triage = _triage_records(session, source_label, records)
         run.status = "success"
         run.fetched_count = len(records)
-        run.created_count = result["created"]
-        run.updated_count = result["updated"]
+        run.created_count = triage["refresh"]["created"]
+        run.updated_count = triage["refresh"]["updated"]
     except Exception as exc:  # noqa: BLE001
         run.status = "failed"
         run.error = str(exc)
     finally:
-        if collector is not None:
-            run.raw_config = {"input_links": len(links), **collector.report}
+        run.raw_config = {
+            "input_links": len(links),
+            **(collector.report if collector is not None else {}),
+            **{k: v for k, v in triage.items() if k != "refresh"},
+        }
         run.finished_at = datetime.now(timezone.utc)
         session.add(run)
         session.commit()

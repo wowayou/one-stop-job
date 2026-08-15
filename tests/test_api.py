@@ -21,6 +21,20 @@ def _fresh_app(monkeypatch, tmp_path, name: str):
     db = importlib.reload(db)
     main = importlib.reload(main)
     db.init_db()
+
+    # 区域白名单是机主的个人配置（青岛市北/市南/崂山），而这里的样例岗位都在「示例市」。
+    # 不中和的话，所有走采集器的流程用例都会随本机 config.yaml 一起翻红。过滤本身由
+    # tests/test_collect_triage.py 用自带配置覆盖。
+    from backend.app.services import collect_ops
+
+    monkeypatch.setattr(
+        collect_ops,
+        "apply_area_filter",
+        lambda records, cfg: (
+            list(records),
+            {"enabled": False, "kept": len(records), "filtered": 0, "unknown_area": 0, "samples": []},
+        ),
+    )
     return main.app
 
 
@@ -1678,7 +1692,26 @@ def test_wechat_collect_flow(monkeypatch, tmp_path):
             assert resp.status_code == 200, resp.text
             run = resp.json()
             assert run["status"] == "success", run
-            assert run["created_count"] >= 2  # 一篇文章拆出多个岗位
+            # 采集不落盘：一篇文章拆出的多个岗位先进候选，岗位池此刻还是空的。
+            assert run["created_count"] == 0
+            assert run["raw_config"]["pending"] >= 2
+            assert (await client.get("/api/jobs", params={"source": "公众号"})).json() == []
+
+            thread_id = run["raw_config"]["thread_id"]
+            detail = (await client.get(f"/api/chat/threads/{thread_id}")).json()
+            assert detail["thread"]["kind"] == "collect"
+            message = next(item for item in detail["messages"] if item["role"] == "assistant")
+            candidates = message["metadata_json"]["candidates"]
+            assert all(item["status"] == "pending" for item in candidates)
+            assert all(item["score"] is not None for item in candidates)  # 排序/清单要用
+
+            # 勾选入库走的是和 ingest 候选完全相同的端点。
+            commit = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": message["id"], "indexes": list(range(len(candidates)))},
+            )
+            assert commit.status_code == 200, commit.text
+            assert commit.json()["created"] == len(candidates)
 
             jobs = (await client.get("/api/jobs", params={"source": "公众号"})).json()
             assert len(jobs) >= 2

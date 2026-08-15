@@ -33,6 +33,10 @@
 - `duplicate_in_thread_id`：**纯 UI 字段**。该候选与最近 ~50 个 ingest 线程里已出现过的
   某候选重复时，`services/ingest.find_duplicate_thread` 会打上匹配到的线程 id，供前端
   标「重复候选」徽标并默认不勾选；提交入库前同样必须剔除（仅用于展示）。
+- `score`：**纯 UI 字段**。采集初筛候选的匹配分（`services/jobs.attach_candidate_scores`，
+  与岗位池 `FitScore` 同一个 `scoring.score_job`），用于候选卡排序与手机清单展示；
+  Job 表没有这一列（分数是 `fit_scores` 的一行流水，入库后由 commit 端点正式评分），
+  提交前必须剔除。
 
 `CANDIDATE_UI_ONLY_FIELDS` / `strip_ui_only_fields` 是这些纯 UI 字段的集中剔除点。
 注意：写入 Job 表前实际还需要额外剔除 `status`/`job_id`——它们是 candidate 自身的生命周期
@@ -78,11 +82,12 @@ class Candidate(TypedDict, total=False):
     existing_job_id: int | None
     duplicate_in_thread_id: int | None
     advice: dict
+    score: float | None
 
 
 # 纯 UI 字段：candidate dict 里只用于前端展示、从不承载业务语义的字段。
 # 不包含 status/job_id——那两个是候选自身的状态机记账，是否剔除由调用方按场景决定。
-CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id", "advice")
+CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id", "advice", "score")
 
 
 def strip_ui_only_fields(candidate: dict) -> dict:

@@ -22,6 +22,10 @@ _API_BASE = "https://api.telegram.org"
 # 「这是一个提问」的显式前缀：`?` / `？` / `/ask`（可带 `@botname`）。见 parse_question。
 _QUESTION_PREFIX = re.compile(r"^(?:/ask(?:@\S+)?|[?？])\s*", re.IGNORECASE)
 
+# 「整条消息就是一个斜杠命令」：`/start` / `/collect`（Telegram 在群里会补 `@botname`）。
+# 必须要求命令后没有正文，否则 `/ask 这个岗位怎么样` 会被当成命令吃掉，追问就没了。见 parse_command。
+_COMMAND = re.compile(r"^/([A-Za-z_]+)(?:@\S+)?$")
+
 # 「以文件发送」的图片：只认这三种 mime（与 schemas.IngestRequest.image_data_url 的 data URL 前缀一致）。
 _SUPPORTED_DOCUMENT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 # 6MB 对齐 IngestRequest.image_data_url 的 max_length=6_000_000（近似值，够用即可，不追求字节级精确）。
@@ -198,6 +202,17 @@ def extract_message(update: dict) -> ExtractedMessage:
     )
 
 
+def parse_command(text: str) -> str | None:
+    """整条消息就是一个斜杠命令时返回小写命令名（不含 `/`），否则 None。
+
+    只认「光杆命令」：`/collect`、`/start`、`/collect@mybot`。带正文的一律不是命令——
+    `/ask 这个值得聊吗` 仍归 `parse_question`，`/xxx` 之外的普通文本仍归材料处理。
+    调用方只处理自己认识的命令名，不认识的原样落回既有分支（如光杆 `/ask` 仍按材料走）。
+    """
+    match = _COMMAND.match((text or "").strip())
+    return match.group(1).lower() if match else None
+
+
 def parse_question(text: str) -> str | None:
     """区分「向 AI 追问」和「补充材料」：只认显式前缀，返回去掉前缀后的问题，否则 None。
 
@@ -269,6 +284,36 @@ def summarize_analysis(analysis: dict, *, ai_used: bool, anchor: dict | None = N
     if not ai_used:
         lines.append("（规则模式：AI 未启用或本次调用不可用）")
     return "\n".join(lines)
+
+
+def summarize_collect_run(run: dict) -> str:
+    """把一次手动补采（`/collect`）的 SourceRun 结果压成一条手机可读的回执。
+
+    成功时报的是**初筛口径**：抓取多少、区域过滤掉多少、已在池中刷新多少、待筛多少
+    （计数措辞与采集线索里那条消息共用 `collect_ops.collect_run_summary`）。新岗位不再由
+    采集直接入库，所以有待筛项时必须给出「去哪儿处理」，否则手机上看完不知道下一步。
+
+    失败原因复用日清单那套抬头压缩：多关键词采集器会把每个关键词的 dict repr 塞进 error，
+    原样发到手机上就是几 KB 噪音。逐条原因留在 backend.log 与 Web 采集面板。
+
+    这是本机→本人的状态通知（§2 机主回执豁免），不对外发送任何消息。
+    """
+    # 局部导入：collect_ops 会拉起采集器/importer 一整条链路，传输层没必要在模块级依赖它。
+    from .collect_ops import collect_run_summary
+    from .daily_digest import collect_failure_headline
+
+    # 来源名直接贴在「采集」前面（「BOSS直聘采集完成…」）；取不到就退成「采集完成…」，
+    # 中间不留空格，免得缺来源时读成「采集 采集失败」。
+    label = str(run.get("source") or "").strip()
+    if run.get("status") != "success":
+        return f"{label}采集失败：{collect_failure_headline(run.get('error')) or '原因未知'}。详情见 Web 采集面板。"
+
+    report = run.get("raw_config")
+    report = report if isinstance(report, dict) else {}
+    text = f"{label}采集完成。{collect_run_summary(int(run.get('fetched_count') or 0), report)}"
+    if int(report.get("pending") or 0):
+        text += "打开 Web「聊天」里的采集线索勾选入库；不勾的不会进岗位池。"
+    return text
 
 
 def classify_document_image(mime_type: str | None, file_size: int | None) -> str | None:

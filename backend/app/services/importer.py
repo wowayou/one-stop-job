@@ -85,6 +85,37 @@ def _prepare_import_lookup(session: Session, records: list[dict[str, Any]]) -> I
     )
 
 
+def split_known_records(session: Session, records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """把一批采集记录拆成 (已在岗位池的, 全新的)。**只读**，一个字节都不写。
+
+    采集人工初筛用：已在池子里的岗位是你早就筛过的，照旧 upsert 刷新快照（薪资/在招状态/
+    last_seen_at）；只有全新的才需要你过目，进候选等勾选。
+
+    命中判定与 `_upsert_job_record` 完全一致（来源链接 → 旧 source/external_id → canonical_key），
+    复用同一个 `_find_existing_job`，避免两处判重逻辑漂移。
+
+    注意：这里**不能**用 `_prepare_import_lookup`——它内部的 `_companies_by_name` 会
+    `session.add` 出公司行（写操作），而本函数在「还没决定要不要入库」的阶段被调用，
+    不该留下任何痕迹。`_find_existing_job` 只查三张岗位映射，companies 给空 dict 即可。
+    """
+    if not records:
+        return [], []
+    source_link_jobs, source_links = _jobs_by_source_link(session, records)
+    lookup = ImportLookup(
+        companies={},
+        source_links=source_links,
+        source_link_jobs=source_link_jobs,
+        legacy_jobs=_jobs_by_legacy_key(session, records),
+        canonical_jobs=_jobs_by_canonical_key(session, records),
+    )
+    known: list[dict[str, Any]] = []
+    fresh: list[dict[str, Any]] = []
+    for record in records:
+        existing, _reason = _find_existing_job(record, lookup)
+        (known if existing is not None else fresh).append(record)
+    return known, fresh
+
+
 def _companies_by_name(session: Session, records: list[dict[str, Any]]) -> dict[str, Company]:
     names = {(record.get("company_name") or "未知公司").strip() for record in records}
     existing = session.exec(select(Company).where(Company.name.in_(names))).all() if names else []

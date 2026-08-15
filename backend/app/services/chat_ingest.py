@@ -9,9 +9,10 @@
 在此之前这些函数堆在 main.py 里，两个调用方都要 import main 才能用，为 R2（按域拆
 `APIRouter`）设置了隐性障碍。本模块就是那个两边都能安全 import 的中立位置。
 
-红线（CLAUDE.md §2/§6）：本模块只把候选写入 `kind="ingest"` 聊天线程，**绝不 import
-`importer` / 调用任何 `upsert_*`**——真正入库只能发生在用户在 Web 聊天里点「入库选中」
-触发的 commit 端点（仍在 main.py，走 `services.importer`）。
+红线（CLAUDE.md §2/§6）：本模块只把候选写入 `kind="ingest"`（手机/HTTP 发来的材料）与
+`kind="collect"`（采集初筛）聊天线程，**绝不 import `importer` / 调用任何 `upsert_*`**——
+真正入库只能发生在用户在 Web 聊天里点「入库选中」触发的 commit 端点（在 `routers/chat.py`，
+走 `services.importer`）。
 `tests/test_ingest.py` 的 `test_persist_ingest_and_poll_loop_write_chat_only` 对本模块的
 `_persist_ingest_to_chat` 做源码级断言，`test_chat_ingest_module_never_imports_importer`
 对本模块的 import 做 AST 级断言，任何人违反都会立刻测试翻红。
@@ -26,6 +27,7 @@ import base64
 import copy
 import re
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import HTTPException
@@ -33,13 +35,21 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import func
 from sqlmodel import Session, select
 
-from ..candidates import Candidate
+from ..candidates import CANDIDATE_PENDING, Candidate
 from ..config import Settings, get_settings
 from ..models import ChatMessage, ChatThread, Job, utc_now
 from .advice import DEFAULT_MAX_ADVICE_ITEMS, build_candidate_advice, format_advice_block
 from .ai import is_ai_available
 from .ingest import candidate_match_key, find_duplicate_thread, run_ingest
 from .jobs import job_ids_by_canonical_key
+
+# 采集初筛线索的 kind：与 ingest（手机发来的材料）分开，便于按来源筛线索、也便于采集去重
+# 只扫自己那批（见 recent_collect_candidates）。候选结构与下游端点完全共用。
+COLLECT_THREAD_KIND = "collect"
+
+# 采集判重回看多少天：pending 的别重复列，skipped 的别明天再冒出来。30 天足够覆盖一轮招聘周期，
+# 又不会让「几个月前否决过的岗位重新开放招聘」永远看不见。
+_COLLECT_DEDUPE_DAYS = 30
 
 # 复用线程时最多带多少条已识别候选给模型当上下文（与 ai.extract_jobs_freeform 内部再截一次一致，
 # 双保险控制 prompt 体积；单用户、同一线索里的岗位数量本就很小）。
@@ -217,6 +227,20 @@ def _find_ingest_message_by_tg_id(session: Session, tg_message_id: int) -> ChatM
     return None
 
 
+def _candidate_dedupe_key(candidate: dict) -> str | None:
+    """候选判重 key：优先 `candidate_match_key`（canonical_key / 标题+公司），退化到标题。
+
+    `candidate_match_key` 对「公司未知」的候选返回 None（判重安全考虑），但一个有真实
+    **标题**、只是公司未知的岗位（如「独立站运营·未知公司」——真机里的常见形态）完全有用，
+    不能丢。连标题都没有的纯占位候选才返回 None。
+    """
+    key = candidate_match_key(candidate)
+    if key:
+        return key
+    title = re.sub(r"\s+", "", str(candidate.get("title") or "").strip().lower())
+    return f"title:{title}" if title else None
+
+
 def thread_candidates(session: Session, thread_id: int, limit: int = _MAX_PRIOR_CONTEXT_CANDIDATES) -> list[Candidate]:
     """收集一条 ingest 线程里已识别的候选，按「同一岗位保留最近一条」去重，最多 `limit` 条。
 
@@ -250,21 +274,111 @@ def thread_candidates(session: Session, thread_id: int, limit: int = _MAX_PRIOR_
         for cand in stored:
             if not isinstance(cand, dict):
                 continue
-            # 去重 key：优先 canonical_key/标题+公司（candidate_match_key）；它对「公司未知」
-            # 的候选会返回 None（去重安全考虑），但一个有真实**标题**、只是公司未知的岗位
-            # （如「独立站运营·未知公司」——正是真机里的常见形态）完全有用，不能丢。
-            # 所以 match_key 为空时退到「标题」做 key；连标题都没有的纯占位候选才跳过。
-            key = candidate_match_key(cand)
+            # 去重 key 见 _candidate_dedupe_key：match_key 为空时退到标题，纯占位候选才跳过。
+            key = _candidate_dedupe_key(cand)
             if not key:
-                title = re.sub(r"\s+", "", str(cand.get("title") or "").strip().lower())
-                if not title:
-                    continue
-                key = f"title:{title}"
+                continue
             if key not in by_key:
                 by_key[key] = cand
         if len(by_key) >= limit:
             break
     return list(by_key.values())[:limit]
+
+
+def recent_collect_candidates(session: Session, days: int = _COLLECT_DEDUPE_DAYS) -> list[Candidate]:
+    """近 `days` 天采集线索里的候选（按判重 key 去重，同一岗位保留最近一条）。
+
+    采集初筛的两个消费方：
+    - `collect_ops`：本次采到的岗位若已经在待筛列表里（pending）或被你明确跳过（skipped），
+      就不再重复列一遍——否则早上采过的中午 `/collect` 会再来一遍，你否决过的明天照样冒出来；
+    - `daily_digest`：晨间清单的「今日待筛」段直接读这里的 pending 候选。
+
+    读取异常降级成空列表：判重与清单都是增强项，绝不能因此打断采集主流程。
+    """
+    cutoff = utc_now().replace(tzinfo=None) - timedelta(days=days)
+    try:
+        thread_ids = [
+            thread.id
+            for thread in session.exec(
+                select(ChatThread)
+                .where(ChatThread.kind == COLLECT_THREAD_KIND, ChatThread.updated_at >= cutoff)
+                .order_by(ChatThread.updated_at.desc())
+            ).all()
+            if thread.id is not None
+        ]
+        if not thread_ids:
+            return []
+        messages = session.exec(
+            select(ChatMessage)
+            .where(ChatMessage.thread_id.in_(thread_ids), ChatMessage.role == "assistant")
+            .order_by(ChatMessage.created_at.desc())
+        ).all()
+    except Exception:  # noqa: BLE001
+        return []
+
+    by_key: dict[str, Candidate] = {}
+    for message in messages:
+        if not isinstance(message.metadata_json, dict):
+            continue
+        stored = message.metadata_json.get("candidates")
+        if not isinstance(stored, list):
+            continue
+        for cand in stored:
+            if not isinstance(cand, dict):
+                continue
+            key = _candidate_dedupe_key(cand)
+            if key and key not in by_key:
+                by_key[key] = {**cand, "thread_id": message.thread_id}
+    return list(by_key.values())
+
+
+def recent_collect_candidate_keys(session: Session, days: int = _COLLECT_DEDUPE_DAYS) -> dict[str, str]:
+    """近 `days` 天采集候选的「判重 key → 候选状态」映射，供 `collect_ops` 挡掉重复项。"""
+    return {
+        key: str(cand.get("status") or CANDIDATE_PENDING)
+        for cand in recent_collect_candidates(session, days)
+        if (key := _candidate_dedupe_key(cand))
+    }
+
+
+def persist_collect_candidates(session: Session, source_label: str, candidates: list[Candidate], summary: str) -> dict:
+    """把一次采集的全新岗位落成 `kind="collect"` 聊天线索的候选，**不写 Job 表**。
+
+    与 ingest 候选共用同一套下游：同一个 `metadata_json.candidates` 结构、同一个候选卡组件、
+    同一个 `/candidates/commit` 入库端点。所以这里只负责建线索 + 挂候选，入库仍然只发生在
+    你在 Web 勾选之后（红线 §2）。候选为空时不建空线索，返回 `{"thread": None}`。
+
+    本模块的绊线仍然成立：不 import importer、不调用任何 upsert。
+    """
+    if not candidates:
+        return {"thread": None, "assistant_message": None, "pending": 0}
+    thread = ChatThread(
+        kind=COLLECT_THREAD_KIND,
+        job_id=None,
+        # 标题用本地时间：这行是给人看的（手机/Web 上认「哪一次采集」），不是时间戳字段。
+        title=f"采集 · {source_label} · {datetime.now().strftime('%m-%d %H:%M')}",
+    )
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+
+    assistant_message = ChatMessage(
+        thread_id=thread.id or 0,
+        role="assistant",
+        content=summary,
+        metadata_json={"candidates": candidates, "source": source_label, "run_status": "collected"},
+    )
+    session.add(assistant_message)
+    thread.updated_at = utc_now()
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+    session.refresh(assistant_message)
+    return {
+        "thread": _chat_thread_payload(session, thread),
+        "assistant_message": assistant_message,
+        "pending": len(candidates),
+    }
 
 
 def attach_candidate_advice(session: Session, assistant_message_id: int, settings: Settings | None = None) -> dict:

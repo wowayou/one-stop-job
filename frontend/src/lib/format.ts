@@ -100,12 +100,35 @@ export function runDetailLines(run: SourceRun, fallback?: string) {
   if (report?.jobs != null) {
     details.push(`解析岗位：${report.jobs} 个。`);
   }
+  // 区域白名单挡掉的条数必须露出来：否则「抓了 89 条却只剩 12 条待筛」看着像丢数据。
+  if (report?.area_filter?.enabled && report.area_filter.filtered) {
+    const unknown = report.area_filter.unknown_area
+      ? `（其中 ${report.area_filter.unknown_area} 条区域未知）`
+      : "";
+    details.push(`区域白名单过滤：${report.area_filter.filtered} 条${unknown}。`);
+  }
+  if (report?.already_pending) {
+    details.push(`已在待筛列表或此前跳过：${report.already_pending} 条，本次不再重复列出。`);
+  }
   for (const item of skippedItems(run)) {
     const reason = item.reason || "未说明原因";
     details.push(item.url ? `${item.url}：${reason}` : reason);
   }
   if (!details.length && fallback) details.push(fallback);
   return details;
+}
+
+/** 采集运行的一行计数摘要：初筛口径（抓取 / 待筛 / 刷新），不再报「新增」——采集器不再直接建 Job。 */
+export function runCountsText(run: SourceRun) {
+  const report = run.raw_config;
+  const parts = [`${run.fetched_count} 抓取`];
+  if (report?.area_filter?.enabled && report.area_filter.filtered) {
+    parts.push(`${report.area_filter.filtered} 区域过滤`);
+  }
+  if (report?.pending != null) parts.push(`${report.pending} 待筛`);
+  else if (run.created_count) parts.push(`${run.created_count} 新增`);
+  if (run.updated_count) parts.push(`${run.updated_count} 刷新`);
+  return parts.join(" / ");
 }
 
 export function runHasNoJobs(run: SourceRun) {

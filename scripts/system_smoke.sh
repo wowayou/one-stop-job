@@ -37,6 +37,20 @@ config_path="$tmp_dir/config.yaml"
 backend_log="$tmp_dir/backend.log"
 base_url="http://$HOST:$PORT"
 cp "$ROOT_DIR/config.yaml" "$config_path"
+# 冒烟样例岗位都在「示例市」，而机主真实 config.yaml 的区域白名单是青岛市北/市南/崂山。
+# 中和掉，让冒烟专注测系统本身；过滤逻辑由 tests/test_collect_triage.py 用自带配置覆盖。
+"$PYTHON" - "$config_path" <<'PY'
+import sys
+
+import yaml
+
+path = sys.argv[1]
+with open(path, encoding="utf-8") as fh:
+    cfg = yaml.safe_load(fh)
+cfg.setdefault("collect", {}).setdefault("area_filter", {})["enabled"] = False
+with open(path, "w", encoding="utf-8") as fh:
+    yaml.safe_dump(cfg, fh, allow_unicode=True)
+PY
 
 (
   cd "$ROOT_DIR"
@@ -311,13 +325,13 @@ with httpx.Client(base_url=BASE_URL, timeout=10) as client:
             json={
                 "bodies": {
                     "https://mp.weixin.qq.com/s/SystemSmoke": (
-                        "示例市系统测试科技有限公司招聘\n"
-                        "【SEO运营】\n"
-                        "公司：示例市系统测试科技有限公司\n"
-                        "薪资：8-12K\n"
+                        "示例市远航外贸有限公司招聘\n"
+                        "【外贸独立站运营】\n"
+                        "公司：示例市远航外贸有限公司\n"
+                        "薪资：9-14K\n"
                         "工作地点：示例市·中心区\n"
-                        "岗位职责：负责SEO优化和内容增长\n"
-                        "任职要求：熟悉SEO和数据分析"
+                        "岗位职责：负责独立站运营和谷歌优化\n"
+                        "任职要求：熟悉SEO和谷歌广告"
                     )
                 }
             },
@@ -326,6 +340,26 @@ with httpx.Client(base_url=BASE_URL, timeout=10) as client:
     ).json()
     assert wechat_run["status"] == "success"
     assert wechat_run["fetched_count"] >= 1
+
+    # 采集不落盘：公众号岗位先进候选，岗位池此刻还没有公众号岗位。
+    assert wechat_run["raw_config"]["pending"] >= 1
+    assert client.get("/api/jobs", params={"source": "公众号"}).json() == []
+
+    thread_id = wechat_run["raw_config"]["thread_id"]
+    wechat_thread = assert_ok(client.get(f"/api/chat/threads/{thread_id}"), "wechat collect thread").json()
+    assert wechat_thread["thread"]["kind"] == "collect"
+    wechat_msg = next(item for item in wechat_thread["messages"] if item["role"] == "assistant")
+    assert wechat_msg["metadata_json"]["candidates"]
+
+    # 勾选入库后岗位才真正进池（与 ingest 候选完全相同的端点）。
+    commit = assert_ok(
+        client.post(
+            f"/api/chat/threads/{thread_id}/candidates/commit",
+            json={"message_id": wechat_msg["id"], "indexes": [0]},
+        ),
+        "commit wechat candidates",
+    ).json()
+    assert commit["created"] >= 1
 
     wechat_jobs = assert_ok(client.get("/api/jobs", params={"source": "公众号"}), "wechat source filter").json()
     assert wechat_jobs

@@ -11,6 +11,7 @@ import {
   booleanValue,
   linesValue,
   numberValue,
+  runCountsText,
   setConfigValue,
   splitLines,
   stringValue
@@ -284,7 +285,7 @@ export function ConfigView({
 
   function latestRunText(run?: SourceRun | null) {
     if (!run) return "未运行";
-    return `${run.status} · ${run.fetched_count} 抓取 / ${run.created_count} 新增 / ${run.updated_count} 更新`;
+    return `${run.status} · ${runCountsText(run)}`;
   }
 
   function sourceRunButton(source?: JobSourceStatus) {

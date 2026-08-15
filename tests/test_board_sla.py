@@ -205,9 +205,10 @@ def test_format_collect_failure_is_single_line_and_truncated():
     assert "\n" not in note  # 压成一行，别把几 KB 的 opencli 帮助文本铺进推送
     assert "Browser Bridge" in note
     assert note.startswith("⚠️")
+    assert "/collect" in note  # 失败现场就要给出补救入口，否则手机上只能干看着
     long_note = format_collect_failure("失败原因" * 200)
     assert "…" in long_note and len(long_note) < 200  # 截断，但仍带尾注
-    assert long_note.endswith("（详情见 Web 采集面板；下面的岗位可能不是最新的）")
+    assert long_note.endswith("；修好后发送 /collect 可重跑一次，详情见 Web 采集面板")
 
 
 def test_format_collect_failure_drops_repr_dump():
@@ -220,8 +221,38 @@ def test_format_collect_failure_drops_repr_dump():
         "'['cmd.exe', '/c', 'opencli.cmd']' timed out after 120 seconds\"}]"
     )
     note = format_collect_failure(raw)
-    assert note == "⚠️ 今日晨间采集未成功：全部关键词采集失败（详情见 Web 采集面板；下面的岗位可能不是最新的）"
+    assert note == (
+        "⚠️ 今日晨间采集未成功：全部关键词采集失败（下面的岗位可能不是最新的）；"
+        "修好后发送 /collect 可重跑一次，详情见 Web 采集面板"
+    )
     assert "cmd.exe" not in note and "{" not in note
+
+
+def test_mark_collect_success_clears_stale_failure_note(tmp_path):
+    """手动 /collect 补采成功后：当天的失败附注要清掉，且今天不必再跑定时那次。
+
+    不清的话，日清单发送失败在下个周期重发时会带上一条已经不成立的「今日晨间采集未成功」；
+    不写 last_collected 的话，补采完几分钟后定时那次又跑一遍，破掉每日一次的频率上限。
+    """
+    from backend.app.services.daily_digest import (
+        digest_state_path,
+        last_collected_note,
+        mark_collect_success,
+        read_state,
+        write_state,
+    )
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    state_path = digest_state_path(data_dir)
+    write_state(state_path, last_sent="2026-08-15", last_collected="2026-08-15", collect_note="⚠️ 今日晨间采集未成功：X")
+
+    mark_collect_success(data_dir, "2026-08-15")
+
+    saved = read_state(state_path)
+    assert saved["last_collected"] == "2026-08-15"
+    assert last_collected_note(saved, "2026-08-15") == ""
+    assert saved["last_sent"] == "2026-08-15"  # 合并写回，别把发送状态抹掉
 
 
 def test_parse_board_companies_buckets_closed_and_active():
@@ -355,36 +386,3 @@ def test_board_company_index_is_frozen_dataclass():
     index = BoardCompanyIndex(closed=("甲",), active=("乙",))
     with pytest.raises(dataclasses.FrozenInstanceError):
         index.closed = ("丙",)  # type: ignore[misc]
-
-
-def test_collect_new_jobs_reuses_existing_score(monkeypatch):
-    """摘要复用已有 FitScore：重复生成不得让 fit_scores 线性膨胀（score_job_into_db 是追加语义）。"""
-    from datetime import datetime, timezone
-
-    from sqlmodel import Session, SQLModel, create_engine, func, select
-
-    from backend.app.models import FitScore, Job
-    from backend.app.services.daily_digest import collect_new_jobs
-
-    engine = create_engine("sqlite://", connect_args={"check_same_thread": False})
-    SQLModel.metadata.create_all(engine)
-    with Session(engine) as session:
-        job = Job(
-            source="manual",
-            external_id="fresh-1",
-            title="独立站运营",
-            company_name="示例科技",
-            status="new",
-            created_at=datetime.now(timezone.utc).replace(tzinfo=None),
-        )
-        session.add(job)
-        session.commit()
-        session.refresh(job)
-
-        first = collect_new_jobs(session)
-        assert [item["title"] for item in first] == ["独立站运营"]
-        rows_after_first = session.exec(select(func.count()).select_from(FitScore)).one()
-
-        second = collect_new_jobs(session)
-        assert [item["score"] for item in second] == [item["score"] for item in first]
-        assert session.exec(select(func.count()).select_from(FitScore)).one() == rows_after_first
