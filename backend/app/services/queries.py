@@ -39,8 +39,13 @@ def query_jobs(
     status: str | None = None,
     source: str | None = None,
     favorite: bool | None = None,
+    include_deleted: bool = False,
 ) -> tuple[list[Job], dict[int, list[JobSourceLink]]]:
-    jobs = session.exec(select(Job).order_by(Job.favorite.desc(), Job.collected_at.desc())).all()
+    stmt = select(Job)
+    if not include_deleted:
+        stmt = stmt.where(Job.deleted_at.is_(None))
+    stmt = stmt.order_by(Job.favorite.desc(), Job.collected_at.desc())
+    jobs = session.exec(stmt).all()
     source_links = source_links_map(session, [job.id for job in jobs if job.id])
     if search:
         needle = search.lower()

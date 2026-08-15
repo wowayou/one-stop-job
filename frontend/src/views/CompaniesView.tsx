@@ -1,3 +1,4 @@
+import { Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { PaginationControls } from "../components/PaginationControls";
 import { PAGE_SIZE } from "../lib/constants";
@@ -6,11 +7,13 @@ import type { Company, Job } from "../types";
 export function CompaniesView({
   companies,
   jobs,
-  onOpenJob
+  onOpenJob,
+  onDelete,
 }: {
   companies: Company[];
   jobs: Job[];
   onOpenJob: (job: Job) => void;
+  onDelete?: (company: Company) => void;
 }) {
   const [page, setPage] = useState(1);
   useEffect(() => {
@@ -30,9 +33,16 @@ export function CompaniesView({
           const companyJobs = jobs.filter((job) => job.company_id === company.id);
           return (
             <article className="company-item" key={company.id}>
-              <div>
-                <h3>{company.name}</h3>
-                <p>{[company.industry, company.size, company.stage].filter(Boolean).join(" · ") || "公司画像待补充"}</p>
+              <div className="company-item-head-row">
+                <div>
+                  <h3>{company.name}</h3>
+                  <p>{[company.industry, company.size, company.stage].filter(Boolean).join(" · ") || "公司画像待补充"}</p>
+                </div>
+                {onDelete && (
+                  <button className="icon-button compact danger-text" title="移入回收站" onClick={() => onDelete(company)}>
+                    <Trash2 size={15} />
+                  </button>
+                )}
               </div>
               <div className="company-meta">
                 <span>{company.jobs_count ?? companyJobs.length} 岗位</span>

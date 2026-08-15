@@ -98,7 +98,7 @@ def create_sprint_payload(
     rescore: bool,
 ) -> dict:
     profile = get_profile(session)
-    jobs = session.exec(select(Job).order_by(Job.favorite.desc(), Job.collected_at.desc())).all()
+    jobs = session.exec(select(Job).where(Job.deleted_at.is_(None)).order_by(Job.favorite.desc(), Job.collected_at.desc())).all()
     actionable_jobs = [job for job in jobs if job.status not in {"rejected", "archived"}]
 
     latest_scores = latest_score_map(session, [job.id for job in actionable_jobs if job.id])

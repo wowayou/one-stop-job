@@ -1,4 +1,4 @@
-import { CalendarCheck, ChevronLeft, ChevronRight, FileQuestion, Gauge, NotebookPen, Pencil, Pin, Send, X } from "lucide-react";
+import { CalendarCheck, ChevronLeft, ChevronRight, FileQuestion, Gauge, NotebookPen, Pencil, Pin, Send, Trash2, X } from "lucide-react";
 import { FormEvent, RefObject } from "react";
 import { InterviewCard } from "../components/InterviewCard";
 import { InterviewForm } from "../components/InterviewForm";
@@ -50,7 +50,8 @@ export function JobDrawer({
   onNext,
   hasPrev,
   hasNext,
-  position
+  position,
+  onDelete
 }: {
   job: Job;
   company: Company | null;
@@ -90,6 +91,7 @@ export function JobDrawer({
   hasPrev: boolean;
   hasNext: boolean;
   position: string;
+  onDelete?: (job: Job) => void;
 }) {
   useEscapeClose(true, onClose);
   const latestScore = scores[0] ?? job.latest_score;
@@ -131,6 +133,12 @@ export function JobDrawer({
             <Send size={16} />
             原链接
           </a>
+        )}
+        {onDelete && (
+          <button className="icon-text danger-text" onClick={() => onDelete(job)} title="移入回收站">
+            <Trash2 size={16} />
+            删除
+          </button>
         )}
       </div>
 

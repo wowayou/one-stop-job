@@ -18,7 +18,8 @@ import {
   RefreshCw,
   SlidersHorizontal,
   Upload,
-  X
+  X,
+  Trash2
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { api, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from "./api";
@@ -39,6 +40,7 @@ import { JobDrawer } from "./views/JobDrawer";
 import { JobsView } from "./views/JobsView";
 import { PrepView } from "./views/PrepView";
 import { TasksView } from "./views/TasksView";
+import { TrashView } from "./views/TrashView";
 import {
   applicationEventLabels,
   GLOBAL_BUSY_KEYS,
@@ -91,6 +93,7 @@ const navItems = [
   { id: "prep", label: "准备", icon: FileQuestion },
   { id: "interviews", label: "复盘", icon: NotebookPen },
   { id: "tasks", label: "待办", icon: CalendarCheck },
+  { id: "trash", label: "回收站", icon: Trash2 },
   { id: "config", label: "设置", icon: SlidersHorizontal }
 ] as const;
 
@@ -126,6 +129,8 @@ function App() {
   const [aiProbe, setAiProbe] = useState<AiProbeResult | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextRepoStatus | null>(null);
+  const [trashedJobs, setTrashedJobs] = useState<Job[]>([]);
+  const [trashedCompanies, setTrashedCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("all");
   const [sourceFilter, setSourceFilter] = useState("all");
@@ -230,6 +235,19 @@ function App() {
     return reload();
   }
 
+  async function reloadTrash() {
+    try {
+      const [jobs, companies] = await Promise.all([
+        api<Job[]>("/api/trash/jobs").catch(() => []),
+        api<Company[]>("/api/trash/companies").catch(() => []),
+      ]);
+      setTrashedJobs(jobs);
+      setTrashedCompanies(companies);
+    } catch {
+      // ignore
+    }
+  }
+
   function closeJobDrawer() {
     openJobRequestRef.current += 1;
     setSelectedJob(null);
@@ -259,6 +277,12 @@ function App() {
   useEffect(() => {
     loadAll().catch((err) => notify("error", errorMessage(err, "加载数据失败")));
   }, []);
+
+  useEffect(() => {
+    if (activeNav === "trash") {
+      reloadTrash();
+    }
+  }, [activeNav]);
 
   useEffect(() => {
     try {
@@ -781,6 +805,33 @@ function App() {
     });
   }
 
+  async function deleteJob(job: Job) {
+    if (!window.confirm(`将「${job.company_name} · ${job.title}」移入回收站？可在回收站恢复或永久删除。`)) return;
+    await runBusy(`delete-job-${job.id}`, async () => {
+      try {
+        await api<{ deleted: boolean; id: number }>(`/api/jobs/${job.id}`, { method: "DELETE" });
+        closeJobDrawer();
+        await loadAll();
+        await reloadTrash();
+        notify("info", `已移入回收站：${job.company_name} · ${job.title}`, ["可在「回收站」恢复或永久删除。"]);
+      } catch (err) {
+        notify("error", errorMessage(err, "删除失败"));
+      }
+    });
+  }
+
+  async function deleteCompany(company: Company) {
+    if (!window.confirm(`将「${company.name}」移入回收站？岗位不会被删除，只是公司档案不再显示。`)) return;
+    try {
+      await api<{ deleted: boolean; id: number }>(`/api/companies/${company.id}`, { method: "DELETE" });
+      await loadAll();
+      await reloadTrash();
+      notify("info", `已移入回收站：${company.name}`);
+    } catch (err) {
+      notify("error", errorMessage(err, "删除失败"));
+    }
+  }
+
   return (
     <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}${activeNav === "chat" ? " chat-active" : ""}`}>
       <aside className="sidebar" aria-label="主导航">
@@ -964,7 +1015,7 @@ function App() {
               onExport={() => exportFile(`/api/exports/jobs?format=csv&status=${status === "all" ? "" : status}&source=${sourceFilter === "all" ? "" : sourceFilter}`, "jobs.csv", "岗位池已导出")}
             />
           )}
-          {activeNav === "companies" && <CompaniesView companies={companies} jobs={jobs} onOpenJob={openJob} />}
+          {activeNav === "companies" && <CompaniesView companies={companies} jobs={jobs} onOpenJob={openJob} onDelete={deleteCompany} />}
           {activeNav === "prep" && <PrepView jobs={jobs} drafts={drafts} onOpen={openJob} />}
           {activeNav === "interviews" && (
             <InterviewsView
@@ -986,6 +1037,14 @@ function App() {
               onUpdateTask={updateTask}
               onDeleteTask={deleteTask}
               onOpenJob={openJob}
+            />
+          )}
+          {activeNav === "trash" && (
+            <TrashView
+              trashedJobs={trashedJobs}
+              trashedCompanies={trashedCompanies}
+              onRefresh={async () => { await loadAll(); await reloadTrash(); }}
+              onNotify={notify}
             />
           )}
           {activeNav === "config" && (
@@ -1037,6 +1096,7 @@ function App() {
           hasPrev={selectedIndex > 0}
           hasNext={selectedIndex >= 0 && selectedIndex < filteredJobs.length - 1}
           position={selectedIndex >= 0 ? `${selectedIndex + 1} / ${filteredJobs.length}` : ""}
+          onDelete={deleteJob}
         />
       )}
 

@@ -6,8 +6,12 @@ from sqlmodel import Session, select
 from ..models import Company, Job, ResearchItem
 
 
-def company_list_payload(session: Session) -> list[dict]:
-    companies = session.exec(select(Company).order_by(Company.updated_at.desc())).all()
+def company_list_payload(session: Session, include_deleted: bool = False) -> list[dict]:
+    stmt = select(Company)
+    if not include_deleted:
+        stmt = stmt.where(Company.deleted_at.is_(None))
+    stmt = stmt.order_by(Company.updated_at.desc())
+    companies = session.exec(stmt).all()
     company_ids = [company.id for company in companies if company.id is not None]
     if not company_ids:
         return []

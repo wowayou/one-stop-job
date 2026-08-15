@@ -37,7 +37,7 @@ def is_stale(status: str, last_activity_at: datetime | None, now: datetime, stal
 
 def find_stale_jobs(session: Session, *, now: datetime, stale_days: int) -> list[dict]:
     """列出需跟进的岗位。last_activity = max(状态变更时间, 最近一次面试复盘, 最近一次跟进任务更新)。"""
-    jobs = session.exec(select(Job).where(Job.status.in_(STALE_STATUSES))).all()
+    jobs = session.exec(select(Job).where(Job.status.in_(STALE_STATUSES)).where(Job.deleted_at.is_(None))).all()
     job_ids = [job.id for job in jobs if job.id is not None]
     latest_logs = _latest_interview_log_map(session, job_ids)
     latest_done_tasks = _latest_done_task_map(session, job_ids)

@@ -31,7 +31,66 @@ from .queries import application_events, get_profile
 from .scoring import score_job
 
 
+def soft_delete_jobs(session: Session, job_ids: list[int]) -> int:
+    """软删除岗位：打 deleted_at 时间戳，不删数据行。关联的评分/准备/待办/事件/复盘保留，
+    从列表/搜索/统计里隐藏。可在回收站里恢复或永久删除。"""
+    unique_ids = list(dict.fromkeys(job_ids))
+    if not unique_ids:
+        return 0
+    now = utc_now()
+    jobs = session.exec(
+        select(Job).where(Job.id.in_(unique_ids)).where(Job.deleted_at.is_(None))
+    ).all()
+    for job in jobs:
+        job.deleted_at = now
+        job.updated_at = now
+        session.add(job)
+    # 聊天线程上的 job 引用保留（不置空），恢复后还能从线程跳回岗位。
+    session.commit()
+    return len(jobs)
+
+
+def restore_jobs(session: Session, job_ids: list[int]) -> int:
+    """从回收站恢复岗位。"""
+    unique_ids = list(dict.fromkeys(job_ids))
+    if not unique_ids:
+        return 0
+    jobs = session.exec(
+        select(Job).where(Job.id.in_(unique_ids)).where(Job.deleted_at.is_not(None))
+    ).all()
+    for job in jobs:
+        job.deleted_at = None
+        job.updated_at = utc_now()
+        session.add(job)
+    session.commit()
+    return len(jobs)
+
+
+def purge_jobs(session: Session, job_ids: list[int]) -> int:
+    """永久删除岗位及其关联数据。不可恢复。"""
+    unique_ids = list(dict.fromkeys(job_ids))
+    if not unique_ids:
+        return 0
+    for thread in session.exec(select(ChatThread).where(ChatThread.job_id.in_(unique_ids))).all():
+        thread.job_id = None
+        thread.updated_at = utc_now()
+        session.add(thread)
+    for model in (JobSourceLink, FitScore, InterviewPrep, Draft, FollowUpTask, InterviewLog, ApplicationEvent):
+        for item in session.exec(select(model).where(model.job_id.in_(unique_ids))).all():
+            session.delete(item)
+    jobs = session.exec(select(Job).where(Job.id.in_(unique_ids))).all()
+    for job in jobs:
+        session.delete(job)
+    session.commit()
+    return len(jobs)
+
+
 def delete_jobs_with_related(session: Session, job_ids: list[int]) -> int:
+    """永久删除岗位及其关联数据（内部导入裁剪用，score_and_prune 导入过滤用）。
+
+    保留旧函数名给 score_and_prune_imported_jobs 使用——导入裁剪是用户刚导入的岗位
+    立即被裁掉，走永久删除而非软删除更合理（回收站不该堆导入垃圾）。
+    """
     unique_ids = list(dict.fromkeys(job_ids))
     if not unique_ids:
         return 0

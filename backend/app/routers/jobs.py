@@ -17,6 +17,9 @@ from ..services.job_ops import (
     _records_from_uploads,
     recompute_job_status_from_events,
     score_and_prune_imported_jobs,
+    soft_delete_jobs,
+    restore_jobs,
+    purge_jobs,
 )
 from ..services.jobs import job_payload, latest_score_map, source_links_map
 from ..services.normalizer import canonical_job_key, normalize_record, parse_recruiter, parse_salary
@@ -164,3 +167,47 @@ async def delete_job_event(event_id: int, session: SessionDep) -> dict:
     if job:
         recompute_job_status_from_events(session, job)
     return {"deleted": True, "id": event_id}
+
+
+@router.delete("/api/jobs/{job_id}")
+async def delete_job(job_id: int, session: SessionDep) -> dict:
+    """软删除岗位（移入回收站），不删数据。可在回收站恢复或永久删除。"""
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.deleted_at is not None:
+        return {"deleted": True, "id": job_id, "already_in_trash": True}
+    count = soft_delete_jobs(session, [job_id])
+    return {"deleted": True, "id": job_id, "count": count}
+
+
+@router.post("/api/jobs/{job_id}/restore")
+async def restore_job(job_id: int, session: SessionDep) -> dict:
+    """从回收站恢复岗位。"""
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.deleted_at is None:
+        return {"restored": True, "id": job_id, "already_active": True}
+    count = restore_jobs(session, [job_id])
+    return {"restored": True, "id": job_id, "count": count}
+
+
+@router.delete("/api/jobs/{job_id}/purge")
+async def purge_job(job_id: int, session: SessionDep) -> dict:
+    """永久删除岗位及其全部关联数据。不可恢复。"""
+    job = session.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    count = purge_jobs(session, [job_id])
+    return {"purged": True, "id": job_id, "count": count}
+
+
+@router.get("/api/trash/jobs")
+async def list_trashed_jobs(session: SessionDep) -> list[dict]:
+    """回收站里的岗位列表（已软删除）。"""
+    from ..services.jobs import latest_score_map, source_links_map
+    jobs, source_links = query_jobs(session, include_deleted=True)
+    trashed = [job for job in jobs if job.deleted_at is not None]
+    latest = latest_score_map(session, [job.id for job in trashed if job.id])
+    return [job_payload(job, latest.get(job.id), source_links.get(job.id or 0, [])) for job in trashed]

@@ -26,6 +26,7 @@ class Company(SQLModel, table=True):
     notes: Optional[str] = Field(default=None, sa_column=Column(Text))
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
+    deleted_at: Optional[datetime] = Field(default=None, index=True)  # 软删除时间戳；None = 正常可见
 
 
 class Job(SQLModel, table=True):
@@ -63,6 +64,7 @@ class Job(SQLModel, table=True):
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     status_changed_at: Optional[datetime] = Field(default=None)  # status 最近一次变更时间，用于跟进过期检测
+    deleted_at: Optional[datetime] = Field(default=None, index=True)  # 软删除时间戳；None = 正常可见
 
 
 class JobSourceLink(SQLModel, table=True):

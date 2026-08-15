@@ -65,8 +65,8 @@ async def export_data(
         profile = get_profile(session)
         archive = build_archive_payload(
             profile=profile,
-            jobs=session.exec(select(Job).order_by(Job.collected_at.desc())).all(),
-            companies=session.exec(select(Company).order_by(Company.updated_at.desc())).all(),
+            jobs=session.exec(select(Job).where(Job.deleted_at.is_(None)).order_by(Job.collected_at.desc())).all(),
+            companies=session.exec(select(Company).where(Company.deleted_at.is_(None)).order_by(Company.updated_at.desc())).all(),
             research_items=session.exec(select(ResearchItem).order_by(ResearchItem.captured_at.desc())).all(),
             scores=session.exec(select(FitScore).order_by(FitScore.created_at.desc())).all(),
             preps=session.exec(select(InterviewPrep).order_by(InterviewPrep.created_at.desc())).all(),

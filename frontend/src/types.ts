@@ -53,6 +53,7 @@ export type Job = {
   canonical_key?: string | null;
   collected_at: string;
   status_changed_at?: string | null;
+  deleted_at?: string | null;
   latest_score?: FitScore | null;
   source_links?: JobSourceLink[];
 };
@@ -112,6 +113,7 @@ export type Company = {
   notes?: string | null;
   jobs_count?: number;
   evidence_count?: number;
+  deleted_at?: string | null;
 };
 
 export type ResearchItem = {

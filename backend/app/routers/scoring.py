@@ -48,7 +48,7 @@ async def update_profile(payload: ProfileUpdate, session: SessionDep) -> UserPro
 
 @router.get("/api/analytics/funnel")
 async def analytics_funnel(session: SessionDep) -> dict:
-    jobs = session.exec(select(Job).order_by(Job.collected_at.desc())).all()
+    jobs = session.exec(select(Job).where(Job.deleted_at.is_(None)).order_by(Job.collected_at.desc())).all()
     scores = latest_score_map(session, [job.id for job in jobs if job.id])
     stale_jobs = find_stale_jobs(session, now=utc_now(), stale_days=get_settings().followup_stale_days)
     return build_funnel_payload(jobs, scores, stale_jobs)
