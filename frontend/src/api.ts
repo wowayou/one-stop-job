@@ -1,5 +1,6 @@
 // Tauri 桌面模式下后端固定在 127.0.0.1:8000；Web 模式走 VITE_API_BASE
-const API_BASE = import.meta.env.VITE_API_BASE ?? (window.__TAURI_INTERNALS__ ? "http://127.0.0.1:8000" : "");
+const _w = window as unknown as { __TAURI_INTERNALS__?: unknown };
+const API_BASE = import.meta.env.VITE_API_BASE ?? (_w.__TAURI_INTERNALS__ ? "http://127.0.0.1:8000" : "");
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
