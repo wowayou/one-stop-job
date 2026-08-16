@@ -8,6 +8,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNTIME_DIR="$ROOT_DIR/data/app"
 BACKEND_PID_FILE="$RUNTIME_DIR/backend.pid"
 BACKEND_LOG="$RUNTIME_DIR/backend.log"
+# 看门狗哨兵文件:存在 = 看门狗应继续守护(进程崩了就重启);do_stop 删除它通知看门狗退出。
+WATCHDOG_SENTINEL="$RUNTIME_DIR/run.watchdog"
 PORT="${PORT:-8000}"
 
 mkdir -p "$RUNTIME_DIR"
@@ -119,6 +121,43 @@ wait_for_health() {
   return 1
 }
 
+# 看门狗循环:以独立会话(setsid 拉起)常驻,循环启动 uvicorn,进程崩了且哨兵还在
+# 就退避重启。哨兵被 do_stop 删除时干净退出。独立函数而非内联子 shell,避免引号转义地狱。
+run_watchdog() {
+  local root_dir="$1"
+  local sentinel="$2"
+  local port="$3"
+  local log_file="$4"
+  local backoff=5 start_ts elapsed exit_code=0 uv_pid
+
+  cd "$root_dir"
+  # 启动锁由 do_start 持有;看门狗是 setsid 独立会话,不需要那个 fd,关掉避免继承。
+  exec 9>&-
+  while [[ -f "$sentinel" ]]; do
+    start_ts=$SECONDS
+    # 9>&- :uvicorn 会继承 fd 9 也就跟着一直握着启动锁,下一次 app.sh start
+    # 就会一直等到服务退出为止(实测:第二个 start 直接卡死,不是打印"已在运行")。
+    nohup .venv/bin/python -m uvicorn backend.app.main:app \
+      --host 127.0.0.1 --port "$port" >>"$log_file" 2>&1 9>&- &
+    uv_pid=$!
+    exit_code=0
+    wait "$uv_pid" || exit_code=$?
+    # 哨兵没了 = do_stop 正在收尾,别重启了。
+    [[ -f "$sentinel" ]] || break
+    elapsed=$((SECONDS - start_ts))
+    if (( elapsed >= 300 )); then
+      # 活了 5 分钟以上才挂,视为偶发崩溃,重置退避。
+      backoff=5
+    else
+      # 快速崩溃:指数退避,封顶 60 秒,防止疯狂重启刷日志。
+      echo "$(date '+%Y-%m-%d %H:%M:%S') 看门狗:后端退出(code=$exit_code,存活 ${elapsed}s),${backoff}s 后重启..." >>"$log_file"
+      sleep "$backoff"
+      backoff=$(( backoff * 2 ))
+      (( backoff > 60 )) && backoff=60 || true
+    fi
+  done
+}
+
 do_start() {
   # 并发启动要串行化:登录时若有两个启动项(或手动连点两次),两个 start 会同时穿过
   # is_running 与端口检查之间的窗口——2026-08-14 早上就这样起出了三个 uvicorn,还在
@@ -148,32 +187,46 @@ do_start() {
     touch "$BACKEND_LOG"
   fi
 
-  (
-    cd "$ROOT_DIR"
-    # 9>&- 必须有:uvicorn 会继承 fd 9,也就跟着一直握着启动锁,下一次 app.sh start
-    # 就会一直等到服务退出为止(实测:第二个 start 直接卡死,不是打印"已在运行")。
-    nohup .venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port "$PORT" >>"$BACKEND_LOG" 2>&1 9>&- &
-    echo "$!" >"$BACKEND_PID_FILE"
-  )
+  # 看门狗哨兵:存在时看门狗循环才会重启崩掉的 uvicorn;do_stop 删它来通知"该退了"。
+  : >"$WATCHDOG_SENTINEL"
+
+  # 看门狗哨兵:存在时看门狗循环才会重启崩掉的 uvicorn;do_stop 删它来通知"该退了"。
+  : >"$WATCHDOG_SENTINEL"
+
+  # 看门狗:setsid 脱离父进程会话组,app.sh 主进程退出/被信号杀时不会把看门狗
+  # 一起带走(否则 wait 之后的重启逻辑根本没机会跑)。pid 文件指向看门狗本身——
+  # is_running 检查守护是否在,do_stop 杀的是守护(它再杀 uvicorn 子进程)。
+  setsid bash "$ROOT_DIR/scripts/app.sh" _watchdog "$ROOT_DIR" "$WATCHDOG_SENTINEL" \
+    "$PORT" "$BACKEND_LOG" >>"$BACKEND_LOG" 2>&1 &
+  echo "$!" >"$BACKEND_PID_FILE"
+  disown 2>/dev/null || true
 
   echo "启动中,等待健康检查..."
   if wait_for_health "$PORT"; then
-    echo "已启动: http://127.0.0.1:${PORT}/"
+    echo "已启动: http://127.0.0.1:${PORT}/ (看门狗已启用,进程崩了会自动重启)"
   else
     echo "启动失败或健康检查超时,最近日志:" >&2
     tail -n 40 "$BACKEND_LOG" >&2
+    echo "已停掉看门狗,请排查后重新 start(它不会无限重启一个起不来的服务)。" >&2
+    rm -f "$WATCHDOG_SENTINEL"
+    # 哨兵删掉后看门狗会自行退出,但仍可能在退避 sleep;给一点时间再兜底杀。
+    sleep 1
+    kill "$!" 2>/dev/null || true
+    rm -f "$BACKEND_PID_FILE"
     exit 1
   fi
 }
 
 do_stop() {
   if ! is_running "$BACKEND_PID_FILE"; then
-    rm -f "$BACKEND_PID_FILE"
+    rm -f "$BACKEND_PID_FILE" "$WATCHDOG_SENTINEL"
     echo "未运行。"
     return 0
   fi
   local pid
   pid="$(cat "$BACKEND_PID_FILE")"
+  # 先删哨兵:看门狗循环看到它没了就不再重启 uvicorn,避免"杀了又拉起"的拉锯。
+  rm -f "$WATCHDOG_SENTINEL"
   stop_children "$pid" TERM
   kill "$pid" 2>/dev/null || true
   for _ in {1..20}; do
@@ -273,6 +326,9 @@ usage() {
 case "${1:-}" in
   start)
     do_start
+    ;;
+  _watchdog)
+    run_watchdog "$2" "$3" "$4" "$5"
     ;;
   stop)
     do_stop
