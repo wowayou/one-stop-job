@@ -693,7 +693,6 @@ function App() {
       skills: String(form.get("skills") ?? ""),
       strengths: String(form.get("strengths") ?? ""),
       work_experience: String(form.get("work_experience") ?? ""),
-      dealbreakers: String(form.get("dealbreakers") ?? ""),
       commute_preferences: String(form.get("commute_preferences") ?? "")
     };
     await runBusy("profile", async () => {
@@ -1096,6 +1095,7 @@ function App() {
               onCollectSource={collectSource}
               onUpdateProfile={updateProfile}
               onUpdateWeights={updateScoringWeights}
+              onProfilePatched={setProfile}
             />
           )}
         </section>

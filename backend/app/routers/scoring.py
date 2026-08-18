@@ -13,7 +13,7 @@ from sqlmodel import select
 from ..config import get_settings
 from ..deps import SessionDep
 from ..models import FitScore, InterviewPrep, Job, UserProfile, utc_now
-from ..schemas import ProfileUpdate
+from ..schemas import DealbreakerAdd, ProfileUpdate
 from ..services.analytics import build_funnel_payload
 from ..services.followup import find_stale_jobs
 from ..services.jobs import latest_score_map
@@ -44,6 +44,42 @@ async def update_profile(payload: ProfileUpdate, session: SessionDep) -> UserPro
     session.commit()
     session.refresh(profile)
     return profile
+
+
+@router.post("/api/profile/dealbreakers")
+async def add_dealbreaker(payload: DealbreakerAdd, session: SessionDep) -> dict:
+    """追加一个排除词到 dealbreakers（逗号分隔、去重、去空白）。
+
+    供候选卡「排除」快捷按钮调用：看到不想要的岗位时一键加词，不用跳到配置页填表单。
+    返回更新后的完整排除词列表，前端据此刷新标签。
+    """
+    word = (payload.word or "").strip()
+    if not word:
+        raise HTTPException(status_code=422, detail="排除词不能为空")
+    profile = _get_profile(session)
+    existing = [w.strip() for w in (profile.dealbreakers or "").split(",") if w.strip()]
+    if word not in existing:
+        existing.append(word)
+        profile.dealbreakers = ",".join(existing)
+        profile.updated_at = utc_now()
+        session.add(profile)
+        session.commit()
+    return {"dealbreakers": existing}
+
+
+@router.delete("/api/profile/dealbreakers")
+async def remove_dealbreaker(word: str, session: SessionDep) -> dict:
+    """从 dealbreakers 里删一个词（供配置页标签编辑器的 × 按钮）。"""
+    word = (word or "").strip()
+    profile = _get_profile(session)
+    existing = [w.strip() for w in (profile.dealbreakers or "").split(",") if w.strip()]
+    if word in existing:
+        existing = [w for w in existing if w != word]
+        profile.dealbreakers = ",".join(existing)
+        profile.updated_at = utc_now()
+        session.add(profile)
+        session.commit()
+    return {"dealbreakers": existing}
 
 
 @router.get("/api/analytics/funnel")

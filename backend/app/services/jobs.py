@@ -112,9 +112,11 @@ def attach_candidate_scores(session: Session, candidates: list[dict]) -> list[di
                 profile,
             )
             candidate["score"] = round(float(result.total), 1)
+            candidate["hard_blocked"] = result.hard_blocked
         except Exception:  # noqa: BLE001 - 单条评分失败不影响其余候选，排序时沉底
             logger.warning("候选评分失败：%s", candidate.get("title"), exc_info=True)
             candidate["score"] = None
+            candidate["hard_blocked"] = False
     return sorted(candidates, key=lambda item: item.get("score") if item.get("score") is not None else -1, reverse=True)
 
 

@@ -223,9 +223,11 @@ class ChatThreadCreate(SQLModel):
     title: Optional[str] = None
 
     _validate_kind = field_validator("kind")(lambda cls, value: validate_choice("kind", value, {"general", "job", "ingest", "collect"}))
-    _normalize_title = field_validator("title", mode="before")(
-        lambda cls, value: validate_optional_text("title", value) if isinstance(value, str) or value is None else value
-    )
+
+
+class DealbreakerAdd(SQLModel):
+    """追加一个排除词到 UserProfile.dealbreakers（KISS：逗号分隔的字符串里去重追加）。"""
+    word: str
 
 
 class ChatThreadUpdate(SQLModel):

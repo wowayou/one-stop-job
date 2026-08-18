@@ -255,6 +255,9 @@ export type IngestCandidate = {
   /** 采集初筛候选的匹配分（后端 services/jobs.attach_candidate_scores，与岗位池 FitScore 同源）；
    * 候选卡按它降序排列。纯展示字段，提交入库时会被后端剔除（入库后由 commit 端点正式评分）。 */
   score?: number | null;
+  /** 命中 dealbreakers/城市/薪资硬排除时为 true（后端 scoring.score_job → attach_candidate_scores）；
+   * 前端默认折叠被阻断的候选，有开关可展开。纯展示字段，提交入库时会被后端剔除。 */
+  hard_blocked?: boolean;
 };
 
 /** 候选岗位的初步决策建议：与 Web 决策卡同源（同一条规则+模型链路），只是字段更少。 */

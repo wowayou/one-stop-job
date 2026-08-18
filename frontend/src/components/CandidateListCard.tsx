@@ -1,4 +1,4 @@
-import { CheckCircle2, Loader2, MessageCircleQuestion, RotateCcw, X } from "lucide-react";
+import { Ban, CheckCircle2, ChevronDown, ChevronRight, Loader2, MessageCircleQuestion, RotateCcw, X } from "lucide-react";
 import { useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
 import { buildInboxLinePreview } from "../lib/format";
@@ -60,6 +60,8 @@ export function CandidateListCard({
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
   const [restoreBusyIndex, setRestoreBusyIndex] = useState<number | null>(null);
+  const [showBlocked, setShowBlocked] = useState(false);
+  const [excludeBusyIndex, setExcludeBusyIndex] = useState<number | null>(null);
 
   function toggle(index: number) {
     if (candidates[index]?.status === "committed" || candidates[index]?.status === "skipped") return;
@@ -125,6 +127,146 @@ export function CandidateListCard({
     }
   }
 
+  async function excludeKeyword(index: number, keyword: string) {
+    const word = keyword.trim();
+    if (!word) return;
+    setExcludeBusyIndex(index);
+    try {
+      await api<{ dealbreakers: string[] }>("/api/profile/dealbreakers", {
+        method: "POST",
+        ...jsonBody({ word }),
+      });
+      onError(`已添加排除词「${word}」，后续采集将自动阻断`);
+    } catch (err) {
+      onError(errorMessage(err, "添加排除词失败"));
+    } finally {
+      setExcludeBusyIndex(null);
+    }
+  }
+
+  const blockedIndexes = candidates.map((c, i) => (c.hard_blocked ? i : -1)).filter((i) => i >= 0);
+  const visibleIndexes = candidates.map((_, i) => i).filter((i) => !candidates[i].hard_blocked);
+
+  function renderCandidate(item: IngestCandidate, index: number) {
+    const status = item.status || "pending";
+    return (
+      <li key={`${item.title}-${index}`} className={`candidate-item status-${status}`}>
+        <label>
+          {status === "pending" ? (
+            <input
+              type="checkbox"
+              checked={selected.includes(index)}
+              disabled={busy}
+              onChange={() => toggle(index)}
+            />
+          ) : (
+            // 已入库/已跳过的候选不再是可勾选项，不渲染空 checkbox；用同尺寸状态图标占位对齐。
+            <span className={`candidate-status-icon ${status}`} aria-hidden="true">
+              {status === "committed" ? <CheckCircle2 size={16} /> : <X size={16} />}
+            </span>
+          )}
+          <span className="candidate-body">
+            <span className="candidate-title-row">
+              <strong>{item.title || "未命名岗位"}</strong>
+              {item.score != null && (
+                // 采集初筛候选带匹配分（与岗位池 FitScore 同一套 scoring.score_job）；
+                // 一次采回十几条时，没有分数只能一行行读标题。ingest 候选没有这个字段。
+                <span className="candidate-score-badge" title="匹配分（与岗位池同一套评分）">
+                  {item.score} 分
+                </span>
+              )}
+              {item.hard_blocked && (
+                <span className="candidate-blocked-badge" title="命中排除词/城市/薪资硬条件">
+                  已排除
+                </span>
+              )}
+              {item.existing_job_id != null && (
+                <span className="candidate-existing-badge" title={`已在岗位池 · #${item.existing_job_id}`}>
+                  已在岗位池
+                </span>
+              )}
+              {item.duplicate_in_thread_id != null && (
+                <span className="candidate-duplicate-badge" title={`与近期聊天里的候选重复 · 线程 #${item.duplicate_in_thread_id}`}>
+                  重复候选
+                </span>
+              )}
+            </span>
+            <small>
+              {[item.company_name, item.salary_text, [item.city, item.area].filter(Boolean).join(" · "), item.source]
+                .filter(Boolean)
+                .join(" · ")}
+            </small>
+            {status === "committed" && item.job_id != null && <em>已入库 · #{item.job_id}</em>}
+            {status === "skipped" && <em>已跳过</em>}
+          </span>
+        </label>
+        {item.advice && <CandidateAdviceBlock advice={item.advice} />}
+        {onAsk && (
+          <div className="candidate-ask">
+            <button
+              type="button"
+              className="small-action"
+              title="把下一条提问锁定到这个岗位"
+              onClick={() => onAsk(index, `${MARKERS[index] ?? index + 1} ${item.title || "未命名岗位"}`)}
+            >
+              <MessageCircleQuestion size={14} />
+              问这个
+            </button>
+          </div>
+        )}
+        <div className="candidate-exclude">
+          <button
+            type="button"
+            className="small-action"
+            title="把这个标题加入排除词（后续采集自动阻断）"
+            disabled={excludeBusyIndex === index}
+            onClick={() => void excludeKeyword(index, item.title || "")}
+          >
+            {excludeBusyIndex === index ? <Loader2 className="spin" size={14} /> : <Ban size={14} />}
+            排除
+          </button>
+        </div>
+        {status === "committed" && boardWriteEnabled && (
+          <div className="candidate-board-write">
+            <code className="candidate-board-line">{buildInboxLinePreview(item)}</code>
+            <button
+              className="small-action"
+              type="button"
+              disabled={!!item.board_written || boardWriteBusyIndex === index}
+              onClick={() => void writeToBoard(index)}
+            >
+              {item.board_written ? (
+                <>
+                  <CheckCircle2 size={14} />
+                  已写入看板
+                </>
+              ) : boardWriteBusyIndex === index ? (
+                "写入中…"
+              ) : (
+                "写入看板"
+              )}
+            </button>
+          </div>
+        )}
+        {status === "skipped" && (
+          <div className="candidate-restore">
+            <button
+              type="button"
+              className="icon-button compact"
+              title="恢复为待选"
+              aria-label={`恢复候选 ${item.title || "未命名岗位"} 为待选`}
+              disabled={restoreBusyIndex === index}
+              onClick={() => void restore(index)}
+            >
+              {restoreBusyIndex === index ? <Loader2 className="spin" size={14} /> : <RotateCcw size={14} />}
+            </button>
+            <span>恢复为待选</span>
+          </div>
+        )}
+      </li>
+    );
+  }
+
   return (
     <div className="candidate-card" aria-label="入库候选">
       <div className="candidate-head">
@@ -132,109 +274,25 @@ export function CandidateListCard({
         <small>默认不入库；勾选后点「入库选中」</small>
       </div>
       <ul className="candidate-list">
-        {candidates.map((item, index) => {
-          const status = item.status || "pending";
-          return (
-            <li key={`${item.title}-${index}`} className={`candidate-item status-${status}`}>
-              <label>
-                {status === "pending" ? (
-                  <input
-                    type="checkbox"
-                    checked={selected.includes(index)}
-                    disabled={busy}
-                    onChange={() => toggle(index)}
-                  />
-                ) : (
-                  // 已入库/已跳过的候选不再是可勾选项，不渲染空 checkbox；用同尺寸状态图标占位对齐。
-                  <span className={`candidate-status-icon ${status}`} aria-hidden="true">
-                    {status === "committed" ? <CheckCircle2 size={16} /> : <X size={16} />}
-                  </span>
-                )}
-                <span className="candidate-body">
-                  <span className="candidate-title-row">
-                    <strong>{item.title || "未命名岗位"}</strong>
-                    {item.score != null && (
-                      // 采集初筛候选带匹配分（与岗位池 FitScore 同一套 scoring.score_job）；
-                      // 一次采回十几条时，没有分数只能一行行读标题。ingest 候选没有这个字段。
-                      <span className="candidate-score-badge" title="匹配分（与岗位池同一套评分）">
-                        {item.score} 分
-                      </span>
-                    )}
-                    {item.existing_job_id != null && (
-                      <span className="candidate-existing-badge" title={`已在岗位池 · #${item.existing_job_id}`}>
-                        已在岗位池
-                      </span>
-                    )}
-                    {item.duplicate_in_thread_id != null && (
-                      <span className="candidate-duplicate-badge" title={`与近期聊天里的候选重复 · 线程 #${item.duplicate_in_thread_id}`}>
-                        重复候选
-                      </span>
-                    )}
-                  </span>
-                  <small>
-                    {[item.company_name, item.salary_text, [item.city, item.area].filter(Boolean).join(" · "), item.source]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </small>
-                  {status === "committed" && item.job_id != null && <em>已入库 · #{item.job_id}</em>}
-                  {status === "skipped" && <em>已跳过</em>}
-                </span>
-              </label>
-              {item.advice && <CandidateAdviceBlock advice={item.advice} />}
-              {onAsk && (
-                <div className="candidate-ask">
-                  <button
-                    type="button"
-                    className="small-action"
-                    title="把下一条提问锁定到这个岗位"
-                    onClick={() => onAsk(index, `${MARKERS[index] ?? index + 1} ${item.title || "未命名岗位"}`)}
-                  >
-                    <MessageCircleQuestion size={14} />
-                    问这个
-                  </button>
-                </div>
-              )}
-              {status === "committed" && boardWriteEnabled && (
-                <div className="candidate-board-write">
-                  <code className="candidate-board-line">{buildInboxLinePreview(item)}</code>
-                  <button
-                    className="small-action"
-                    type="button"
-                    disabled={!!item.board_written || boardWriteBusyIndex === index}
-                    onClick={() => void writeToBoard(index)}
-                  >
-                    {item.board_written ? (
-                      <>
-                        <CheckCircle2 size={14} />
-                        已写入看板
-                      </>
-                    ) : boardWriteBusyIndex === index ? (
-                      "写入中…"
-                    ) : (
-                      "写入看板"
-                    )}
-                  </button>
-                </div>
-              )}
-              {status === "skipped" && (
-                <div className="candidate-restore">
-                  <button
-                    type="button"
-                    className="icon-button compact"
-                    title="恢复为待选"
-                    aria-label={`恢复候选 ${item.title || "未命名岗位"} 为待选`}
-                    disabled={restoreBusyIndex === index}
-                    onClick={() => void restore(index)}
-                  >
-                    {restoreBusyIndex === index ? <Loader2 className="spin" size={14} /> : <RotateCcw size={14} />}
-                  </button>
-                  <span>恢复为待选</span>
-                </div>
-              )}
-            </li>
-          );
-        })}
+        {visibleIndexes.map((index) => renderCandidate(candidates[index], index))}
       </ul>
+      {blockedIndexes.length > 0 && (
+        <div className="candidate-blocked-section">
+          <button
+            type="button"
+            className="candidate-blocked-toggle"
+            onClick={() => setShowBlocked((v) => !v)}
+          >
+            {showBlocked ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            已排除岗位（{blockedIndexes.length}）
+          </button>
+          {showBlocked && (
+            <ul className="candidate-list candidate-list-blocked">
+              {blockedIndexes.map((index) => renderCandidate(candidates[index], index))}
+            </ul>
+          )}
+        </div>
+      )}
       {pendingIndexes.length > 0 && (
         <div className="candidate-actions">
           <button className="primary-action" type="button" disabled={busy || !selected.length} onClick={() => void commit(selected)}>

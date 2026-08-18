@@ -3375,6 +3375,102 @@ meter {
   white-space: nowrap;
 }
 
+.candidate-blocked-badge {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fde0e0;
+  color: #b33a3a;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.candidate-exclude {
+  margin-top: 4px;
+}
+
+.candidate-blocked-section {
+  margin-top: 8px;
+  border-top: 1px dashed #d0d6d2;
+  padding-top: 8px;
+}
+
+.candidate-blocked-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  color: #8a958d;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.candidate-blocked-toggle:hover {
+  color: #566259;
+}
+
+.candidate-list-blocked {
+  margin-top: 4px;
+  opacity: 0.75;
+}
+
+/* 排除项标签式编辑器（DealbreakerChips） */
+.dealbreaker-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px 3px 10px;
+  border-radius: 999px;
+  background: #fde0e0;
+  color: #b33a3a;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: #b33a3a;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0.6;
+  line-height: 1;
+}
+
+.chip-remove:hover:not(:disabled) {
+  opacity: 1;
+}
+
+.chip-input-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip-input-row input {
+  flex: 1;
+}
+
 .candidate-body small,
 .candidate-body em {
   color: #68766c;

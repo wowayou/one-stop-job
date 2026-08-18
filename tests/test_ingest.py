@@ -57,6 +57,7 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
         "duplicate_in_thread_id": 3,
         "advice": {"priority": "B", "direction": "邻近可接受", "next_action": "继续沟通"},
         "score": 78.5,
+        "hard_blocked": False,
     }
     stripped = strip_ui_only_fields(candidate)
     assert stripped == {
@@ -69,7 +70,7 @@ def test_strip_ui_only_fields_removes_only_ui_only_keys():
     assert "existing_job_id" in candidate
     assert "duplicate_in_thread_id" in candidate
     assert "advice" in candidate
-    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice", "score"}
+    assert set(CANDIDATE_UI_ONLY_FIELDS) == {"existing_job_id", "duplicate_in_thread_id", "advice", "score", "hard_blocked"}
 
 
 def _isolated_data_dir(monkeypatch, tmp_path):

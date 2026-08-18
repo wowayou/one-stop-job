@@ -2,6 +2,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, Info, Loader2, Pencil, Plus, Ref
 import { FormEvent, useEffect, useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
 import { ProviderModal, type ProviderModalSaveValues } from "../components/ProviderModal";
+import { DealbreakerChips } from "../components/DealbreakerChips";
 import { hasAnyBusy, hasBusy, type BusyState } from "../hooks/useBusyState";
 import { useEscapeClose } from "../hooks/useEscapeClose";
 import { DEFAULT_SCORING_WEIGHTS, GLOBAL_BUSY_KEYS } from "../lib/constants";
@@ -48,7 +49,8 @@ export function ConfigView({
   onAiStatus,
   onCollectSource,
   onUpdateProfile,
-  onUpdateWeights
+  onUpdateWeights,
+  onProfilePatched
 }: {
   sources: JobSourceStatus[];
   runs: SourceRun[];
@@ -59,6 +61,7 @@ export function ConfigView({
   onCollectSource: (sourceKey: string, label: string, zeroFallback: string) => Promise<void>;
   onUpdateProfile: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onUpdateWeights: (weights: Record<string, number>) => Promise<void>;
+  onProfilePatched: (profile: UserProfile) => void;
 }) {
   const [payload, setPayload] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
@@ -440,7 +443,11 @@ export function ConfigView({
                 </label>
                 <label>
                   排除项
-                  <input name="dealbreakers" defaultValue={profile.dealbreakers} />
+                  <DealbreakerChips
+                    profile={profile}
+                    onUpdated={onProfilePatched}
+                    onNotify={(kind, message) => onNotify(kind, message)}
+                  />
                 </label>
                 <label>
                   通勤偏好
