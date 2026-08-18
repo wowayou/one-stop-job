@@ -120,7 +120,7 @@ scripts/quality_gate.sh                                 # 完整质量门禁
 .venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000   # 后端
 cd frontend && npm install && npm run dev               # 前端 http://127.0.0.1:5173
 ```
-Windows 宿主机可用 `run_backend.bat` / `run_frontend.bat`。**不要混用宿主机与 WSL 的环境**:venv 必须在运行所在的系统里创建。`opencli`(BOSS 采集)是 Windows 工具;公众号 / beBee 等纯 Python 来源在 WSL 即可运行。
+Windows 宿主机可用 `start_app.bat`(Docker 模式)或 `run_quality_check.bat`。**不要混用宿主机与 WSL 的环境**:venv 必须在运行所在的系统里创建。`opencli`(BOSS 采集)是 Windows 工具;公众号 / beBee 等纯 Python 来源在 WSL 即可运行。
 
 日常使用(非改代码)优先单进程部署模式:`scripts/app.sh start`——构建一次 `frontend/dist` 后由**看门狗子进程**(`setsid` 独立会话)循环拉起 `uvicorn`(:8000,前端由后端挂载);uvicorn 崩溃时看门狗自动退避重启(5→10→…→60s 封顶,活过 5 分钟则重置),`do_stop` 删哨兵文件 `data/app/run.watchdog` 通知看门狗干净退出。`stop`/`status`/`logs`/`update` 见脚本;与上面的开发模式共用 `./data/job_one_stop/` 数据库,两者不要同时启动。pid 文件(`data/app/backend.pid`)指向看门狗进程本身,不是 uvicorn——`is_running` 检查的是守护是否在。
 

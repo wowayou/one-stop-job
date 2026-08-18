@@ -5,7 +5,7 @@
 ## 当前构建方式
 
 - 前端阶段使用 `frontend/package-lock.json` 和 `npm ci`。
-- 后端阶段按 `requirements-small.txt`、`requirements-large.txt` 分两步安装，避免大包下载超时时拖垮全部依赖。
+- 后端阶段用 `requirements-runtime.txt` 单层安装（`--timeout 300` 兜底大包），BuildKit cache mount 负责缓存。
 - 默认 npm registry 是 `https://registry.npmmirror.com`。
 - 默认 PyPI index 是 `https://mirrors.aliyun.com/pypi/simple`。
 - BuildKit cache 会缓存 npm 和 pip 下载结果。

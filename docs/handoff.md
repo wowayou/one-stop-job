@@ -37,7 +37,7 @@ BOSS / 智联已改为宿主机采集导入：
 
 - `README.md` / `QUICKSTART.md`：本地优先的运行入口。
 - `Dockerfile` / `docker-compose.yml`：Docker 部署入口。
-- `requirements-runtime.txt`：本地运行时依赖集合；`requirements.txt` 在此基础上追加本地测试依赖；Dockerfile 使用 `requirements-small.txt` / `requirements-large.txt` 分阶段安装运行时依赖。
+- `requirements-runtime.txt`：运行时依赖集合（Dockerfile 和本地开发共用）；`requirements.txt` 在此基础上追加本地测试依赖。
 - `scripts/docker_app.ps1`：Windows bat 的 Docker Compose helper，处理普通路径和 WSL UNC 路径。
 - `backend/app/main.py`：FastAPI 路由、采集生命周期、评分/准备/冲刺包接口、前端静态托管。
 - `backend/app/services/sources.py`：通用来源状态；容器模式下 OpenCLI 来源返回 `host_import_required`。

@@ -68,7 +68,7 @@ Windows Docker 用户可双击：
 - `stop_app.bat`
 - `run_deploy_check.bat`
 
-日常打开 Docker 版本用 `start_app.bat`，它会复用已有镜像；首次没有镜像时 Docker Compose 会自动构建。拉取新代码、修改 `Dockerfile`、`requirements-small.txt`、`requirements-large.txt`、`frontend/package-lock.json` 或前端源码后，再用 `rebuild_app.bat` 强制重建。这样可以避开每次启动都访问 npm/pip 镜像源导致的卡顿或失败。
+日常打开 Docker 版本用 `start_app.bat`，它会复用已有镜像；首次没有镜像时 Docker Compose 会自动构建。拉取新代码、修改 `Dockerfile`、`requirements-runtime.txt`、`frontend/package-lock.json` 或前端源码后，再用 `rebuild_app.bat` 强制重建。这样可以避开每次启动都访问 npm/pip 镜像源导致的卡顿或失败。
 
 启动前或排障时先跑轻量部署自检：
 
@@ -118,7 +118,7 @@ wsl: Failed to translate 'E:\Dev\...'
 
 ## 构建加速和网络故障
 
-首次构建需要拉基础镜像并下载 npm/pip 依赖，受网络影响最大。后续只要 `Dockerfile`、`requirements-small.txt`、`requirements-large.txt`、`frontend/package-lock.json` 没变，Docker cache 会复用大部分步骤。
+首次构建需要拉基础镜像并下载 npm/pip 依赖，受网络影响最大。后续只要 `Dockerfile`、`requirements-runtime.txt`、`frontend/package-lock.json` 没变，Docker cache 会复用大部分步骤。
 
 当前 Dockerfile 已做的加速：
 
@@ -126,7 +126,7 @@ wsl: Failed to translate 'E:\Dev\...'
 - healthcheck 使用 Python 标准库，不再 `apt-get install curl`。
 - `npm ci` 使用 BuildKit cache，并默认走 `https://registry.npmmirror.com`。
 - `pip install` 使用 BuildKit cache，默认只走 `https://mirrors.aliyun.com/pypi/simple`，避免官方 PyPI/文件站超时拖住构建。
-- Docker 镜像按 `requirements-small.txt` 和 `requirements-large.txt` 分阶段安装运行时依赖；`requirements.txt` 追加本地测试依赖，不进入生产镜像。
+- Docker 镜像用 `requirements-runtime.txt` 单层安装运行时依赖（`--timeout 300` 兜底大包）；`requirements.txt` 追加本地测试依赖，不进入生产镜像。
 
 可调构建参数：
 

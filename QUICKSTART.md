@@ -185,8 +185,6 @@ docker compose down
 
 ```bash
 docker compose logs -f
-
-# 或 Windows 双击：run_backend.bat
 ```
 
 **FAQ：Docker 与本地数据库不互通吗？** 是的,默认不互通。本地(单进程部署 / 本地开发)使用 `./data/job_one_stop/job_one_stop.sqlite3`,Docker 使用独立 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库,但也意味着 Docker 试用期间录入的数据不会自动出现在单进程/本地开发模式里,反之亦然。迁移方法见 [docs/setup-checklist.md](docs/setup-checklist.md)。

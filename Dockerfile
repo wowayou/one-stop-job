@@ -34,18 +34,12 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=0 \
     PIP_DEFAULT_TIMEOUT=60
 
-# 分阶段安装：先装小包（快速），再装大包（需要更长超时）
-COPY requirements-small.txt ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --retries 3 --timeout 60 \
-    --index-url "${PIP_INDEX_URL}" \
-    -r requirements-small.txt
-
-COPY requirements-large.txt ./
+# 单层安装：pandas/lxml/numpy 等大包用长超时兜底，pip cache mount 负责缓存
+COPY requirements-runtime.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --retries 5 --timeout 300 \
     --index-url "${PIP_INDEX_URL}" \
-    -r requirements-large.txt
+    -r requirements-runtime.txt
 
 COPY backend ./backend
 # config.yaml 是本地 gitignore 文件；镜像用跟踪的模板生成一份默认配置。

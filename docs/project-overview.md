@@ -219,8 +219,7 @@ scoring:
 | 文件 | 用途 |
 |------|------|
 | `requirements.txt` | **本地开发**：包含测试、代码检查等工具 |
-| `requirements-runtime.txt` | **运行时依赖集合**：被 `requirements.txt` 引用 |
-| `requirements-small.txt` / `requirements-large.txt` | **Docker 镜像**：分阶段安装运行时依赖，降低大包下载超时影响 |
+| `requirements-runtime.txt` | **运行时依赖集合**：被 `requirements.txt` 引用，Dockerfile 也直接使用 |
 | `requirements-automation.txt` | **可选**：Playwright 等重依赖 |
 | `frontend/package.json` | 前端依赖（React、Vite、TypeScript） |
 

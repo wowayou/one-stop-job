@@ -37,15 +37,17 @@
 
 ## 🚀 快速开始
 
-### 方式一：一条命令启动（Linux / WSL / macOS）
+### 方式一：单进程部署（Linux / WSL / macOS，推荐）
 
 ```bash
 git clone https://github.com/你的用户名/one-stop-job.git
 cd one-stop-job
-./quickstart.sh
+scripts/app.sh start
 ```
 
-自动完成：Python 虚拟环境 → 前端依赖 → 配置文件 → 前端构建 → 后端启动。访问 http://127.0.0.1:8000/
+自动完成：Python 虚拟环境 → 前端依赖 → 配置文件 → 前端构建 → 后端启动（带看门狗自动重启）。访问 http://127.0.0.1:8000/
+
+日常操作：`scripts/app.sh status` / `logs` / `stop` / `update`。详见 [QUICKSTART.md](QUICKSTART.md)。
 
 ### 方式二：Docker
 
@@ -66,6 +68,8 @@ docker compose up -d --build
 - **Linux**: 下载 .AppImage，chmod +x 后双击运行
 
 > 首次启动可能提示未知开发者——这是正常的（未签名），按系统提示确认即可。
+>
+> 桌面应用基于 [Tauri](https://tauri.app/) 构建，源码在 `src-tauri/`，由 [CI](.github/workflows/release.yml) 自动打包发布。
 
 ### 方式四：日常使用（已装好依赖后）
 

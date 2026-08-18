@@ -19,7 +19,6 @@
 |---|---|---|
 | 本地运行 | `README.md` / `QUICKSTART.md` / `scripts/dev_wsl.sh` | 本地开发优先，后端 `http://127.0.0.1:8000/`，前端 `http://127.0.0.1:5173/` |
 | Docker 运行 | `docker-compose.yml` / `start_app.bat` / `rebuild_app.bat` / `status_app.bat` / `stop_app.bat` | Windows 一键运行和部署入口，前后端统一 `http://127.0.0.1:8000/` |
-| 日志查看 | `run_backend.bat` / `run_frontend.bat` | 跟随 Docker app 容器日志，不再单独启动 Python/Vite |
 | 宿主机采集 | `tools/host_collect_boss.bat` / `tools/host_collect_zhilian.bat` / `tools/host_opencli_import.py` | BOSS/智联在宿主机运行 OpenCLI，CSV 自动导入主服务 |
 | WSL 开发运行器 | `scripts/dev_wsl.sh` | 管理本地后端、前端、PID 和日志 |
 | 部署自检 | `run_deploy_check.bat` / `scripts/deploy_check.sh` | 不依赖 `.venv`/`node_modules`，检查配置、Compose 和运行中服务探针 |
