@@ -1,13 +1,13 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-utils/schema.json",
   "productName": "job-one-stop",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "identifier": "com.job-one-stop.app",
   "build": {
     "frontendDist": "../frontend/dist",
     "devUrl": "http://127.0.0.1:5173",
-    "beforeDevCommand": "npm run dev --prefix frontend",
-    "beforeBuildCommand": "npm run build --prefix frontend"
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
   },
   "app": {
     "windows": [
