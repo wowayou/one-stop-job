@@ -353,39 +353,71 @@ async def _daily_digest_loop() -> None:
     from .services.context_repository import ContextRepositoryError
     from .services.daily_digest import build_daily_digest
 
-    raw_digest_cfg = settings.schedule_config.get("digest")
-    digest_cfg = raw_digest_cfg if isinstance(raw_digest_cfg, dict) else {}
-    try:
-        hour = int(digest_cfg.get("hour", 8))
-        minute = int(digest_cfg.get("minute", 20))
-    except (TypeError, ValueError):
-        hour, minute = 8, 20
-    if not (0 <= hour <= 23 and 0 <= minute <= 59):
-        hour, minute = 8, 20
-
-    token = telegram.bot_token()
-    raw_chat_id = settings.telegram_config.get("allowed_chat_id")
-    try:
-        allowed_chat_id = int(str(raw_chat_id).strip()) if str(raw_chat_id or "").strip() else None
-    except ValueError:
-        allowed_chat_id = None
-    if not token or allowed_chat_id is None:
-        logger.warning(
-            "晨间日清单已启用但未启动：%s",
-            "缺少 TELEGRAM_BOT_TOKEN（.env）" if not token else f"telegram.allowed_chat_id 无效：{raw_chat_id!r}",
-        )
-        return
-
-    # 15 分钟轮询 + 状态文件，而不是长睡到明早：机器在发送时点关机/休眠时，
-    # 长睡永远醒不到点；轮询保证开机后一个周期内补发当天清单，且当天只发一次。
-    state_path = daily_digest.digest_state_path(settings.data_dir)
-    collect_first = bool(digest_cfg.get("collect_first"))
     while True:
+        current_settings = get_settings()
+        raw_digest_cfg = current_settings.schedule_config.get("digest")
+        digest_cfg = raw_digest_cfg if isinstance(raw_digest_cfg, dict) else {}
+        digest_enabled = bool(digest_cfg.get("enabled"))
+        autopilot_enabled = (
+            str(current_settings.automation_config.get("mode") or "manual") == "autopilot"
+            and bool(current_settings.automation_config.get("daily_scan", True))
+        )
+        if not digest_enabled and not autopilot_enabled:
+            await asyncio.sleep(30)
+            continue
+        try:
+            hour = int(digest_cfg.get("hour", 8))
+            minute = int(digest_cfg.get("minute", 20))
+        except (TypeError, ValueError):
+            hour, minute = 8, 20
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            hour, minute = 8, 20
+
+        token = telegram.bot_token()
+        raw_chat_id = current_settings.telegram_config.get("allowed_chat_id")
+        try:
+            allowed_chat_id = int(str(raw_chat_id).strip()) if str(raw_chat_id or "").strip() else None
+        except ValueError:
+            allowed_chat_id = None
+
+        # 复用同一状态文件和每日一次幂等位；自动驾驶不依赖 Telegram，通知只是可选消费端。
+        state_path = daily_digest.digest_state_path(current_settings.data_dir)
+        # 晨间日清单原有的显式采集开关保持兼容；自动驾驶只是把它默认打开。
+        collect_first = autopilot_enabled or bool(digest_cfg.get("collect_first"))
         now = datetime.now()
         state = daily_digest.read_state(state_path)
         today_iso = date.today().isoformat()
-        if daily_digest.should_send_now(now, state.get("last_sent"), hour, minute):
+        collection_due = (now.hour, now.minute) >= (hour, minute) and state.get("last_collected") != today_iso
+        if collect_first and collection_due:
+            collect_note = ""
+            try:
+                from .services.collect_ops import run_source
+
+                with Session(engine) as session:
+                    result = await run_in_threadpool(run_source, session, _DIGEST_COLLECT_SOURCE)
+                if isinstance(result, dict) and result.get("status") != "success":
+                    logger.warning("自动驾驶定时采集失败：%s", result.get("error"))
+                    collect_note = daily_digest.format_collect_failure(result.get("error"))
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("自动驾驶定时采集失败，跳过本日采集", exc_info=True)
+                collect_note = daily_digest.format_collect_failure(exc)
+            daily_digest.write_state(state_path, last_collected=today_iso, collect_note=collect_note)
+            state = daily_digest.read_state(state_path)
+
+        if digest_enabled and daily_digest.should_send_now(now, state.get("last_sent"), hour, minute):
             # 回收站自动清理：晨间日清单时顺便清理超过保留期的软删除记录
+            if not digest_enabled:
+                await asyncio.sleep(900)
+                continue
+            if not token or allowed_chat_id is None:
+                logger.warning(
+                    "晨间日清单未发送：%s",
+                    "缺少 TELEGRAM_BOT_TOKEN（.env）" if not token else f"telegram.allowed_chat_id 无效：{raw_chat_id!r}",
+                )
+                await asyncio.sleep(900)
+                continue
             try:
                 from .services.job_ops import auto_purge_trash
                 with Session(engine) as session:
@@ -395,27 +427,6 @@ async def _daily_digest_loop() -> None:
             except Exception:  # noqa: BLE001
                 logger.warning("回收站自动清理失败", exc_info=True)
 
-            if collect_first and state.get("last_collected") != today_iso:
-                # 本人显式配置的每日一次定时采集（合规边界见 CLAUDE.md §3.3）；失败只记日志
-                # 不重试，日清单照常发——采集挂了不应连提醒一起丢。采集日期与发送日期分开记：
-                # 发送失败会在下个周期重试，采集绝不能跟着重跑（频率上限就是每日一次）。
-                collect_note = ""
-                try:
-                    from .services.collect_ops import run_source
-
-                    with Session(engine) as session:
-                        result = await run_in_threadpool(run_source, session, _DIGEST_COLLECT_SOURCE)
-                    if isinstance(result, dict) and result.get("status") != "success":
-                        # run_source 只把 SourceRun 置 failed 并返回，不抛异常，所以必须查返回值。
-                        logger.warning("晨间定时采集失败：%s", result.get("error"))
-                        collect_note = daily_digest.format_collect_failure(result.get("error"))
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("晨间定时采集失败，跳过本日采集", exc_info=True)
-                    collect_note = daily_digest.format_collect_failure(exc)
-                daily_digest.write_state(state_path, last_collected=today_iso, collect_note=collect_note)
-                state = daily_digest.read_state(state_path)
             try:
                 with Session(engine) as session:
                     payload = await run_in_threadpool(build_daily_digest, session, date.today())
@@ -451,9 +462,8 @@ async def lifespan(_app: FastAPI):
     tasks: list[asyncio.Task] = []
     if settings.telegram_config.get("enabled"):
         tasks.append(asyncio.create_task(_telegram_poll_loop()))
-    raw_digest_cfg = settings.schedule_config.get("digest")
-    if isinstance(raw_digest_cfg, dict) and raw_digest_cfg.get("enabled"):
-        tasks.append(asyncio.create_task(_daily_digest_loop()))
+    # 循环常驻但在两种能力都关闭时只做低频配置检查；这样 Web 切换自动驾驶后无需重启。
+    tasks.append(asyncio.create_task(_daily_digest_loop()))
     try:
         yield
     finally:
@@ -466,7 +476,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title=settings.app_name, version="0.1.0", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -490,7 +500,7 @@ app.include_router(scoring.router)
 app.include_router(misc.router)
 
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 
@@ -853,7 +863,7 @@ def _deployment_diagnostics() -> dict[str, Any]:
 
 @app.get("/api/config")
 async def get_app_config() -> dict:
-    return _safe_config_response(settings.config)
+    return _safe_config_response(get_settings().config)
 
 
 @app.put("/api/config")

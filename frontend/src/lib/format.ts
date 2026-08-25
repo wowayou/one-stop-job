@@ -110,6 +110,14 @@ export function runDetailLines(run: SourceRun, fallback?: string) {
   if (report?.already_pending) {
     details.push(`已在待筛列表或此前跳过：${report.already_pending} 条，本次不再重复列出。`);
   }
+  // 评分闸门挡掉的同样要露出来：否则「抓了 30 条只剩 4 条待筛」看着像丢数据。
+  const gate = report?.score_gate;
+  if (gate?.enabled) {
+    if (gate.hard_blocked) details.push(`命中硬性排除（排除词/城市/薪资）：${gate.hard_blocked} 条。`);
+    if (gate.below_score) details.push(`低于推荐分数线 ${gate.min_score ?? ""} 分：${gate.below_score} 条。`);
+    if (gate.truncated) details.push(`超出单次待筛上限 ${gate.max_pending ?? ""} 条，本次暂缓：${gate.truncated} 条。`);
+    for (const sample of gate.samples ?? []) details.push(`已挡掉：${sample}`);
+  }
   for (const item of skippedItems(run)) {
     const reason = item.reason || "未说明原因";
     details.push(item.url ? `${item.url}：${reason}` : reason);
@@ -125,6 +133,9 @@ export function runCountsText(run: SourceRun) {
   if (report?.area_filter?.enabled && report.area_filter.filtered) {
     parts.push(`${report.area_filter.filtered} 区域过滤`);
   }
+  const gateFiltered =
+    (report?.score_gate?.hard_blocked ?? 0) + (report?.score_gate?.below_score ?? 0) + (report?.score_gate?.truncated ?? 0);
+  if (report?.score_gate?.enabled && gateFiltered) parts.push(`${gateFiltered} 评分过滤`);
   if (report?.pending != null) parts.push(`${report.pending} 待筛`);
   else if (run.created_count) parts.push(`${run.created_count} 新增`);
   if (run.updated_count) parts.push(`${run.updated_count} 刷新`);
@@ -182,7 +193,11 @@ export function buildInboxLinePreview(candidate: IngestCandidate): string {
   const source = candidate.source || "manual";
   const now = new Date();
   const dateTag = `${String(now.getMonth() + 1).padStart(2, "0")}${String(now.getDate()).padStart(2, "0")}`;
-  return `- [ ] ${company} - ${title} - ${salary} - ${source}/${dateTag} - 未判断 - 下一步：补齐主行并新建详情卡`;
+  const line = `- [ ] ${company} - ${title} - ${salary} - ${source}/${dateTag} - 未判断 - 下一步：补齐主行并新建详情卡`;
+  // JD 链接与后端 services/board_write.build_inbox_line 必须逐字一致：这段是「点之前原样展示
+  // 将写入的整行」（红线 §3.10），预览和实际写入不一样就等于没有预览。
+  const url = flatten(candidate.url);
+  return url ? `${line} - [JD](${url})` : line;
 }
 
 export function asConfigMap(value: unknown): Record<string, unknown> {

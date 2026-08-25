@@ -89,7 +89,7 @@ def attach_candidate_scores(session: Session, candidates: list[dict]) -> list[di
     # 局部导入：queries → jobs、advice → queries，模块级引用会成环。
     from .advice import candidate_job
     from .queries import get_profile
-    from .scoring import score_job
+    from .scoring import score_job_configured
 
     if not candidates:
         return []
@@ -105,7 +105,7 @@ def attach_candidate_scores(session: Session, candidates: list[dict]) -> list[di
     for candidate in candidates:
         company = companies.get(str(candidate.get("company_name") or "").strip())
         try:
-            result = score_job(
+            result = score_job_configured(
                 candidate_job(candidate),
                 company,
                 research.get(company.id, []) if company and company.id is not None else [],
@@ -113,11 +113,37 @@ def attach_candidate_scores(session: Session, candidates: list[dict]) -> list[di
             )
             candidate["score"] = round(float(result.total), 1)
             candidate["hard_blocked"] = result.hard_blocked
+            if result.details.get("reach"):
+                candidate["reach"] = result.details["reach"]
         except Exception:  # noqa: BLE001 - 单条评分失败不影响其余候选，排序时沉底
             logger.warning("候选评分失败：%s", candidate.get("title"), exc_info=True)
             candidate["score"] = None
             candidate["hard_blocked"] = False
     return sorted(candidates, key=lambda item: item.get("score") if item.get("score") is not None else -1, reverse=True)
+
+
+def attach_candidate_application_packs(session: Session, candidates: list[dict], *, limit: int = 10) -> int:
+    """为头部候选生成纯本地投递材料，不入库、不外发，返回生成数量。"""
+    from .advice import candidate_job
+    from .prep import build_interview_prep
+    from .queries import get_profile
+
+    profile = get_profile(session)
+    generated = 0
+    for candidate in candidates:
+        if generated >= max(0, limit) or candidate.get("hard_blocked"):
+            continue
+        reach = candidate.get("reach") if isinstance(candidate.get("reach"), dict) else {}
+        if reach.get("recommendation") == "排除":
+            continue
+        payload = build_interview_prep(candidate_job(candidate), None, profile)
+        candidate["application_pack"] = {
+            "resume_version": payload["tailored_resume"],
+            "application_reason": payload["core_pitch"],
+            "risk_questions": payload["questions_to_ask"],
+        }
+        generated += 1
+    return generated
 
 
 def job_payload(job: Job, latest: FitScore | None = None, source_links: list[JobSourceLink] | None = None) -> dict:

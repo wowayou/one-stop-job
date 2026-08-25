@@ -81,6 +81,29 @@ job_sources:
 general:
   data_dir: "./data/job_one_stop"     # SQLite 数据目录，本地数据不会提交
 
+# ==================== 自动驾驶与求职相邻度 ====================
+# 只自动搜集、去重、分类、评分和生成本地材料，最后仍需本人确认；不自动投递、不自动私信。
+automation:
+  mode: manual       # manual | autopilot
+  daily_scan: true
+  max_candidates_per_day: 30
+  max_application_packs_per_day: 10
+
+reach:
+  level: core        # core | adjacent | exploratory
+  rescore_existing: true
+  max_queries_per_scan: 9
+  # 个人岗位族请只在本机 config.yaml 覆盖；这里仅是通用空模板示意。
+  # policy:
+  #   - key: example_family
+  #     label: 示例岗位族
+  #     level: core
+  #     search_terms: [示例岗位]
+  #     keywords: [示例关键词]
+  #     transferable: [示例可迁移能力]
+  #     required: [示例必要条件]
+  #     exclude: [示例排除项]
+
 # ==================== 公司调研配置 ====================
 research:
   source_allowlist:
@@ -178,6 +201,13 @@ collect:
     # 「市南」「市南区」会归一后比对，两种写法都行。
     keep_unknown_area: true   # 解析不出区的岗位（公众号/beBee 常缺）默认放行：未知 ≠ 不符，
                               # 挡掉等于整批吃掉那两个来源。设 false 才连未知一起挡。
+
+  # 候选闸门：评分之后按分数收窄「待筛」量，让漏斗逐级变小而不是原样堆到眼前。
+  # 挡掉的条数与样例都会记进 SourceRun.raw_config，在 Web 采集面板可查（不静默丢数据）。
+  score_gate:
+    enabled: true
+    min_score: 45         # 低于此分不进待筛。0 或 enabled:false = 关闭这道闸门
+    max_pending: 15       # 单次最多挂多少条待筛，按分数取头部；0 = 不限量
 
 # ==================== 跟进提醒配置 ====================
 # fit/interview 状态超过 stale_days 天没有任何活动（状态变更/面试复盘/跟进任务）

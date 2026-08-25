@@ -13,8 +13,15 @@ from sqlmodel import Session, SQLModel, create_engine, select
 
 from backend.app.candidates import strip_ui_only_fields
 from backend.app.models import ChatMessage, ChatThread, Job
-from backend.app.services.collect_filter import apply_area_filter, area_allowed, normalize_area
-from backend.app.services.collect_ops import run_collector
+from backend.app.services.collect_filter import (
+    DEFAULT_MAX_PENDING,
+    DEFAULT_MIN_SCORE,
+    apply_area_filter,
+    apply_score_gate,
+    area_allowed,
+    normalize_area,
+)
+from backend.app.services.collect_ops import collect_run_summary, run_collector
 from backend.app.services.importer import split_known_records, upsert_job_records
 from backend.app.services.normalizer import normalize_record
 
@@ -271,3 +278,134 @@ def test_pending_candidate_rows_feed_digest_sorted_by_score(collect_settings):
         session.add(message)
         session.commit()
         assert pending_candidate_rows(session) == []
+
+
+# ==================== 候选闸门（纯函数） ====================
+
+
+def _cand(title: str, score: float | None, *, hard_blocked: bool = False) -> dict:
+    return {"title": title, "score": score, "hard_blocked": hard_blocked}
+
+
+def test_score_gate_drops_hard_blocked_and_below_threshold():
+    """硬排除 + 低分一律不进待筛：漏斗必须逐级收窄，不是把同一批原样端出来。
+
+    硬排除项是本人早就写下的底线（dealbreakers/城市/薪资），不该每次采集都摆到眼前
+    重新否决一遍；低分是评分已经判定不合格。两者都只记数，不静默丢（§7）。
+    """
+    kept, report = apply_score_gate(
+        [
+            _cand("独立站运营", 72.5),
+            _cand("广告优化师", 61.0, hard_blocked=True),
+            _cand("线上课程优化", 24.4),
+            _cand("外贸网站运营", 45.0),  # 恰好等于门槛：放行（下界包含）
+        ],
+        {"enabled": True},
+    )
+
+    assert [item["title"] for item in kept] == ["独立站运营", "外贸网站运营"]
+    assert (report["hard_blocked"], report["below_score"], report["truncated"]) == (1, 1, 0)
+    assert report["kept"] == 2
+    # 挡掉的要能在 Web 面板上认出是哪类岗位，且带原因。
+    assert report["samples"] == ["广告优化师 · 命中硬性排除", "线上课程优化 · 24.4 分低于 45"]
+
+
+def test_score_gate_keeps_unscored_candidates():
+    """`score is None` 是我们自己的评分故障，不能因此静默吃掉一个可能合适的岗位。"""
+    kept, report = apply_score_gate([_cand("评分失败的岗位", None)], {"enabled": True})
+    assert [item["title"] for item in kept] == ["评分失败的岗位"]
+    assert (report["hard_blocked"], report["below_score"]) == (0, 0)
+
+
+def test_score_gate_truncates_tail_by_max_pending():
+    """超出单次上限的按分截断（输入已降序），尾部只记数——注意力优先给头部。"""
+    candidates = [_cand(f"岗位{i}", 90.0 - i) for i in range(6)]
+    kept, report = apply_score_gate(candidates, {"enabled": True, "max_pending": 3})
+    assert [item["title"] for item in kept] == ["岗位0", "岗位1", "岗位2"]
+    assert report["truncated"] == 3
+    assert report["kept"] == 3
+
+
+def test_score_gate_disabled_passes_everything_through():
+    """关掉闸门 = 回到加它之前的行为，一条都不挡。"""
+    candidates = [_cand("低分", 10.0), _cand("硬排除", 80.0, hard_blocked=True)]
+    kept, report = apply_score_gate(candidates, {"enabled": False})
+    assert kept == candidates
+    assert report["enabled"] is False
+
+
+def test_score_gate_falls_back_to_defaults_on_invalid_config():
+    """配置值非法时退回默认门槛，绝不因为读配置失败就整批放行或整批挡掉。"""
+    _, report = apply_score_gate([_cand("岗位", 50.0)], {"enabled": True, "min_score": "abc", "max_pending": None})
+    assert report["min_score"] == DEFAULT_MIN_SCORE
+    assert report["max_pending"] == DEFAULT_MAX_PENDING
+
+
+# ==================== 闸门接入采集主流程 ====================
+
+
+def test_run_collector_narrows_candidates_by_score_gate(collect_settings):
+    """采集主流程里闸门要真的生效，且挡掉的条数出现在 SourceRun 报告与线索正文里。"""
+    collect_settings(area_filter={"enabled": False}, score_gate={"enabled": True, "min_score": 55})
+    with _session() as session:
+        run = run_collector(
+            session,
+            "BOSS直聘",
+            _StubCollector([_record("独立站运营"), _record("前台文员", company="别的公司")]),
+        )
+
+        gate = run["raw_config"]["score_gate"]
+        assert gate["enabled"] is True
+        # 两条都是 60 分基线（测试画像为空），55 分线下全放行；关键是报告结构落进了 raw_config。
+        assert gate["kept"] == run["raw_config"]["pending"]
+
+        collect_settings(area_filter={"enabled": False}, score_gate={"enabled": True, "min_score": 99})
+        second = run_collector(session, "BOSS直聘", _StubCollector([_record("谷歌SEO", company="第三家")]))
+        second_gate = second["raw_config"]["score_gate"]
+        assert second_gate["below_score"] == 1
+        assert second["raw_config"]["pending"] == 0
+        # 全被挡掉时不建空线索（与「没有待筛项」同一口径）。
+        assert len(session.exec(select(ChatThread)).all()) == 1
+
+
+def test_collect_run_summary_reports_gate_counts():
+    """计数摘要必须报出闸门挡掉的条数，否则「抓了 30 条只剩 4 条」看着像丢数据。"""
+    from backend.app.services.collect_ops import collect_run_summary
+
+    text = collect_run_summary(
+        30,
+        {
+            "area_filter": {"enabled": True, "filtered": 8},
+            "score_gate": {"enabled": True, "hard_blocked": 5, "below_score": 10, "truncated": 3, "min_score": 45.0},
+            "pending": 4,
+        },
+    )
+    assert "本次采集 30 条" in text
+    assert "区域过滤 8 条" in text
+    assert "硬排除 5 条" in text
+    assert "低于 45 分 10 条" in text
+    assert "超出单次上限暂缓 3 条" in text
+    assert text.endswith("待筛 4 条。")
+
+
+def test_digest_excludes_hard_blocked_pending_candidates(collect_settings):
+    """手机清单不推硬阻断候选：Web 里它们是折叠的，推到手机上等于重新要一次注意力。
+
+    闸门关闭或历史遗留时兜底——`pending_candidate_rows` 自己也要过滤。
+    """
+    from backend.app.services.daily_digest import pending_candidate_rows
+
+    collect_settings(area_filter={"enabled": False}, score_gate={"enabled": False})
+    with _session() as session:
+        run_collector(session, "BOSS直聘", _StubCollector([_record("独立站运营"), _record("广告优化师", company="别家")]))
+        message = session.exec(select(ChatMessage)).one()
+        candidates = message.metadata_json["candidates"]
+        message.metadata_json = {
+            **message.metadata_json,
+            "candidates": [{**candidates[0], "hard_blocked": True}, {**candidates[1], "hard_blocked": False}],
+        }
+        session.add(message)
+        session.commit()
+
+        rows = pending_candidate_rows(session)
+        assert [row["title"] for row in rows] == [candidates[1]["title"]]

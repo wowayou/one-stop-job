@@ -6,6 +6,8 @@
 
 > Phase 2 集成边界：`JOB_ONE_STOP_CONTEXT_REPO_PATH` 可指向独立的个人操作仓库。读取只允许通过 `ContextRepository` 白名单；写入只发生在本人于 Web 聊天的已入库候选卡上点「写入看板」时（点击前原样展示将写入的整行），由唯一的 `ContextWriter` 通道在白名单 `board` 文件的「收集箱」列内插入一行。除此之外不得有任何写入路径（有绊线测试锁定）。
 
+> **自动驾驶边界**：`automation.mode=autopilot` 只自动执行每日搜集、去重、岗位族识别、评分、候选排序和本地投递材料准备，最终进入人工确认队列；它不提交表单、不联系招聘方、不改变岗位/看板状态。`auto_apply_experiment` 仅保留为未来独立高风险模式名，当前版本不实现也不允许启用。自动驾驶与自动投递不是同一能力，任何后续自动投递实验都必须另做权限、幂等、审计、白名单和平台风险评估。
+
 ---
 
 ## 1. 架构与数据流(单一主干,不要绕过)
@@ -16,13 +18,16 @@
 来源(Source)
   └─> Collector.collect() -> list[dict]        # 每个来源一个采集器,产出"原始 dict"
         └─> services/normalizer.normalize_record(raw, source)   # 模糊键映射 + 薪资/城市解析 + external_id
-              └─> services/collect_filter.apply_area_filter     # 区域白名单(只挡采集器路径;挡掉的只记数,不静默丢)
+              └─> services/collect_filter.apply_area_filter     # ①区域白名单(只挡采集器路径;挡掉的只记数,不静默丢)
                     ├─ 已在岗位池(importer.split_known_records) ─> upsert_job_records   # 只刷新快照,created 恒为 0
-                    └─ 全新 ─> chat_ingest.persist_collect_candidates                   # kind="collect" 候选,不写 Job
-                                 └─> 本人在 Web 勾选「入库选中」
-                                       └─> routers/chat.commit_candidates -> upsert_job_records
-                                             └─> SQLite(Job/Company/JobSourceLink)
-                                                   └─> scoring / prep / research        # 纯消费端,source-agnostic
+                    └─ 全新 ─> ②_dedupe_fresh                        # 已在待筛/已跳过的不再列一遍
+                          └─> jobs.attach_candidate_scores           # 与岗位池 FitScore 同一个 score_job
+                                └─> ③collect_filter.apply_score_gate # 硬排除 / 低于 min_score / 超 max_pending
+                                      └─> chat_ingest.persist_collect_candidates   # kind="collect" 候选,不写 Job
+                                            └─> ④本人在 Web 勾选「入库选中」        # 硬阻断/已在池/重复的默认不勾
+                                                  └─> routers/chat.commit_candidates -> upsert_job_records
+                                                        └─> SQLite(Job/Company/JobSourceLink)
+                                                              └─> scoring / prep / research   # 纯消费端,source-agnostic
 ```
 
 不可变事实:
@@ -37,16 +42,21 @@
 - `backend/app/services/collectors.py` — 各来源采集器(`BossOpenCLICollector` / `TabularFileCollector` / `WeChatPasteCollector` / `BeBeeCollector`)
 - `backend/app/services/normalizer.py` — `normalize_record` / `parse_salary` / `parse_city_area` / `stable_external_id`(**改这里要极谨慎,影响所有来源**)
 - `backend/app/services/importer.py` — `upsert_job_records` / `get_or_create_company` / `split_known_records`（只读分流：哪些记录已在岗位池、哪些是全新的）
-- `backend/app/services/collect_filter.py` — 区域白名单纯函数（`normalize_area` 削行政区后缀、`area_allowed`、`apply_area_filter`）。只被 `collect_ops` 调用；`city == area` 视为「区域未知」（`parse_city_area` 对单段输入的产物），是否放行看 `keep_unknown_area`。配置在 `config.yaml collect.area_filter`。
+- `backend/app/services/collect_filter.py` — 采集结果过滤纯函数，两道闸门都在这里，只被 `collect_ops` 调用：
+  - **区域白名单**（`normalize_area` 削行政区后缀、`area_allowed`、`apply_area_filter`），跑在评分**之前**；`city == area` 视为「区域未知」（`parse_city_area` 对单段输入的产物），是否放行看 `keep_unknown_area`。配置在 `config.yaml collect.area_filter`。
+  - **候选闸门**（`apply_score_gate`），必须跑在 `attach_candidate_scores` **之后**（它筛的就是候选上的 `score`/`hard_blocked`）：硬阻断 → 低于 `min_score` → 超出 `max_pending` 的尾部，依次收窄。`score is None`（评分故障）一律放行——分数缺失是我们自己的问题，不能因此吃掉一个可能合适的岗位。配置在 `config.yaml collect.score_gate`，默认 `min_score: 45` / `max_pending: 15`，`enabled: false` 即回到加它之前的行为。
+  两道闸门的报告结构都固定并进 `SourceRun.raw_config`，挡掉的条数与前 5 条样例都要能查（§7 不静默丢数据）；计数措辞由 `collect_run_summary` 统一输出，Web 线索正文与手机回执共用。
+- `backend/app/services/reach_policy.py` — 求职相邻度唯一业务入口：解析 `reach.policy` 岗位族、按 `core/adjacent/exploratory` 分类、生成带 100/70-30/50-30-20 配额的搜索计划，并输出能力重合、必要条件缺口、可补齐差距和推荐/人工判断/排除结论。个人岗位族只放本机忽略的 `config.yaml`；公开仓库的 `config.example.yaml` 只给通用空模板，不写个人经历。
 - `backend/app/services/<source>.py` — 单来源的抓取/解析细节(如 `wechat.py` / `bebee.py` / `ai.py` / `yuanbao.py`)
 - `backend/app/services/context_repository.py` — 外部个人操作仓库的只读白名单适配器；不得绕过它读取任意路径
 - `backend/app/services/board_sla.py` — 看板「下一步」日期解析（纯函数，只读）：活跃列卡片 → 到期动作（send/follow/close），供日清单使用。日期只从「下一步：」之后、「[详情]」链接之前的动作区提取。
 - `backend/app/services/daily_digest.py` — 晨间日清单组装（看板到期动作 + followup stale 岗位 → digest 文本）；被 `routers/followups.py` 的 `/api/follow-ups/board-sla` 端点与 main.py 的 `_daily_digest_loop` 共用。推送仅发机主本人（红线 §2 豁免），配置在 `config.yaml schedule.digest`（默认关闭）。循环为 15 分钟轮询 + `data 目录/daily_digest_state.json` 状态文件：到点未发才发、当天只发一次，发送时点关机则开机后补发。状态文件里 **`last_sent`（确认送达的日期）与 `last_collected`（晨间采集的日期）必须分开记**：`telegram.send_message` 失败只吞异常返回 None，所以「发出去了」只能看返回值——没送达就不写 `last_sent`，下个周期重试；而采集绝不能跟着重试（红线 §3.3 频率上限每日一次）。采集失败（`run_source` 只置 `SourceRun.failed` 并返回，不抛）压成一行 `collect_note` 附在推送正文，否则「今天没岗位」和「今天没采到」在手机上长得一模一样；附注里带 `/collect` 补采入口——定时那次不自动重跑，补救手段必须写在失败现场（见 §7 Telegram 命令）。
 - **出站可达性**：`api.telegram.org` 在国内常被 DNS 污染，直连是 `[Errno 101] Network is unreachable`；而自启进程由 Windows 启动文件夹的 `.bat` → `wsl.exe` 拉起，**拿不到交互 shell 的代理变量**。代理写进 `.env`（`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`，`config.py` 的 `load_dotenv` 会灌进 `os.environ`，httpx 自动生效），`NO_PROXY` 保留国内域名让 AI/公众号/BOSS 继续直连。诊断顺序：`data/app/backend.log` → `daily_digest_state.json` → `source_runs` 表。
-- `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + 晨间日清单循环（`_daily_digest_loop`，`schedule.digest` 开启时启动）+ SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
+- `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + 晨间日清单/自动驾驶循环（`_daily_digest_loop` 常驻低频检查，关闭时不采集）+ SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
+- `backend/app/services/automation.py` — 自动驾驶的薄服务层：读写模式/相邻度、调用既有 `run_source` 扫描、批量追加 FitScore 并原位重评候选。不得复制采集漏斗，也不得实现任何外部投递动作。
 - `backend/app/routers/<域>.py` — 按域拆分的 `APIRouter`（jobs/chat/collect/scoring/misc/companies/drafts/followups/interviews），main.py `include_router` 挂载。路由只依赖 `deps/models/schemas/services/config`，**绝不 import main**（循环）。
 - `backend/app/services/queries.py` — 跨路由共享的查询/落盘 helper（`query_jobs`/`get_profile`/`score_job_into_db`/`application_events`/`download_response`/`job_response`/`validate_weights`）。
-- `backend/app/services/{job_ops,collect_ops,prep_ops,sprint_ops,chat_support}.py` — 各域从 main 下沉的专属 helper（岗位状态重算/删除、采集运行、面试准备、冲刺包、聊天上下文）。`collect_ops._triage_records` 是采集三分叉（区域过滤 / 已知刷新 / 全新进候选）的唯一实现，`run_collector` 与 `run_wechat_collection` 共用；计数摘要 `collect_run_summary` 同时供聊天正文与手机回执，两处措辞不许各写一遍。
+- `backend/app/services/{job_ops,collect_ops,prep_ops,sprint_ops,chat_support}.py` — 各域从 main 下沉的专属 helper（岗位状态重算/删除、采集运行、面试准备、冲刺包、聊天上下文）。`collect_ops._triage_records` 是采集漏斗（区域过滤 → 已知刷新 / 全新 → 判重 → 评分 → 候选闸门）的唯一实现，`run_collector` 与 `run_wechat_collection` 共用；**顺序不可调**：闸门筛的是评分产物，挪到 `attach_candidate_scores` 之前就变成按空字段过滤，会把整批候选静默挡掉。计数摘要 `collect_run_summary` 同时供聊天正文与手机回执，两处措辞不许各写一遍。
 - `backend/app/services/advice.py` — 候选岗位的初步决策建议（复用 `decision_chat` 规则引擎 + `ai.analyze_decision_chat_llm`，只读）。构造的 `Job(...)` 是纯内存载体，**从不 add/upsert**；建议挂在候选的纯 UI 字段 `advice` 上，入库前由 `strip_ui_only_fields` 剔除。
 - `backend/app/services/decision_reply.py` — 一轮决策问答的落盘核心（user 消息 + 规则/模型分析 + assistant 回复 + `AnalysisRun`），Web `POST /messages` 与 Telegram 追问共用；**只写聊天，不 import importer/upsert**。
 - `backend/app/services/chat_ingest.py` — 候选→chat 落盘/线程查找/删除的中立模块：`_persist_ingest_to_chat`（`kind="ingest"`，手机/HTTP 发来的材料）与 `persist_collect_candidates`（`kind="collect"`，采集初筛）、`recent_collect_candidates`（近 30 天候选，供采集判重与日清单待筛段）。被 chat 路由、Telegram 轮询与 `collect_ops` 共享；**绝不 import importer / upsert（绊线测试锁定）**。注意：`commit`/`board-write`/采集的 upsert 是允许的用户触发入库，放在 `routers/` 或 `collect_ops` 里，**不得塞进本模块**。
@@ -64,7 +74,7 @@
    - 配置驱动(类似 BOSS/beBee):用 `services/collect_ops.py` 的 `run_collector(session, source_label, collector)`。
    - 粘贴/外部输入驱动(类似公众号):参考 `collect_ops.run_wechat_collection`。
    - 端点负责建 `SourceRun`、跑采集器、把 `collector.report` 写进 `SourceRun.raw_config`。失败置 `status="failed"` + `error`,**绝不抛裸异常给前端**。
-   - 入库口径由 `collect_ops._triage_records` 统一处理(区域过滤 → 已知刷新 → 全新进候选),新来源**什么都不用做**;不要在新端点里自己调 `upsert_job_records`,那会绕开人工初筛。
+   - 入库口径由 `collect_ops._triage_records` 统一处理(区域过滤 → 已知刷新 → 全新 → 判重 → 评分 → 候选闸门),新来源**什么都不用做**;不要在新端点里自己调 `upsert_job_records`,那会绕开人工初筛,也会绕开收窄漏斗。
 5. **测试必须有**(见 §4):解析器纯函数测试 + 端点流程测试(`monkeypatch` 掉网络抓取,不联网) + 「采集不新建 Job、只产出候选」的断言(照抄 `tests/test_collect_triage.py`)。
 6. **前端**:岗位带上新 `source` 会自动出现在表格「来源」列与来源筛选;如需主动触发,在 topbar 加一个按钮调用对应端点(照搬 `runBossCollection` / `collectWeChat` 模式)。视图层不得写来源特判逻辑。
 7. **更新文档**:README 加来源说明,必要时更新本文件的"当前数据源"。
@@ -76,7 +86,8 @@
 1. **本地优先 / 单用户**:无多用户、无登录体系;数据只存本机 SQLite。
 2. **不自动化对外动作**:不自动投递、不自动发消息、不自动外发任何联系方式。抓到的招聘人微信/电话/邮箱**仅本地留存供查看**。
    - **例外(仅此一种):给机主本人发系统回执。** Telegram 渠道只向白名单 `allowed_chat_id`(机主自己那个 chat)回执「识别到 N 个候选，请在 Web 确认入库」、随回执附上的**初步决策建议**,以及机主用 `?`/`/ask` 主动提问时的**回答**——都属于本机→本人的状态通知/判断结果,**不是对外动作**。绝不向招聘方或任何第三方发任何消息;回执内容不得包含未经本人触发就外发的联系方式。**ingest 默认不写 Job 表**，用户在聊天里点「入库选中」才 upsert;建议与追问同样只读,不入库、不改岗位状态。
-3. **抓取合规**:只抓**公开**内容;低频、人工触发(唯一例外:本人在 `config.yaml schedule.digest.collect_first` 显式开启的**每日一次**晨间定时采集,频率上限即每日一次,失败只记日志不重试);**不破解验证码 / 风控页 / 付费墙**;尊重 robots 与各平台 ToS;**不二次分发**抓到的内容。被风控拦截就跳过并记录原因,不硬刚。
+   - `automation.mode=autopilot` 也不构成例外扩张：它只能产出本地候选与材料，确认按钮仍是唯一投递前人工闸门；“停止自动化”必须能立即阻止后续定时扫描。
+3. **抓取合规**:只抓**公开**内容;低频、人工触发(唯一例外:本人在 `config.yaml` 显式开启 `automation.mode=autopilot` 或 `schedule.digest.collect_first` 后的**每日一次**晨间定时采集,两者共用同一幂等位,频率上限即每日一次,失败只记日志不重试);**不破解验证码 / 风控页 / 付费墙**;尊重 robots 与各平台 ToS;**不二次分发**抓到的内容。被风控拦截就跳过并记录原因,不硬刚。
 4. **不泄密**:`.env`、`*.sqlite3`、`data/`、日志、`*.xlsx`、登录态(`.yuanbao/`、`*storage_state*`)一律不提交;改 `.gitignore` 前先确认不会带出隐私。
 5. **不用 `create_all` 偷改表结构**:`init_db()` 走 `SQLModel.metadata.create_all`——**新增表 OK,但给现有表加列不会自动迁移**。优先复用 `Job` 现有字段;确需加列/改列,写显式 alembic 迁移并在 PR 说明,不可假设旧库会自动升级。
 6. **管线唯一**:新增来源必须经 `normalizer` + `importer`,不得绕过;不得在采集器里直接 `session.add(Job(...))`。
@@ -142,7 +153,7 @@ Windows 宿主机可用 `start_app.bat`(Docker 模式)或 `run_quality_check.bat
 
 - `services/ingest.py::run_ingest` 是**统一分派器**:文本/截图 → `classify_links` 分派采集器 + freeform LLM → **只返回 `candidates`（不写 Job 表）**。规范化仍走 `normalize_record`；真正入库只在用户确认后调用 `upsert_job_records_with_ids`（§6）。`Job.source` 仍是各来源标签,**不是** `Telegram`(§8)。
 - **默认不入库**:`POST /api/ingest` 与 Telegram 轮询都走 `_persist_ingest_to_chat`：建 `ChatThread(kind="ingest")`，user 消息保留原文/截图附件，assistant 消息 `metadata_json.candidates` 挂候选。用户在 Web 聊天勾选后 `POST /api/chat/threads/{id}/candidates/commit` 才 upsert + 尽力评分。跳过/不入库时原料仍保留在聊天里。
-- **采集也走同一套候选**:`kind="collect"` 线索（`persist_collect_candidates`）挂的是采集回来的全新岗位，带 `score`（`jobs.attach_candidate_scores`，与岗位池 FitScore 同一个 `scoring.score_job`）并按分降序；commit / restore / board-write 端点与候选卡组件**原样复用**，不认线索 kind。晨间日清单的「待筛岗位」段读的就是这些 pending 候选（`daily_digest.pending_candidate_rows`）。
+- **采集也走同一套候选**:`kind="collect"` 线索（`persist_collect_candidates`）挂的是采集回来的全新岗位，带 `score`（`jobs.attach_candidate_scores`，与岗位池 FitScore 同一个 `scoring.score_job`）并按分降序；commit / restore / board-write 端点与候选卡组件**原样复用**，不认线索 kind。晨间日清单的「待筛岗位」段读的就是这些 pending 候选（`daily_digest.pending_candidate_rows`——**同时过滤掉 `hard_blocked`**：Web 候选卡里那些本来就是折叠的，推到手机上和正常岗位并排等于把已判定不要的岗位重新要一次注意力；闸门关闭或历史遗留的那批靠这里兜底）。
 - **触发方式≠数据源**:HTTP/Telegram 只是触发方式。新增采集器不需要动 ingest;新增来源识别只在 `classify_links` 加一行。
 - **建议与追问(手机端在线回复)**:识别到候选后,`chat_ingest` 调 `services/advice.build_candidate_advice` 为**前 `ingest.advice_max_candidates` 个**候选生成初步建议(优先级/方向/下一步/先问什么),挂在候选的纯 UI 字段 `advice` 上——Web 候选卡结构化展示,Telegram 用 `format_advice_block` 排版后附在回执末尾。开关 `ingest.advice`(默认开);`ai.enabled=false` 时只落规则引擎结论,不做模型调用。判断标准**不新写第二套**:一律复用 `decision_chat` 的 `build_rule_analysis` + `merge_model_analysis`。
   机主在 TG 用 `?` / `？` / `/ask` 开头发消息 = **提问**(`telegram.parse_question`),走 `services/decision_reply.reply_in_thread`(与 Web `POST /messages` 同一函数);回复某条回执提问落回那条 ingest 线索,否则落进固定的「手机提问」通用线程。**不带前缀的消息一律仍按材料处理**——靠内容猜意图会把补充材料吃成提问,等于丢材料。
@@ -152,4 +163,4 @@ Windows 宿主机可用 `start_app.bat`(Docker 模式)或 `run_quality_check.bat
   - 长轮询 `getUpdates` 是后端主动**出站**请求 `api.telegram.org`,后端**无需对外暴露端口**;`config.yaml telegram.enabled=true` + `.env` 的 `TELEGRAM_BOT_TOKEN` 才启动(见 `main.py` lifespan 的 `_telegram_poll_loop`)。
   - **只处理白名单 `telegram.allowed_chat_id`(机主本人)的消息**,其余一律忽略。回执**只发机主本人**——符合 §2 的机主回执豁免,绝不发招聘方。
   - 回执文案是「识别到 N 个候选…打开 Web 确认」+ 可选的建议正文,**不声称已入库**;建议只是判断,不改变入库口径。
-  - **命令**(`telegram.parse_command`,只认光杆 `/xxx`,带正文的 `/ask 问题` 仍归 `parse_question`;带图的消息一律按材料走,不当命令):`/start` 回使用说明;`/collect` 手动补采一次(跑晨间同一来源 `_DIGEST_COLLECT_SOURCE`),回执按初筛口径报「抓取 / 区域过滤 / 已在池刷新 / 待筛」条数(`collect_run_summary`)+ 待筛岗位段(`daily_digest.build_new_jobs_text`),并提示去 Web 勾选。这是**本人显式触发**的人工采集(红线 §3.3 允许,等价于 Web 上那颗按钮),**不是自动重试**——定时采集失败仍只记日志,绝不自行重跑。补采成功调 `daily_digest.mark_collect_success` 清掉当天的 `collect_note` 并写 `last_collected`(今天已采到,定时那次不必再跑);失败**不写**状态,定时那次照旧还有机会。
+  - **命令**(`telegram.parse_command`,只认光杆 `/xxx`,带正文的 `/ask 问题` 仍归 `parse_question`;带图的消息一律按材料走,不当命令):`/start` 回使用说明;`/collect` 手动补采一次(跑晨间同一来源 `_DIGEST_COLLECT_SOURCE`),回执按初筛口径报「抓取 / 区域过滤 / 已在池刷新 / 已在待筛 / 硬排除 / 低于分数线 / 超上限暂缓 / 待筛」条数(`collect_run_summary`)+ 待筛岗位段(`daily_digest.build_new_jobs_text`),并提示去 Web 勾选。这是**本人显式触发**的人工采集(红线 §3.3 允许,等价于 Web 上那颗按钮),**不是自动重试**——定时采集失败仍只记日志,绝不自行重跑。补采成功调 `daily_digest.mark_collect_success` 清掉当天的 `collect_note` 并写 `last_collected`(今天已采到,定时那次不必再跑);失败**不写**状态,定时那次照旧还有机会。

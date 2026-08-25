@@ -175,6 +175,16 @@ class Settings:
         return value if isinstance(value, dict) else {}
 
     @property
+    def score_gate_config(self) -> dict[str, Any]:
+        """采集候选闸门（`collect.score_gate`）：评分之后按分数与硬阻断收窄待筛量。
+
+        默认值与降级口径都在 `services/collect_filter.apply_score_gate` 里，这里只负责
+        把配置段原样取出——和 `area_filter_config` 一样，不在配置层做业务判断。
+        """
+        value = self.collect_config.get("score_gate", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
     def telegram_config(self) -> dict[str, Any]:
         value = self.config.get("telegram", {})
         return value if isinstance(value, dict) else {}
@@ -211,6 +221,16 @@ class Settings:
     @property
     def schedule_config(self) -> dict[str, Any]:
         value = self.config.get("schedule", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def automation_config(self) -> dict[str, Any]:
+        value = self.config.get("automation", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
+    def reach_config(self) -> dict[str, Any]:
+        value = self.config.get("reach", {})
         return value if isinstance(value, dict) else {}
 
 

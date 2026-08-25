@@ -13,15 +13,72 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from sqlmodel import select
 
-from ..config import get_settings
+from ..config import get_settings, load_yaml_config, save_yaml_config
 from ..deps import SessionDep
 from ..models import SourceRun
-from ..schemas import WeChatCollectRequest
+from ..schemas import AutomationSettingsUpdate, WeChatCollectRequest
 from ..services.collect_ops import run_source, run_wechat_collection, source_status_payload
-from ..services.sources import list_source_definitions
+from ..services.automation import automation_mode, rescore_all_jobs, rescore_pending_candidates
+from ..services.chat_ingest import recent_collect_candidates
+from ..services.sources import get_source_definition, list_source_definitions
 from ..services.wechat import extract_mp_links
 
 router = APIRouter()
+
+
+@router.get("/api/automation/status")
+async def automation_status(session: SessionDep) -> dict:
+    settings = get_settings()
+    boss_source = get_source_definition(settings, "boss")
+    latest = (
+        session.exec(
+            select(SourceRun).where(SourceRun.source == boss_source.label).order_by(SourceRun.started_at.desc())
+        ).first()
+        if boss_source
+        else None
+    )
+    reach = settings.reach_config
+    pending = [item for item in recent_collect_candidates(session) if str(item.get("status") or "pending") == "pending" and not item.get("hard_blocked")]
+    raw = latest.raw_config if latest and isinstance(latest.raw_config, dict) else {}
+    gate = raw.get("score_gate") if isinstance(raw.get("score_gate"), dict) else {}
+    return {
+        "mode": automation_mode(),
+        "reach_level": str(reach.get("level") or "core"),
+        "rescore_existing": bool(reach.get("rescore_existing", True)),
+        "latest_run": latest.model_dump() if latest else None,
+        "latest_counts": {
+            "found": latest.fetched_count if latest else 0,
+            "hard_blocked": int(gate.get("hard_blocked") or 0),
+            "pending": len(pending),
+            "materials_prepared": int(raw.get("materials_prepared") or 0),
+        },
+        "safe_boundary": "自动驾驶只生成本地候选与材料；不自动投递、不联系招聘方。",
+    }
+
+
+@router.put("/api/automation/settings")
+async def automation_settings(payload: AutomationSettingsUpdate, session: SessionDep) -> dict:
+    config = load_yaml_config()
+    automation = config.get("automation") if isinstance(config.get("automation"), dict) else {}
+    reach = config.get("reach") if isinstance(config.get("reach"), dict) else {}
+    config["automation"] = {**automation, "mode": payload.mode}
+    config["reach"] = {**reach, "level": payload.reach_level, "rescore_existing": payload.rescore_existing}
+    save_yaml_config(config)
+    get_settings.cache_clear()
+    rescored = {"jobs": 0, "candidates": 0}
+    if payload.rescore_existing:
+        rescored = {"jobs": rescore_all_jobs(session), "candidates": rescore_pending_candidates(session)}
+    return {**(await automation_status(session)), "rescored": rescored}
+
+
+@router.post("/api/automation/scan")
+async def automation_scan(session: SessionDep) -> dict:
+    return run_source(session, "boss")
+
+
+@router.post("/api/automation/rescore")
+async def automation_rescore(session: SessionDep) -> dict:
+    return {"jobs": rescore_all_jobs(session), "candidates": rescore_pending_candidates(session)}
 
 
 @router.get("/api/collect/runs")

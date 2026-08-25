@@ -284,6 +284,35 @@ nav {
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, padding 0.2s ease-out;
 }
 
+.sidebar-guide-button {
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 38px;
+  padding: 0 12px;
+  color: #b9c3bd;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font: inherit;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+
+.sidebar-guide-button:hover,
+.sidebar-guide-button:focus-visible {
+  color: #ffffff;
+  background: #27342d;
+  border-color: #31463b;
+}
+
+.sidebar-collapsed .sidebar-guide-button {
+  justify-content: center;
+  padding: 0;
+}
+
 .nav-item.active,
 .nav-item:hover {
   background: #2a3931;
@@ -489,6 +518,46 @@ nav {
 .topbar p {
   margin: 6px 0 0;
   color: #66736b;
+}
+
+.automation-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0 24px 12px;
+  padding: 10px 12px;
+  border: 1px solid #dce9e5;
+  border-radius: 10px;
+  background: #f7fbf9;
+}
+
+.automation-topbar-mode,
+.automation-topbar-actions,
+.automation-topbar-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.automation-topbar-mode > span,
+.automation-topbar-stats span {
+  color: #526057;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.automation-topbar-stats {
+  margin-left: auto;
+}
+
+.automation-topbar-stats strong {
+  color: #17201b;
+}
+
+.automation-topbar-actions .danger-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .toolbar-actions,
@@ -1606,6 +1675,74 @@ textarea {
   color: #715419;
 }
 
+.automation-card {
+  gap: 14px;
+  border-color: #b9d9d2;
+  background: linear-gradient(135deg, #f4fbf9 0%, #fbfcfa 70%);
+}
+
+.automation-control-row,
+.automation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.automation-control-row p {
+  margin: 4px 0 0;
+  color: #526057;
+  font-size: 13px;
+}
+
+.automation-label {
+  display: block;
+  margin-bottom: 6px;
+  color: #526057;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.reach-segmented {
+  width: fit-content;
+}
+
+.automation-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.automation-metrics span {
+  padding: 9px 10px;
+  border: 1px solid #dce9e5;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  color: #526057;
+  font-size: 12px;
+}
+
+.automation-metrics strong {
+  display: block;
+  margin-top: 3px;
+  color: #17201b;
+  font-size: 16px;
+}
+
+.danger-action {
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid #d98c8c;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #9a2f2f;
+  font-weight: 800;
+}
+
+.danger-action:disabled {
+  opacity: 0.45;
+}
+
 .config-status-grid.compact {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
@@ -2437,7 +2574,106 @@ meter {
 }
 
 .usage-guide-modal {
-  width: min(780px, 100%);
+  width: min(860px, 100%);
+  max-height: min(760px, calc(100dvh - 32px));
+  overflow-y: auto;
+}
+
+.onboarding-readiness {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid #d9e9e1;
+  border-radius: 10px;
+  background: #f7fbf8;
+}
+
+.onboarding-section-head,
+.onboarding-readiness-item,
+.onboarding-actions {
+  display: flex;
+  align-items: center;
+}
+
+.onboarding-section-head {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.onboarding-section-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.onboarding-section-head span {
+  color: #126e66;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.onboarding-readiness-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.onboarding-readiness-item {
+  min-width: 0;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid #e3ece6;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.onboarding-readiness-item > svg {
+  flex: 0 0 auto;
+  color: #9aa9a0;
+}
+
+.onboarding-readiness-item:has(.ready) > svg { color: #21845f; }
+.onboarding-readiness-item:has(.optional) > svg { color: #a17b2d; }
+
+.onboarding-readiness-item > div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.onboarding-readiness-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onboarding-readiness-item span {
+  color: #68766e;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.onboarding-readiness-item small {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.onboarding-readiness-item small.ready { color: #21845f; }
+.onboarding-readiness-item small.optional { color: #a17b2d; }
+.onboarding-readiness-item small.todo { color: #a04a4a; }
+
+.onboarding-flow-grid .guide-card span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.onboarding-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .guide-grid {
@@ -3412,6 +3648,47 @@ meter {
   color: #566259;
 }
 
+.candidate-reach-line {
+  display: block;
+  margin-top: 4px;
+  color: #126e66;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.candidate-pack {
+  margin-left: 28px;
+  padding: 8px 10px;
+  border: 1px solid #dce9e5;
+  border-radius: 8px;
+  background: #f7fbf9;
+  color: #526057;
+  font-size: 12px;
+}
+
+.candidate-pack summary {
+  cursor: pointer;
+  color: #126e66;
+  font-weight: 800;
+}
+
+.candidate-pack p {
+  margin: 7px 0 0;
+  line-height: 1.55;
+}
+
+.candidate-pack pre {
+  overflow-x: auto;
+  margin: 8px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #233029;
+  font: inherit;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
 .candidate-list-blocked {
   margin-top: 4px;
   opacity: 0.75;
@@ -4019,12 +4296,21 @@ meter {
   .inline-fields,
   .detail-grid,
   .guide-grid,
+  .onboarding-readiness-grid,
   .export-grid {
     grid-template-columns: 1fr;
   }
 
   .guide-card-primary {
     grid-row: auto;
+  }
+
+  .onboarding-section-head {
+    align-items: flex-start;
+  }
+
+  .onboarding-actions > button {
+    flex: 1 1 150px;
   }
 
   .metric {

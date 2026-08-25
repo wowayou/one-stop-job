@@ -20,7 +20,7 @@ from . import bebee, wechat
 from .collectors import BeBeeCollector, WeChatPasteCollector
 from .jobs import company_map, research_items_map
 from .normalizer import UNKNOWN_COMPANIES, UNKNOWN_TITLES, normalize_record
-from .scoring import score_job
+from .scoring import score_job_configured
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +75,7 @@ def score_job_ids(session: Session, job_ids: list[int], profile: UserProfile) ->
         try:
             company = companies.get(job.company_id or 0)
             research = research_by_company.get(job.company_id or 0, [])
-            result = score_job(job, company, research, profile)
+            result = score_job_configured(job, company, research, profile)
             session.add(
                 FitScore(
                     job_id=job.id or 0,

@@ -336,6 +336,69 @@ def test_profile_weights_rejects_invalid_payload(monkeypatch, tmp_path):
     asyncio.run(scenario())
 
 
+def test_automation_settings_roundtrip_and_safe_boundary(monkeypatch, tmp_path):
+    """自动驾驶配置可从 UI/API 开关，切换相邻度会触发重评，但不提供自动投递模式。"""
+    config_path = tmp_path / "automation-config.yaml"
+    config_path.write_text(
+        "automation:\n  mode: manual\n  daily_scan: true\nreach:\n  level: core\n  rescore_existing: true\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(config_path))
+    app = _fresh_app(monkeypatch, tmp_path, "automation-settings.sqlite3")
+
+    from sqlmodel import Session
+
+    from backend.app import db
+    from backend.app.models import SourceRun
+
+    with Session(db.engine) as session:
+        session.add(
+            SourceRun(
+                source="BOSS直聘",
+                status="success",
+                fetched_count=7,
+                raw_config={"score_gate": {"hard_blocked": 2}, "materials_prepared": 3},
+            )
+        )
+        session.commit()
+        session.add(SourceRun(source="beBee", status="success", fetched_count=99, raw_config={}))
+        session.commit()
+
+    async def scenario():
+        async for client in _client(app):
+            initial = await client.get("/api/automation/status")
+            assert initial.status_code == 200, initial.text
+            assert initial.json()["mode"] == "manual"
+            assert initial.json()["reach_level"] == "core"
+            assert "不自动投递" in initial.json()["safe_boundary"]
+            assert initial.json()["latest_run"]["source"] == "BOSS直聘"
+            assert initial.json()["latest_counts"]["found"] == 7
+            assert initial.json()["latest_counts"]["hard_blocked"] == 2
+            assert initial.json()["latest_counts"]["materials_prepared"] == 3
+
+            enabled = await client.put(
+                "/api/automation/settings",
+                json={"mode": "autopilot", "reach_level": "exploratory", "rescore_existing": True},
+            )
+            assert enabled.status_code == 200, enabled.text
+            payload = enabled.json()
+            assert payload["mode"] == "autopilot"
+            assert payload["reach_level"] == "exploratory"
+            assert payload["rescored"] == {"jobs": 0, "candidates": 0}
+            saved = config_path.read_text(encoding="utf-8")
+            assert "mode: autopilot" in saved
+            assert "level: exploratory" in saved
+
+            rejected = await client.put(
+                "/api/automation/settings",
+                json={"mode": "auto_apply_experiment", "reach_level": "core"},
+            )
+            assert rejected.status_code == 422
+            assert "自动投递" in rejected.text
+
+    asyncio.run(scenario())
+
+
 def test_job_list_and_score_endpoint_expose_score_dimensions(monkeypatch, tmp_path):
     """评分透明化不是新功能——score_job() 早就把逐维度 score/weight/note 存进 FitScore.details，
     API 也一直原样透出。这里断言它端到端确实可见：评分端点和岗位列表都能读到完整分解。"""

@@ -5,24 +5,25 @@ import type { RunStatus } from "../types";
 export const TOUR_STEPS: TourStep[] = [
   {
     title: "欢迎使用 job-one-stop",
-    body: "本地优先的个人求职助手：材料丢进聊天 → 拿到判断 → 确认入库 → 再做调研、准备和跟进。数据只存本机，不自动投递、不自动发消息。下面用 30 秒带你认识主要区域。"
+    body: "推荐先用“手动 + 核心”跑通一轮：扫描 → 聊天确认 → 入库 → 调研和准备。确认结果可信后，再扩大求职面或开启自动驾驶。数据只存本机，不自动投递、不自动发消息。"
   },
   { target: "nav", title: "主导航", body: "聊天是默认入口，拿不准的事先丢进去；确定要推进了，再到岗位池、公司调研、面试准备和待办完成闭环。" },
   {
-    target: "nav",
-    title: "聊天里能做三件事",
-    body: "① 粘贴 JD 或截图 → 拆出候选岗位，并按你的决策规则给出优先级/方向/下一步；② 勾选要沉淀的候选点「入库选中」，默认不入库；③ 在候选上点「问这个」再提问，回答就锁定到那个岗位。"
+    target: "automation",
+    title: "自动驾驶与求职面",
+    body: "关/开控制每日自动扫描；核心、相邻、探索只改变搜索面与岗位族评分，不会放松城市、薪资和排除项。首次使用保持“关 + 核心”，点击“立即扫描”验收一轮。"
   },
   {
-    title: "手机上也能用（可选）",
-    body: "配好 Telegram 后，手机把链接或截图发给自己的 bot：先回一条「识别到 N 个候选」，随后单独发一条建议。想追问就用 ? 或 /ask 开头，多个候选时用 ?2 指名问第几个。所有回复只发给你本人。"
+    target: "automation",
+    title: "看懂扫描结果",
+    body: "“发现”是本次采到的原始数量；“硬拦截”是命中城市、薪资或排除项的数量；“待确认”是聊天中等你判断的候选。点击“停止自动化”会阻止后续定时扫描。"
   },
   { target: "metrics", title: "概览与漏斗", body: "顶部一条统计带:岗位总数、高潜、待调研、最高分、草稿,以及已投/面试/Offer/待跟进漏斗。点数字会跳到对应视图。" },
-  { target: "collect", title: "采集与导入", body: "这一排按钮负责批量补充真实岗位：运行 BOSS 采集、抓 beBee、导入 CSV/XLSX。返回 0 岗位时先看通知里的跳过原因。" },
+  { target: "collect", title: "其它采集入口", body: "工具栏仍可手动运行 BOSS、beBee、CSV/XLSX 和公众号导入。所有新岗位都先进入聊天候选；返回 0 岗位时先看通知里的过滤、跳过或登录态原因。" },
   { target: "wechat", title: "公众号 / 元宝导入", body: "粘贴元宝回答或 mp.weixin 链接，系统会抓正文并拆出多个岗位；被风控的文章可改为手动粘正文。" },
   { target: "sprint", title: "今日求职冲刺包", body: "一键补评分、挑 Top 岗位、生成面试准备并建待办，最后给出可复制的 Markdown 清单。" },
   { target: "manual", title: "新增岗位", body: "没有链接时也能手动单条录入岗位。所有来源都会汇入同一条管线并跨来源去重。" },
-  { target: "guide", title: "随时回看", body: "需要再看这份引导时，点这个信息按钮就能重新开始。准备好了就开始今天的求职推进吧。" }
+  { target: "guide", title: "随时回看", body: "侧栏的“使用指南”一直可见：可以重新检查配置、查看推荐第一轮流程，或再次启动这套界面导览。" }
 ];
 
 export const statuses = ["all", "new", "researching", "fit", "applied", "interview", "offer", "rejected", "archived"];
@@ -98,7 +99,7 @@ export const FOLLOWUP_TEMPLATES = [
 
 export const PAGE_SIZE = 10;
 export const JOB_PAGE_SIZE = 20;
-export const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v1";
+export const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v2";
 export const ACTIVE_CHAT_THREAD_KEY = "job-one-stop.active-chat-thread.v1";
 export const CHAT_USE_AI_KEY = "job-one-stop.chat-use-ai.v1";
 export const SIDEBAR_COLLAPSED_KEY = "job-one-stop.sidebar-collapsed.v1";

@@ -29,7 +29,7 @@ from .jobs import (
     research_items_map,
     source_links_map,
 )
-from .scoring import DEFAULT_WEIGHTS, score_job
+from .scoring import DEFAULT_WEIGHTS, score_job_configured
 
 
 def query_jobs(
@@ -100,7 +100,7 @@ def score_job_into_db(session: Session, job: Job, profile: UserProfile) -> FitSc
     companies = company_map(session, [job.company_id] if job.company_id else [])
     research_by_company = research_items_map(session, [job.company_id] if job.company_id else [])
     company = companies.get(job.company_id or 0)
-    result = score_job(job, company, research_by_company.get(job.company_id or 0, []), profile)
+    result = score_job_configured(job, company, research_by_company.get(job.company_id or 0, []), profile)
     score = FitScore(job_id=job.id or 0, total=result.total, hard_blocked=result.hard_blocked, details=result.details)
     session.add(score)
     session.commit()

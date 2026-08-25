@@ -118,8 +118,11 @@ def _next_step_text(line: str) -> str | None:
     for marker in _NEXT_STEP_MARKERS:
         if marker in line:
             text = line.split(marker, 1)[1]
-            # 动作区到「详情/模板」链接为止：链接路径里的 yyyy-mm-dd 文件名不是动作日期。
-            for link_marker in ("[详情]", "[模板]"):
+            # 动作区到「详情/模板/JD」链接为止：链接里的数字不是动作日期。
+            # `[详情]`/`[模板]` 是路径里的 yyyy-mm-dd 文件名；`[JD]`（board_write 写入收集箱行
+            # 时附的原链接）是 BOSS 的 job_detail id，形如 `...0nJ93t29FV`，其中的 4 位数字段
+            # 会被 `_DATE_COMPACT` 读成 MMDD，凭空造出一条到期动作。
+            for link_marker in ("[详情]", "[模板]", "[JD]"):
                 if link_marker in text:
                     text = text.split(link_marker, 1)[0]
             return text.replace("**", "")

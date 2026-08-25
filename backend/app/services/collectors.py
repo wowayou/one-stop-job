@@ -166,6 +166,17 @@ def command_with_query(command: list[str], query: str) -> list[str]:
     return result
 
 
+def command_with_query_limit(command: list[str], query: str, limit: int | None = None) -> list[str]:
+    result = command_with_query(command, query)
+    if limit is None:
+        return result
+    for index, token in enumerate(result[:-1]):
+        if token == "--limit":
+            result[index + 1] = str(max(1, limit))
+            return result
+    return [*result, "--limit", str(max(1, limit))]
+
+
 @dataclass
 class OpenCLIMultiCommandCollector:
     """按多关键词依次跑同一 OpenCLI 搜索命令，并按 external_id 跨命令去重。

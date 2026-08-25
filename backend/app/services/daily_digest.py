@@ -30,6 +30,10 @@ def pending_candidate_rows(session: Session) -> list[dict]:
     与岗位池 FitScore 同一个 `scoring.score_job`），这里只读，不重算、不落库。
 
     不限「今天」：昨天没筛完的照样该出现在今天的清单里——它是待办，不是流水。
+
+    硬阻断（`hard_blocked`：命中排除词/城市/薪资）的候选一律不进清单：Web 候选卡里它们本来
+    就是折叠的，推到手机上却和正常岗位并排，等于把「已经判定不要」的岗位重新要一次注意力。
+    评分闸门开启时它们在采集阶段就被挡掉了，这里兜住闸门关闭或历史遗留的那批。
     """
     from .chat_ingest import recent_collect_candidates
 
@@ -43,7 +47,7 @@ def pending_candidate_rows(session: Session) -> list[dict]:
             "url": item.get("url"),
         }
         for item in recent_collect_candidates(session)
-        if str(item.get("status") or "pending") == "pending"
+        if str(item.get("status") or "pending") == "pending" and not item.get("hard_blocked")
     ]
     rows.sort(key=lambda row: row["score"] if row["score"] is not None else -1, reverse=True)
     return rows

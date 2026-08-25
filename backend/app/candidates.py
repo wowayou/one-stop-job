@@ -87,20 +87,21 @@ class Candidate(TypedDict, total=False):
     advice: dict
     score: float | None
     hard_blocked: bool
+    reach: dict
+    application_pack: dict
 
 
 # 纯 UI 字段：candidate dict 里只用于前端展示、从不承载业务语义的字段。
 # 不包含 status/job_id——那两个是候选自身的状态机记账，是否剔除由调用方按场景决定。
-CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id", "advice", "score", "hard_blocked")
+CANDIDATE_UI_ONLY_FIELDS: tuple[str, ...] = ("existing_job_id", "duplicate_in_thread_id", "advice", "score", "hard_blocked", "reach", "application_pack")
 
 
 def strip_ui_only_fields(candidate: dict) -> dict:
     """返回剔除「纯 UI 字段」（`CANDIDATE_UI_ONLY_FIELDS`）后的候选浅拷贝。
 
     供 commit / board-write 等「即将把候选字段落到别处（如 upsert 记录）」的调用点统一
-    调用，避免每处各自手写剔除集合而逐渐漂移。只剔除 `existing_job_id` /
-    `duplicate_in_thread_id` / `advice`；`status`/`job_id` 是否需要额外剔除由调用方自行处理
-    （例如写入 Job 表前，见 `routers/chat.py` 的 `commit_candidates`）。
+    调用，避免每处各自手写剔除集合而逐渐漂移。`status`/`job_id` 是否需要额外剔除由
+    调用方按场景决定（例如写入 Job 表前，见 `routers/chat.py` 的 `commit_candidates`）。
     """
 
     return {k: v for k, v in candidate.items() if k not in CANDIDATE_UI_ONLY_FIELDS}

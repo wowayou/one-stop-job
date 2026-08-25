@@ -17,7 +17,7 @@ import {
   splitLines,
   stringValue
 } from "../lib/format";
-import type { AiStatus, AppConfig, JobSourceStatus, NoticeKind, SourceRun, UserProfile } from "../types";
+import type { AiStatus, AppConfig, AutomationStatus, JobSourceStatus, NoticeKind, SourceRun, UserProfile } from "../types";
 
 const scoringFields = [
   ["role_match", "岗位匹配"],
@@ -50,7 +50,9 @@ export function ConfigView({
   onCollectSource,
   onUpdateProfile,
   onUpdateWeights,
-  onProfilePatched
+  onProfilePatched,
+  automation,
+  onAutomationChanged
 }: {
   sources: JobSourceStatus[];
   runs: SourceRun[];
@@ -62,9 +64,12 @@ export function ConfigView({
   onUpdateProfile: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   onUpdateWeights: (weights: Record<string, number>) => Promise<void>;
   onProfilePatched: (profile: UserProfile) => void;
+  automation: AutomationStatus | null;
+  onAutomationChanged: (status: AutomationStatus) => void;
 }) {
   const [payload, setPayload] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
+  const [automationBusy, setAutomationBusy] = useState(false);
   const [activeSection, setActiveSection] = useState<ConfigSection>("status");
   const [envExampleOpen, setEnvExampleOpen] = useState(false);
   useEscapeClose(envExampleOpen, () => setEnvExampleOpen(false));
@@ -286,6 +291,40 @@ export function ConfigView({
     return <span className={`status ${source.status}`}>{source.enabled ? source.status : "disabled"}</span>;
   }
 
+  async function updateAutomation(mode: "manual" | "autopilot", reachLevel = automation?.reach_level ?? "core") {
+    setAutomationBusy(true);
+    try {
+      const next = await api<AutomationStatus & { rescored?: { jobs: number; candidates: number } }>("/api/automation/settings", {
+        method: "PUT",
+        ...jsonBody({ mode, reach_level: reachLevel, rescore_existing: true })
+      });
+      onAutomationChanged(next);
+      onNotify(
+        "success",
+        mode === "autopilot" ? "自动驾驶已开启；每天只生成本地待确认队列，不会自动投递。" : "自动化已停止。",
+        next.rescored ? [`已重评岗位 ${next.rescored.jobs} 个、待筛候选 ${next.rescored.candidates} 个。`] : undefined
+      );
+    } catch (err) {
+      onNotify("error", errorMessage(err, "自动驾驶配置更新失败"));
+    } finally {
+      setAutomationBusy(false);
+    }
+  }
+
+  async function scanNow() {
+    setAutomationBusy(true);
+    try {
+      const run = await api<SourceRun>("/api/automation/scan", { method: "POST" });
+      onNotify("success", `扫描完成：发现 ${run.fetched_count} 条，待筛 ${run.raw_config?.pending ?? 0} 条。`);
+      const status = await api<AutomationStatus>("/api/automation/status");
+      onAutomationChanged(status);
+    } catch (err) {
+      onNotify("error", errorMessage(err, "立即扫描失败"));
+    } finally {
+      setAutomationBusy(false);
+    }
+  }
+
   function latestRunText(run?: SourceRun | null) {
     if (!run) return "未运行";
     return `${run.status} · ${runCountsText(run)}`;
@@ -487,6 +526,50 @@ export function ConfigView({
                   <span>{payload.config_error}</span>
                 </div>
               )}
+              <fieldset className="automation-card">
+                <legend>自动驾驶</legend>
+                <div className="automation-control-row">
+                  <div>
+                    <strong>{automation?.mode === "autopilot" ? "已开启" : "手动"}</strong>
+                    <p>{automation?.safe_boundary ?? "只生成本地候选与材料，不自动投递。"}</p>
+                  </div>
+                  <div className="segmented" aria-label="自动驾驶模式">
+                    <button type="button" className={automation?.mode !== "autopilot" ? "active" : ""} disabled={automationBusy} onClick={() => updateAutomation("manual")}>关</button>
+                    <button type="button" className={automation?.mode === "autopilot" ? "active" : ""} disabled={automationBusy} onClick={() => updateAutomation("autopilot")}>开</button>
+                  </div>
+                </div>
+                <div>
+                  <span className="automation-label">求职面</span>
+                  <div className="segmented reach-segmented" aria-label="求职相邻度">
+                    {(["core", "adjacent", "exploratory"] as const).map((level) => (
+                      <button
+                        key={level}
+                        type="button"
+                        className={(automation?.reach_level ?? "core") === level ? "active" : ""}
+                        disabled={automationBusy}
+                        onClick={() => updateAutomation(automation?.mode ?? "manual", level)}
+                      >
+                        {level === "core" ? "核心" : level === "adjacent" ? "相邻" : "探索"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="automation-metrics">
+                  <span>最近发现 <strong>{automation?.latest_counts.found ?? 0}</strong></span>
+                  <span>硬拦截 <strong>{automation?.latest_counts.hard_blocked ?? 0}</strong></span>
+                  <span>待确认 <strong>{automation?.latest_counts.pending ?? 0}</strong></span>
+                  <span>材料包 <strong>{automation?.latest_counts.materials_prepared ?? 0}</strong></span>
+                </div>
+                <div className="automation-actions">
+                  <button type="button" className="small-action" disabled={automationBusy} onClick={scanNow}>
+                    {automationBusy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+                    立即扫描
+                  </button>
+                  <button type="button" className="danger-action" disabled={automationBusy || automation?.mode !== "autopilot"} onClick={() => updateAutomation("manual")}>
+                    停止自动化
+                  </button>
+                </div>
+              </fieldset>
               <div className="config-status-grid">
                 <div>
                   <span>OpenAI Key</span>

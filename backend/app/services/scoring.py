@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 from ..models import Company, Job, ResearchItem, UserProfile
+from .reach_policy import RoleClassification, classify_role, family_level_bonus, normalize_level
 
 
 DEFAULT_WEIGHTS = {
@@ -186,7 +187,14 @@ def _role_domain_ratio(title: str, context: str, profile: UserProfile) -> float:
     return ratio
 
 
-def _role_match_ratio(job: Job, profile: UserProfile, target_titles: list[str], profile_skills: list[str]) -> float:
+def _role_match_ratio(
+    job: Job,
+    profile: UserProfile,
+    target_titles: list[str],
+    profile_skills: list[str],
+    *,
+    reach_cfg: dict | None = None,
+) -> tuple[float, RoleClassification | None]:
     title = (job.title or "").lower()
     context = " ".join(filter(None, [job.skills, job.description, job.experience, job.degree])).lower()
     job_text = " ".join(filter(None, [title, context, job.company_name, job.area, job.salary_text])).lower()
@@ -196,11 +204,28 @@ def _role_match_ratio(job: Job, profile: UserProfile, target_titles: list[str], 
     skill_ratio = _ratio_matches(job_text, profile_skills)
     skill_supported_ratio = min(1.0, domain_ratio + skill_ratio * 0.12)
     base_ratio = max(exact_title_ratio, skill_supported_ratio, skill_ratio * 0.8)
+    classification = None
+    if reach_cfg:
+        classification = classify_role(title, context, reach_cfg)
+        evidence = 0.72 if classification.recommendation == "推荐投递" else 0.54
+        if classification.family_key is None:
+            evidence = 0.28
+        if classification.recommendation == "排除":
+            evidence = 0.08
+        evidence += family_level_bonus(classification, normalize_level(reach_cfg.get("level")))
+        base_ratio = max(evidence, exact_title_ratio * 0.9, skill_supported_ratio)
     # 软降权放在取 max 之后，才能同时约束"靠 target_titles 精确命中"和"靠技能命中"两条路径。
-    return max(0.0, min(1.0, base_ratio - _direction_penalty(title, context)))
+    return max(0.0, min(1.0, base_ratio - _direction_penalty(title, context))), classification
 
 
-def score_job(job: Job, company: Company | None, research_items: list[ResearchItem], profile: UserProfile) -> ScoreResult:
+def score_job(
+    job: Job,
+    company: Company | None,
+    research_items: list[ResearchItem],
+    profile: UserProfile,
+    *,
+    reach_cfg: dict | None = None,
+) -> ScoreResult:
     weights = {**DEFAULT_WEIGHTS, **(profile.weights or {})}
     job_text = " ".join(
         filter(
@@ -221,7 +246,7 @@ def score_job(job: Job, company: Company | None, research_items: list[ResearchIt
     if dealbreakers and _contains_any(job_text, dealbreakers):
         hard_reasons.append("命中硬性排除项")
 
-    role_ratio = _role_match_ratio(job, profile, target_titles, profile_skills)
+    role_ratio, reach = _role_match_ratio(job, profile, target_titles, profile_skills, reach_cfg=reach_cfg)
     role_match = round(weights["role_match"] * role_ratio, 1)
 
     salary_ok = 0.5
@@ -280,6 +305,7 @@ def score_job(job: Job, company: Company | None, research_items: list[ResearchIt
         hard_blocked=hard_blocked,
         details={
             "hard_reasons": hard_reasons,
+            "reach": reach.as_dict() if reach else None,
             "dimensions": {
                 "role_match": {"score": role_match, "weight": weights["role_match"], "note": "标题优先识别 SEO/独立站/外贸/运营组合；再按 SEO 主职责、B2B 工业出海、数据工具、英文市场、经验带做梯度加成，平台店铺/纯社媒达人/投放竞价软降权"},
                 "salary_city": {"score": salary_city, "weight": weights["salary_city"], "note": "薪资均值/上限与期望区间、城市与目标区域的匹配"},
@@ -291,3 +317,10 @@ def score_job(job: Job, company: Company | None, research_items: list[ResearchIt
             },
         },
     )
+
+
+def score_job_configured(job: Job, company: Company | None, research_items: list[ResearchItem], profile: UserProfile) -> ScoreResult:
+    """生产评分入口：在纯 ``score_job`` 外薄薄接入本机相邻度配置。"""
+    from ..config import get_settings
+
+    return score_job(job, company, research_items, profile, reach_cfg=get_settings().reach_config)

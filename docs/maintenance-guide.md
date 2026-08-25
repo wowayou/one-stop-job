@@ -2,6 +2,8 @@
 
 本指南用于日常接手、运行、验收和持续使用。项目边界保持不变：本地优先、单用户、SQLite，不自动投递，不自动发送消息。
 
+面向日常使用者的完整产品操作手册见 [user-manual.md](user-manual.md)。本文件保留运行、维护和排障细节。
+
 ## 日常使用路径
 
 1. 启动系统（口径见 [QUICKSTART.md](../QUICKSTART.md) / [operations.md](operations.md)）。

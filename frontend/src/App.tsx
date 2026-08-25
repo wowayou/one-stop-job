@@ -17,6 +17,7 @@ import {
   Plus,
   RefreshCw,
   SlidersHorizontal,
+  Square,
   Upload,
   X,
   Trash2
@@ -63,6 +64,7 @@ import {
 import type {
   AiProbeResult,
   AiStatus,
+  AutomationStatus,
   ApplicationEvent,
   Company,
   ContextRepoStatus,
@@ -129,6 +131,7 @@ function App() {
   const [aiProbe, setAiProbe] = useState<AiProbeResult | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
   const [contextStatus, setContextStatus] = useState<ContextRepoStatus | null>(null);
+  const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [trashedJobs, setTrashedJobs] = useState<Job[]>([]);
   const [trashedCompanies, setTrashedCompanies] = useState<Company[]>([]);
   const [search, setSearch] = useState("");
@@ -211,10 +214,11 @@ function App() {
       { key: "funnel", label: "求职漏斗", run: () => api<FunnelAnalytics>("/api/analytics/funnel"), apply: (value) => setFunnel(value as FunnelAnalytics) },
       { key: "profile", label: "个人画像", run: () => api<UserProfile>("/api/profile"), apply: (value) => setProfile(value as UserProfile) },
       { key: "ai", label: "AI 状态", run: () => api<AiStatus>("/api/ai/status"), apply: (value) => setAiStatus(value as AiStatus) },
-      { key: "contextStatus", label: "个人上下文仓库", run: () => api<ContextRepoStatus>("/api/context/status"), apply: (value) => setContextStatus(value as ContextRepoStatus) }
+      { key: "contextStatus", label: "个人上下文仓库", run: () => api<ContextRepoStatus>("/api/context/status"), apply: (value) => setContextStatus(value as ContextRepoStatus) },
+      { key: "automation", label: "自动驾驶状态", run: () => api<AutomationStatus>("/api/automation/status"), apply: (value) => setAutomation(value as AutomationStatus) }
     ];
     // 核心数据每次都加载；非核心数据按需加载（传 keys 或视图激活时）。
-    const CORE_KEYS = ["jobs", "funnel", "profile", "ai", "sources", "contextStatus"];
+    const CORE_KEYS = ["jobs", "funnel", "profile", "ai", "sources", "contextStatus", "automation"];
     const active = keys
       ? tasks.filter((task) => keys.includes(task.key))
       : tasks.filter((task) => CORE_KEYS.includes(task.key));
@@ -268,6 +272,10 @@ function App() {
   function showNav(nextNav: (typeof navItems)[number]["id"]) {
     closeJobDrawer();
     setActiveNav(nextNav);
+  }
+
+  function openUsageGuide() {
+    setUsageGuideOpen(true);
   }
 
   function showScoreQueue() {
@@ -438,6 +446,37 @@ function App() {
 
   async function runBossCollection() {
     await collectSource("boss", "BOSS 采集", "未读取到岗位。请确认 OpenCLI 登录态、关键词、城市和命令配置。");
+  }
+
+  async function runAutomationScan() {
+    await runBusy("automation-scan", async () => {
+      try {
+        const run = await api<SourceRun>("/api/automation/scan", { method: "POST" });
+        notifyRun("自动驾驶扫描", run, "本次没有采集到可用岗位。");
+        await loadAll();
+      } catch (err) {
+        notify("error", errorMessage(err, "自动驾驶扫描失败"));
+      }
+    });
+  }
+
+  async function updateAutomation(mode: "manual" | "autopilot", reachLevel = automation?.reach_level ?? "core") {
+    await runBusy("automation-settings", async () => {
+      try {
+        const next = await api<AutomationStatus & { rescored?: { jobs: number; candidates: number } }>("/api/automation/settings", {
+          method: "PUT",
+          ...jsonBody({ mode, reach_level: reachLevel, rescore_existing: true })
+        });
+        setAutomation(next);
+        notify(
+          "success",
+          mode === "autopilot" ? "自动驾驶已开启；不会自动投递。" : "自动化已停止。",
+          next.rescored ? [`已重评岗位 ${next.rescored.jobs} 个、待筛候选 ${next.rescored.candidates} 个。`] : undefined
+        );
+      } catch (err) {
+        notify("error", errorMessage(err, "自动驾驶配置更新失败"));
+      }
+    });
   }
 
   async function uploadFile(event: FormEvent<HTMLFormElement>) {
@@ -916,6 +955,10 @@ function App() {
             );
           })}
         </nav>
+        <button data-tour="guide" type="button" className="sidebar-guide-button" onClick={openUsageGuide}>
+          <Info size={17} />
+          <span className="nav-label">使用指南</span>
+        </button>
         <div className="run-strip">
           <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
           <strong>{latestRun?.status ?? "未运行"}</strong>
@@ -967,7 +1010,7 @@ function App() {
           </div>
           {activeNav !== "chat" && (
             <div className="toolbar-actions">
-              <button data-tour="guide" className="icon-button" title="打开使用引导" onClick={() => setTourOpen(true)}>
+              <button className="icon-button" title="打开使用指南" onClick={openUsageGuide}>
                 <Info size={18} />
               </button>
               <button className="icon-button" title="导出中心" onClick={() => setExportCenterOpen(true)} disabled={hasBusy(busy, "export")}>
@@ -1013,6 +1056,46 @@ function App() {
             </div>
           )}
         </header>
+
+        <div className="automation-topbar" data-tour="automation" aria-label="自动驾驶控制">
+          <div className="automation-topbar-mode">
+            <span>自动驾驶</span>
+            <div className="segmented">
+              <button className={automation?.mode !== "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("manual")}>关</button>
+              <button className={automation?.mode === "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("autopilot")}>开</button>
+            </div>
+          </div>
+          <div className="automation-topbar-mode">
+            <span>求职面</span>
+            <div className="segmented">
+              {(["core", "adjacent", "exploratory"] as const).map((level) => (
+                <button
+                  key={level}
+                  className={(automation?.reach_level ?? "core") === level ? "active" : ""}
+                  disabled={toolbarBusy}
+                  onClick={() => updateAutomation(automation?.mode ?? "manual", level)}
+                >
+                  {level === "core" ? "核心" : level === "adjacent" ? "相邻" : "探索"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="automation-topbar-stats">
+            <span>发现 <strong>{automation?.latest_counts.found ?? 0}</strong></span>
+            <span>硬拦截 <strong>{automation?.latest_counts.hard_blocked ?? 0}</strong></span>
+            <span>待确认 <strong>{automation?.latest_counts.pending ?? 0}</strong></span>
+          </div>
+          <div className="automation-topbar-actions">
+            <button className="small-action" onClick={runAutomationScan} disabled={toolbarBusy}>
+              {hasBusy(busy, "automation-scan") ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+              立即扫描
+            </button>
+            <button className="danger-action" onClick={() => updateAutomation("manual")} disabled={toolbarBusy || automation?.mode !== "autopilot"}>
+              <Square size={13} />
+              停止自动化
+            </button>
+          </div>
+        </div>
 
         {notice && <NoticeBanner notice={notice} onClose={() => setNotice(null)} />}
 
@@ -1096,6 +1179,8 @@ function App() {
               onUpdateProfile={updateProfile}
               onUpdateWeights={updateScoringWeights}
               onProfilePatched={setProfile}
+              automation={automation}
+              onAutomationChanged={setAutomation}
             />
           )}
         </section>
@@ -1299,9 +1384,22 @@ function App() {
       {exportCenterOpen && <ExportCenterModal onClose={() => setExportCenterOpen(false)} onExport={exportFile} busy={hasBusy(busy, "export")} />}
       {usageGuideOpen && (
         <UsageGuideModal
+          profile={profile}
+          bossSource={sources.find((source) => source.key === "boss") ?? null}
+          aiStatus={aiStatus}
+          automation={automation}
           onClose={() => setUsageGuideOpen(false)}
+          onOpenSettings={() => {
+            setUsageGuideOpen(false);
+            showNav("config");
+          }}
+          onOpenChat={() => {
+            setUsageGuideOpen(false);
+            showNav("chat");
+          }}
           onStartTour={() => {
             setUsageGuideOpen(false);
+            showNav("jobs");
             setTourOpen(true);
           }}
         />

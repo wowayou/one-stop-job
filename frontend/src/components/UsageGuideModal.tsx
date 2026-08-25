@@ -1,69 +1,83 @@
-import { CheckCircle2, X } from "lucide-react";
+import { CheckCircle2, Circle, Info, MessageSquareText, Search, Settings, ShieldCheck, X } from "lucide-react";
 import { useEscapeClose } from "../hooks/useEscapeClose";
+import type { AiStatus, AutomationStatus, JobSourceStatus, UserProfile } from "../types";
 
-export function UsageGuideModal({ onClose, onStartTour }: { onClose: () => void; onStartTour: () => void }) {
+type UsageGuideProps = {
+  profile: UserProfile | null;
+  bossSource: JobSourceStatus | null;
+  aiStatus: AiStatus | null;
+  automation: AutomationStatus | null;
+  onClose: () => void;
+  onOpenSettings: () => void;
+  onOpenChat: () => void;
+  onStartTour: () => void;
+};
+
+function ReadinessItem({ ready, optional = false, title, detail }: { ready: boolean; optional?: boolean; title: string; detail: string }) {
+  return (
+    <div className="onboarding-readiness-item">
+      {ready ? <CheckCircle2 size={18} /> : optional ? <Info size={18} /> : <Circle size={18} />}
+      <div>
+        <strong>{title}</strong>
+        <span>{detail}</span>
+      </div>
+      <small className={ready ? "ready" : optional ? "optional" : "todo"}>{ready ? "已就绪" : optional ? "可选" : "待完成"}</small>
+    </div>
+  );
+}
+
+export function UsageGuideModal({ profile, bossSource, aiStatus, automation, onClose, onOpenSettings, onOpenChat, onStartTour }: UsageGuideProps) {
   useEscapeClose(true, onClose);
+  const profileReady = Boolean(profile?.target_titles.trim() && profile?.target_cities.trim());
+  const bossReady = Boolean(bossSource?.enabled && (bossSource.configured || bossSource.status === "host_import_required"));
+  const aiReady = Boolean(aiStatus?.available);
+  const autopilotEnabled = automation?.mode === "autopilot";
+  const reachLabel = automation?.reach_level === "exploratory" ? "探索" : automation?.reach_level === "adjacent" ? "相邻" : "核心";
+
   return (
     <div className="modal-backdrop">
       <div className="modal usage-guide-modal" role="dialog" aria-modal="true" aria-labelledby="usage-guide-title">
         <div className="modal-head">
           <div>
-            <h2 id="usage-guide-title">使用指南</h2>
-            <p className="muted">材料丢进聊天拿判断，确认入库后再按“岗位池、调研、准备、待办”推进，每天用冲刺包收口。</p>
+            <h2 id="usage-guide-title">开始使用</h2>
+            <p className="muted">先校准个人规则，手动跑通一轮，再决定是否开启每日自动扫描。</p>
           </div>
-          <button type="button" className="icon-button" onClick={onClose} title="关闭">
-            <X size={18} />
-          </button>
+          <button type="button" className="icon-button" onClick={onClose} title="关闭"><X size={18} /></button>
         </div>
 
-        <div className="guide-grid">
+        <section className="onboarding-readiness" aria-label="启用检查">
+          <div className="onboarding-section-head">
+            <div><span>启用检查</span><strong>开始前确认这四项</strong></div>
+            <button type="button" className="small-action" onClick={onOpenSettings}><Settings size={15} />打开设置</button>
+          </div>
+          <div className="onboarding-readiness-grid">
+            <ReadinessItem ready={profileReady} title="个人画像" detail={profileReady ? `${profile?.target_titles} · ${profile?.target_cities}` : "填写目标岗位、城市、薪资和排除项"} />
+            <ReadinessItem ready={bossReady} title="BOSS 采集" detail={bossReady ? "来源可运行；首次仍建议手动扫描" : bossSource?.message || "检查 OpenCLI 命令与登录态"} />
+            <ReadinessItem ready={aiReady} optional title="AI 增强" detail={aiReady ? `${aiStatus?.model} 可用` : "未配置也能用，本地规则与模板会继续工作"} />
+            <ReadinessItem ready={!autopilotEnabled} title="首轮模式" detail={autopilotEnabled ? `自动驾驶已开启 · ${reachLabel}` : `手动 · ${reachLabel}，适合先验收结果`} />
+          </div>
+        </section>
+
+        <div className="guide-grid onboarding-flow-grid">
           <article className="guide-card guide-card-primary">
-            <span>每日闭环</span>
+            <span>推荐第一轮</span>
             <ol>
-              <li>在设置里校准个人画像、目标城市、薪资和排除项——建议和评分都以它为准。</li>
-              <li>看到岗位就丢进聊天（JD 文本 / 截图 / 链接），拿到优先级、方向和下一步。</li>
-              <li>值得推进的勾选「入库选中」；批量岗位再用宿主机采集、CSV、公众号或 beBee 补。</li>
-              <li>打开高潜岗位，补公司证据、刷新评分并生成准备材料。</li>
-              <li>生成今日求职冲刺包，把 Top 岗位转成待办。</li>
+              <li><strong>校准画像：</strong>目标岗位、城市、薪资底线、通勤和排除项决定评分与硬拦截。</li>
+              <li><strong>保持“手动 + 核心”：</strong>点击顶部“立即扫描”，先验证搜索词、OpenCLI 登录态和筛选结果。</li>
+              <li><strong>去聊天确认：</strong>打开最新“采集 · BOSS直聘”线索，展开候选，查看相邻度、分数、风险问题和材料包。</li>
+              <li><strong>只入库值得推进的：</strong>勾选后点“入库选中”；未勾选、硬阻断和已排除岗位不会进入岗位池。</li>
+              <li><strong>跑稳后再自动化：</strong>确认结果可信，再切到“相邻/探索”或开启自动驾驶每日扫描。</li>
             </ol>
           </article>
-
-          <article className="guide-card">
-            <span>聊天怎么用</span>
-            <p>
-              识别出的候选<strong>默认不入库</strong>，每条会带一句按你的决策规则给出的初步建议。
-              想追问某个候选，先在它上面点「问这个」，输入框上方会出现「针对 ① …」，这一条提问就锁定到那个岗位。
-            </p>
-          </article>
-
-          <article className="guide-card">
-            <span>手机上（可选）</span>
-            <p>
-              配好 Telegram 后，手机发链接或截图给自己的 bot：先收到「识别到 N 个候选」，随后单独一条建议。
-              追问用 <code>?</code> 或 <code>/ask</code> 开头；多个候选时 <code>?2 你的问题</code> 指名问第几个。
-              回复某条回执再发材料，会并进同一条线索。
-            </p>
-          </article>
-
-          <article className="guide-card">
-            <span>采集边界</span>
-            <p>BOSS / 智联在宿主机运行 OpenCLI 后导入；公众号和 beBee 若返回 0 岗位，先看跳过原因，再补正文、HTML 或 Network JSON 样例。</p>
-          </article>
-
-          <article className="guide-card">
-            <span>数据边界</span>
-            <p>岗位、公司证据、评分和任务都保存在本机 SQLite；密钥只放环境变量或 .env。系统只生成材料，不自动投递、不自动发消息；Telegram 的回执、建议和回答只发给你本人。</p>
-          </article>
+          <article className="guide-card"><span><Search size={14} /> 求职面怎么选</span><p><strong>核心</strong>只找主方向；<strong>相邻</strong>按 70/30 扩到内容、CMS、B2B 数字营销；<strong>探索</strong>按 50/30/20 加入实施、支持、客户成功和项目运营。地域、薪资及排除项始终不变。</p></article>
+          <article className="guide-card"><span><ShieldCheck size={14} /> 自动驾驶边界</span><p>每天最多扫描一次，自动去重、分类、评分并准备本地材料，最后仍进入人工确认队列。它不会提交申请、不会私信招聘者，也不会移动岗位状态或看板。</p></article>
+          <article className="guide-card"><span><MessageSquareText size={14} /> 候选在哪里</span><p>所有新采集岗位都先进入“聊天”里的采集线索。顶部“待确认”是当前 pending 候选数量；硬阻断默认折叠，评分缺失的候选会保留供人工判断。</p></article>
         </div>
 
-        <div className="guide-actions">
-          <button type="button" className="small-action" onClick={onClose}>
-            稍后再说
-          </button>
-          <button type="button" className="primary-action" onClick={onStartTour}>
-            <CheckCircle2 size={18} />
-            开始引导
-          </button>
+        <div className="guide-actions onboarding-actions">
+          <button type="button" className="small-action" onClick={onClose}>稍后再说</button>
+          <button type="button" className="small-action" onClick={onOpenChat}><MessageSquareText size={16} />查看待确认</button>
+          <button type="button" className="primary-action" onClick={onStartTour}><CheckCircle2 size={18} />开始界面导览</button>
         </div>
       </div>
     </div>

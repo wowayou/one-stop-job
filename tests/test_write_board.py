@@ -317,3 +317,46 @@ def test_board_write_response_never_leaks_host_path(monkeypatch, tmp_path):
             assert str(context_root) not in detail.text
 
     asyncio.run(scenario())
+
+
+# ==================== f. 卡片行带 JD 原链接（且不污染 SLA 日期解析） ====================
+
+
+def test_inbox_line_carries_jd_url_and_omits_it_when_absent():
+    """收集箱行必须带 JD 原链接：这一行是本人在 Obsidian 里补齐主行、新建详情卡时的唯一入口，
+    没有链接就得回 Web 岗位池反查一遍。没有 url 的岗位整段省略，不写出空链接。"""
+    from backend.app.models import Job
+    from backend.app.services.board_write import build_inbox_line
+
+    date_tag = datetime.now().strftime("%m%d")
+    url = "https://www.zhipin.com/job_detail/22b4928e8323384603N-0tu6FV"
+    with_url = build_inbox_line(
+        Job(external_id="", title="谷歌seo专员", company_name="示例安腾", salary_text="10-15K", source="BOSS直聘", url=url)
+    )
+    assert with_url == (
+        f"- [ ] 示例安腾 - 谷歌seo专员 - 10-15K - BOSS直聘/{date_tag} - 未判断 - "
+        f"下一步：补齐主行并新建详情卡 - [JD]({url})"
+    )
+
+    without_url = build_inbox_line(
+        Job(external_id="", title="独立站运营", company_name="示例公司", salary_text=None, source="公众号")
+    )
+    assert without_url.endswith("下一步：补齐主行并新建详情卡")
+    assert "[JD]" not in without_url
+    assert "薪资未知" in without_url
+
+
+def test_inbox_line_jd_url_does_not_create_phantom_board_actions():
+    """`[JD]` 必须是动作区的截断标记：BOSS 链接里的 `...0825...` 会被紧凑日期正则读成到期日，
+    凭空造出一条日清单动作。这里锁住「URL 里的数字不产生动作」。"""
+    from datetime import date
+
+    from backend.app.services.board_sla import parse_board_actions
+
+    content = (
+        "## 待沟通\n\n"
+        "- [ ] 示例公司 - 独立站运营 - 9-14K - BOSS/0825 - 未判断 - 下一步：0826 发简历 - "
+        "[JD](https://www.zhipin.com/job_detail/0731abc0825def)\n"
+    )
+    actions = parse_board_actions(content, date(2026, 8, 25))
+    assert [action.due for action in actions] == [date(2026, 8, 26)]

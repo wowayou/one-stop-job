@@ -34,6 +34,23 @@ function CandidateAdviceBlock({ advice }: { advice: CandidateAdvice }) {
   );
 }
 
+/** 默认勾上哪些待选候选。
+ *
+ * 三类默认不勾（但都仍保留在卡片里，可以手动勾上）：
+ * - `hard_blocked`：命中排除词/城市/薪资硬条件。这些候选在列表里是**折叠**的
+ *   （见 `blockedIndexes`），默认勾上等于「看不见却会被入库」——实测一次采集的 9 条里
+ *   5 条硬阻断全被写进了岗位池。折叠与默认勾选必须用同一个判断，否则就会再次错位。
+ * - `existing_job_id`：已在岗位池，避免误触重复合并。
+ * - `duplicate_in_thread_id`：与近期候选重复。
+ *
+ * 初始状态与 commit 之后的重算共用本函数，避免两处条件各写一遍而漂移。
+ */
+function defaultSelection(items: IngestCandidate[], pendingIndexes: number[]): number[] {
+  return pendingIndexes.filter(
+    (i) => !items[i]?.hard_blocked && !items[i]?.existing_job_id && items[i]?.duplicate_in_thread_id == null
+  );
+}
+
 export function CandidateListCard({
   threadId,
   messageId,
@@ -53,10 +70,7 @@ export function CandidateListCard({
   onError: (message: string) => void;
 }) {
   const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
-  // 已在岗位池 / 与近期候选重复的默认不勾选（避免误触重复合并），但仍保留在待处理列表里，用户可主动勾上。
-  const [selected, setSelected] = useState<number[]>(
-    pendingIndexes.filter((i) => !candidates[i]?.existing_job_id && candidates[i]?.duplicate_in_thread_id == null)
-  );
+  const [selected, setSelected] = useState<number[]>(defaultSelection(candidates, pendingIndexes));
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
   const [restoreBusyIndex, setRestoreBusyIndex] = useState<number | null>(null);
@@ -78,7 +92,7 @@ export function CandidateListCard({
       onUpdated(reply.assistant_message);
       const next = reply.assistant_message.metadata_json?.candidates ?? [];
       const nextPending = next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
-      setSelected(nextPending.filter((i) => !next[i]?.existing_job_id && next[i]?.duplicate_in_thread_id == null));
+      setSelected(defaultSelection(next, nextPending));
     } catch (err) {
       onError(errorMessage(err, "入库失败"));
     } finally {
@@ -198,8 +212,31 @@ export function CandidateListCard({
             </small>
             {status === "committed" && item.job_id != null && <em>已入库 · #{item.job_id}</em>}
             {status === "skipped" && <em>已跳过</em>}
+            {item.reach && (
+              <span className="candidate-reach-line">
+                {item.reach.level_label ?? item.reach.level} · {item.reach.family_label} · {item.reach.recommendation}
+              </span>
+            )}
           </span>
         </label>
+        {item.reach && (
+          <details className="candidate-pack">
+            <summary>匹配解释{item.application_pack ? "与投递材料" : ""}</summary>
+            {!!item.reach.overlap?.length && <p>能力重合：{item.reach.overlap.join("；")}</p>}
+            {!!item.reach.missing_hard?.length && <p>必要条件待核对：{item.reach.missing_hard.join("；")}</p>}
+            {!!item.reach.short_term_gaps?.length && <p>可补齐差距：{item.reach.short_term_gaps.join("；")}</p>}
+            {item.application_pack && (
+              <>
+                <p><strong>投递理由：</strong>{item.application_pack.application_reason}</p>
+                <pre>{item.application_pack.risk_questions}</pre>
+                <details>
+                  <summary>查看定制简历版本</summary>
+                  <pre>{item.application_pack.resume_version}</pre>
+                </details>
+              </>
+            )}
+          </details>
+        )}
         {item.advice && <CandidateAdviceBlock advice={item.advice} />}
         {onAsk && (
           <div className="candidate-ask">

@@ -31,7 +31,7 @@ from ..models import (
 from .collectors import TabularFileCollector
 from .jobs import company_map, research_items_map
 from .queries import application_events, get_profile
-from .scoring import score_job
+from .scoring import score_job_configured
 
 
 def soft_delete_jobs(session: Session, job_ids: list[int]) -> int:
@@ -199,7 +199,7 @@ def score_and_prune_imported_jobs(session: Session, job_ids: list[int], keep_top
     for job in jobs:
         company = companies.get(job.company_id or 0)
         research = research_by_company.get(job.company_id or 0, [])
-        result = score_job(job, company, research, profile)
+        result = score_job_configured(job, company, research, profile)
         score = FitScore(job_id=job.id or 0, total=result.total, hard_blocked=result.hard_blocked, details=result.details)
         ranked.append((job, score))
 

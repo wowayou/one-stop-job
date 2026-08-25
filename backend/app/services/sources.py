@@ -10,8 +10,10 @@ from .collectors import (
     OpenCLICommandCollector,
     OpenCLIMultiCommandCollector,
     command_with_query,
+    command_with_query_limit,
     inspect_opencli,
 )
+from .reach_policy import build_search_plan
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,10 @@ def list_source_definitions(settings: Settings) -> list[JobSourceDefinition]:
         "timeout_seconds": opencli_cfg.get("timeout_seconds", 120),
         **_as_dict(configured_sources.get("boss")),
     }
+    reach_plan = build_search_plan(settings.reach_config, daily_limit=int(settings.automation_config.get("max_candidates_per_day", 30) or 30), explicit_terms=boss_cfg.get("keywords", []))
+    if reach_plan["terms"]:
+        boss_cfg["keywords"] = [str(item["query"]) for item in reach_plan["terms"]]
+        boss_cfg["reach_plan"] = reach_plan
     zhilian_cfg = {
         "command": opencli_cfg.get("zhilian_cmd", []),
         "timeout_seconds": opencli_cfg.get("timeout_seconds", 120),
@@ -138,9 +144,11 @@ def build_source_collector(source: JobSourceDefinition):
         timeout_seconds = int(source.config.get("timeout_seconds", 120) or 120)
         # 配了多关键词且命令是 `search` 形态时，逐关键词替换查询词并跨命令去重。
         if keywords and "search" in command:
+            planned = source.config.get("reach_plan", {}).get("terms", []) if isinstance(source.config.get("reach_plan"), dict) else []
+            budgets = {str(item.get("query")): int(item.get("budget", 1)) for item in planned if isinstance(item, dict)}
             return OpenCLIMultiCommandCollector(
                 opencli_path="",
-                commands=[command_with_query(command, keyword) for keyword in keywords],
+                commands=[command_with_query_limit(command, keyword, budgets.get(keyword)) for keyword in keywords],
                 timeout_seconds=timeout_seconds,
                 source=source.label,
             )

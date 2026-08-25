@@ -22,6 +22,28 @@ from .services.domain import (
 )
 
 
+class AutomationSettingsUpdate(SQLModel):
+    mode: str
+    reach_level: str
+    rescore_existing: bool = True
+
+    @field_validator("mode")
+    @classmethod
+    def validate_mode(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"manual", "autopilot"}:
+            raise ValueError("mode 只支持 manual 或 autopilot；当前版本不提供自动投递")
+        return normalized
+
+    @field_validator("reach_level")
+    @classmethod
+    def validate_reach_level(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in {"core", "adjacent", "exploratory"}:
+            raise ValueError("reach_level 只支持 core、adjacent 或 exploratory")
+        return normalized
+
+
 class JobCreate(SQLModel):
     title: str
     company_name: str

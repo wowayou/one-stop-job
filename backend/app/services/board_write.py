@@ -26,15 +26,28 @@ def _flatten(text: str | None) -> str:
 
 
 def build_inbox_line(job: Job) -> str:
-    """生成将插入看板「收集箱」列的一整行卡片（不含结尾换行）。"""
+    """生成将插入看板「收集箱」列的一整行卡片（不含结尾换行）。
+
+    字段顺序沿用看板既有卡片规则（见个人仓库 `toolkit/23-job-pipeline.md` 的「模板库」与
+    活跃列样例）：`公司 - 岗位 - 薪资 - 渠道/日期 - 当前判断 - 下一步：… - [链接]`。
+    `_card_summary` 只取前三段做摘要，`parse_board_companies` 只认第一段，两者都不受尾部影响。
+
+    JD 原链接必须带上：收集箱这一行是本人后续在 Obsidian 里补齐主行、新建详情卡时的**唯一**
+    入口，没有链接就得回 Web 岗位池反查，等于把刚做完的判断又丢了一次。链接放在行尾并用
+    `[JD]` 标记，`board_sla._next_step_text` 会在该标记处截断动作区——否则 URL 里的数字
+    （BOSS 的 `job_detail/...0825...`）会被 `_DATE_COMPACT` 误读成到期日期，凭空造出一条日清单动作。
+    岗位没有 url 时整段省略，绝不写出空链接。
+    """
     company = _flatten(job.company_name) or "?"
     title = _flatten(job.title)
     salary = _flatten(job.salary_text) or "薪资未知"
     date_tag = datetime.now().strftime("%m%d")
-    return (
+    line = (
         f"- [ ] {company} - {title} - {salary} - {job.source}/{date_tag} - 未判断 - "
         "下一步：补齐主行并新建详情卡"
     )
+    url = _flatten(job.url)
+    return f"{line} - [JD]({url})" if url else line
 
 
 def write_candidate_to_board(settings: Settings, job: Job) -> None:

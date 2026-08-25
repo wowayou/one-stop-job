@@ -28,6 +28,7 @@
 - **决策聊天**：通用聊天 + 岗位专属聊天；支持文字、链接、截图，先运行本地硬规则，再由可选 AI 给出优先级、风险和下一步
 - **岗位池管理**：多来源采集（BOSS / 智联 / 公众号 / beBee / CSV）、跨来源去重、状态流转、批量操作、软删除回收站
 - **采集人工初筛**：采集回来的全新岗位先过区域白名单，按匹配分排序挂进聊天候选，你勾选后才入库；噪音不再自动落盘
+- **自动驾驶（可选）**：每天复用同一条采集漏斗，按“核心 / 相邻 / 探索”生成搜索计划、去重、评分并准备本地材料，进入待确认队列；绝不自动投递或联系招聘方
 - **公司调研**：沉淀官网、招聘页、小红书、脉脉、看准等证据
 - **智能评分**：按岗位匹配、薪资、成长性、稳定性、口碑等维度输出 100 分解释
 - **面试准备**：生成 JD 摘要、技能差距、优势话术、STAR 素材、反问问题；配置 AI 后按 JD + 个人画像定制
@@ -97,6 +98,7 @@ scripts/app.sh backup   # 数据备份
 | [QUICKSTART.md](QUICKSTART.md) | 快速开始指南（本地 / Docker / Windows / Linux） |
 | [CLAUDE.md](CLAUDE.md) | 项目架构标准（AI 与人类共同遵守） |
 | [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
+| [docs/user-manual.md](docs/user-manual.md) | 产品操作手册：首次使用、手动采集、自动驾驶、候选确认和故障处理 |
 | [docs/operations.md](docs/operations.md) | 运行部署、数据备份、运行排障 |
 | [docs/restore-on-new-machine.md](docs/restore-on-new-machine.md) | 换机 / 重装还原清单 |
 

@@ -29,10 +29,10 @@ from ..config import get_settings
 from ..models import SourceRun
 from .ai import is_ai_available
 from .chat_ingest import _candidate_dedupe_key, persist_collect_candidates, recent_collect_candidate_keys
-from .collect_filter import apply_area_filter
+from .collect_filter import apply_area_filter, apply_score_gate
 from .collectors import WeChatPasteCollector
 from .importer import split_known_records, upsert_job_records
-from .jobs import attach_candidate_scores
+from .jobs import attach_candidate_application_packs, attach_candidate_scores
 from .sources import build_source_collector, get_source_definition, source_health, source_public_config
 
 
@@ -84,6 +84,9 @@ def _triage_records(session: Session, source_label: str, records: list[dict]) ->
 
     `run_collector` 与 `run_wechat_collection` 共用；报告直接并进 `SourceRun.raw_config`，
     也是手机回执的数据来源（见 `telegram.summarize_collect_run`）。
+
+    漏斗必须逐级收窄（区域 → 已知/重复 → 评分闸门 → 人工勾选）：评分闸门放在**评分之后**，
+    因为它筛的就是分数与硬阻断标记，而评分需要先有候选结构。挡掉的只记数不静默丢（§7）。
     """
     settings = get_settings()
     kept, area_report = apply_area_filter(records, settings.area_filter_config)
@@ -94,12 +97,17 @@ def _triage_records(session: Session, source_label: str, records: list[dict]) ->
     fresh, already_pending = _dedupe_fresh(fresh, recent_collect_candidate_keys(session))
     candidates: list[Candidate] = [{**record, "status": CANDIDATE_PENDING, "job_id": None} for record in fresh]
     candidates = attach_candidate_scores(session, candidates)
+    candidates, score_report = apply_score_gate(candidates, settings.score_gate_config)
+    pack_limit = int(settings.automation_config.get("max_application_packs_per_day", 10) or 10)
+    materials_prepared = attach_candidate_application_packs(session, candidates, limit=pack_limit)
 
     report = {
         "area_filter": area_report,
+        "score_gate": score_report,
         "known_refreshed": len(known),
         "already_pending": already_pending,
         "pending": len(candidates),
+        "materials_prepared": materials_prepared,
     }
     persisted = persist_collect_candidates(
         session,
@@ -121,6 +129,7 @@ def collect_run_summary(fetched: int, report: dict) -> str:
     调用方各自在后面接自己的行动指引（Web 说「在下方勾选」，手机说「打开 Web 勾选」）。
     """
     area = report.get("area_filter") if isinstance(report.get("area_filter"), dict) else {}
+    gate = report.get("score_gate") if isinstance(report.get("score_gate"), dict) else {}
     parts = [f"本次采集 {fetched} 条"]
     if area.get("enabled") and area.get("filtered"):
         parts.append(f"区域过滤 {area['filtered']} 条")
@@ -128,6 +137,14 @@ def collect_run_summary(fetched: int, report: dict) -> str:
         parts.append(f"已在岗位池 {report['known_refreshed']} 条（已刷新）")
     if report.get("already_pending"):
         parts.append(f"已在待筛/已跳过 {report['already_pending']} 条")
+    # 闸门挡掉的必须逐项报出来，否则「抓了 30 条只剩 4 条待筛」看着像丢数据（§7）。
+    if gate.get("enabled"):
+        if gate.get("hard_blocked"):
+            parts.append(f"硬排除 {gate['hard_blocked']} 条")
+        if gate.get("below_score"):
+            parts.append(f"低于 {float(gate.get('min_score') or 0):g} 分 {gate['below_score']} 条")
+        if gate.get("truncated"):
+            parts.append(f"超出单次上限暂缓 {gate['truncated']} 条")
     parts.append(f"待筛 {int(report.get('pending') or 0)} 条")
     return "，".join(parts) + "。"
 
@@ -179,6 +196,8 @@ def run_source(session: Session, source_key: str) -> dict:
         "kind": source.kind,
         **source_public_config(source),
     }
+    if source.key == "boss":
+        raw_config["reach_plan"] = source.config.get("reach_plan", {})
     return run_collector(session, source.label, collector, raw_config)
 
 

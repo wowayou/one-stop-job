@@ -258,6 +258,21 @@ export type IngestCandidate = {
   /** 命中 dealbreakers/城市/薪资硬排除时为 true（后端 scoring.score_job → attach_candidate_scores）；
    * 前端默认折叠被阻断的候选，有开关可展开。纯展示字段，提交入库时会被后端剔除。 */
   hard_blocked?: boolean;
+  reach?: {
+    family_key?: string | null;
+    family_label: string;
+    level: "core" | "adjacent" | "exploratory";
+    level_label?: string;
+    overlap?: string[];
+    missing_hard?: string[];
+    short_term_gaps?: string[];
+    recommendation: string;
+  };
+  application_pack?: {
+    resume_version: string;
+    application_reason: string;
+    risk_questions: string;
+  };
 };
 
 /** 候选岗位的初步决策建议：与 Web 决策卡同源（同一条规则+模型链路），只是字段更少。 */
@@ -337,6 +352,15 @@ export type AppConfig = {
   restart_recommended_after_save: string[];
 };
 
+export type AutomationStatus = {
+  mode: "manual" | "autopilot";
+  reach_level: "core" | "adjacent" | "exploratory";
+  rescore_existing: boolean;
+  latest_run?: SourceRun | null;
+  latest_counts: { found: number; hard_blocked: number; pending: number; materials_prepared: number };
+  safe_boundary: string;
+};
+
 export type JobSourceStatus = {
   key: string;
   label: string;
@@ -407,6 +431,20 @@ export type SourceRunReport = {
   known_refreshed?: number;
   /** 已在待筛列表或此前被跳过、本次不再重复列出的条数。 */
   already_pending?: number;
+  /** 评分闸门（后端 collect_filter.apply_score_gate）：评分之后按分数/硬阻断收窄待筛量。 */
+  score_gate?: {
+    enabled: boolean;
+    kept?: number;
+    /** 命中 dealbreakers/城市/薪资硬条件被挡掉的条数。 */
+    hard_blocked?: number;
+    /** 分数低于 min_score 被挡掉的条数。 */
+    below_score?: number;
+    /** 超出 max_pending、本次暂缓的条数。 */
+    truncated?: number;
+    min_score?: number;
+    max_pending?: number;
+    samples?: string[];
+  };
   /** 本次新挂出的待筛候选数。 */
   pending?: number;
   /** 候选落在哪条聊天线索上。 */
