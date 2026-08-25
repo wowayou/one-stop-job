@@ -1,6 +1,6 @@
 [package]
 name = "job-one-stop"
-version = "0.2.0"
+version = "0.2.1"
 description = "本地优先的个人求职助手"
 authors = ["you"]
 edition = "2021"

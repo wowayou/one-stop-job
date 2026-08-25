@@ -24,7 +24,7 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             name: macos-arm
-          - platform: macos-latest
+          - platform: macos-15-intel
             target: x86_64-apple-darwin
             name: macos-intel
 
@@ -46,6 +46,9 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
 
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
@@ -89,6 +92,8 @@ jobs:
           releaseName: "job-one-stop ${{ github.ref_name }}"
           releaseBody: |
             job-one-stop ${{ github.ref_name }} 加入自动驾驶、三级求职面和完整首次使用引导。自动驾驶只在本地完成搜集、去重、分类、评分和材料准备；投递与招聘者沟通仍需用户确认。
+
+            v0.2.1 同时修复发布流水线未安装 Tauri CLI、无法生成桌面安装包的问题。
 
             ## 本版重点
             - 自动驾驶每日扫描，首页和设置页均可开启、停止或立即扫描
