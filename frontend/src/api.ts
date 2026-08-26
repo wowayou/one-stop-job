@@ -1,16 +1,28 @@
-// 后端固定在 127.0.0.1:8000。
 // - 生产模式（后端挂载前端 :8000）：同源，API_BASE 为空
-// - 其他模式（Vite dev / Tauri dev / Tauri prod）：直接指向 :8000
+// - Vite dev：直接指向 :8000
+// - Tauri：由 Rust 启动后端并通过 IPC 返回每次启动实际分配的空闲端口
 // - 自定义：通过 VITE_API_BASE 环境变量覆盖
+let API_BASE = detectApiBase();
+
 function detectApiBase(): string {
   const envBase = import.meta.env.VITE_API_BASE;
   if (envBase) return envBase;
   // 后端挂载模式（scripts/app.sh）：同源不需要前缀
   if (typeof window !== "undefined" && window.location.port === "8000") return "";
-  // 开发模式和 Tauri 模式：直接指向后端
+  // Tauri 的后端端口不是固定值，下面的 async 初始化会覆盖它。
   return "http://127.0.0.1:8000";
 }
-const API_BASE = detectApiBase();
+
+const apiBaseReady = (async () => {
+  if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window) || import.meta.env.VITE_API_BASE) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const port = await invoke<number>("backend_port");
+    if (port > 0) API_BASE = `http://127.0.0.1:${port}`;
+  } catch {
+    // Browser/Vite mode or an older desktop binary: retain the safe dev fallback.
+  }
+})();
 
 export function apiUrl(path: string): string {
   return `${API_BASE}${path}`;
@@ -88,6 +100,7 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = DEFA
 }
 
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
+  await apiBaseReady;
   let lastError: Error | null = null;
   // Retry on connection failure (backend not ready yet) - max 3 attempts
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -130,6 +143,7 @@ function filenameFromDisposition(value: string | null, fallback: string) {
 }
 
 export async function downloadApiFile(path: string, fallbackName: string, init?: RequestInit): Promise<string> {
+  await apiBaseReady;
   const response = await fetchWithTimeout(`${API_BASE}${path}`, {
     ...init,
     headers: init?.body instanceof FormData ? init.headers : { ...(init?.headers ?? {}) }

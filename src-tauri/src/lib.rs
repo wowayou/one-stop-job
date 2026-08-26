@@ -1,9 +1,13 @@
+use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
-struct BackendProcess(Mutex<Option<Child>>);
+struct BackendProcess {
+    child: Mutex<Option<Child>>,
+    port: Mutex<u16>,
+}
 
 #[cfg(target_os = "windows")]
 const BACKEND_BIN: &str = "job-one-stop-backend.exe";
@@ -33,7 +37,12 @@ fn dev_python() -> String {
 
 fn start_backend(app: &tauri::App) -> Result<u16, String> {
     let root = project_root();
-    let port = 8000u16;
+    // Never reuse the conventional development port. A desktop build must
+    // not accidentally talk to an already-running `scripts/app.sh` process.
+    let port = TcpListener::bind(("127.0.0.1", 0))
+        .and_then(|listener| listener.local_addr())
+        .map_err(|e| format!("Failed to reserve a local backend port: {}", e))?
+        .port();
 
     // In debug/dev builds, ALWAYS use venv python + uvicorn.
     // Only in release builds do we look for the PyInstaller binary.
@@ -58,6 +67,7 @@ fn start_backend(app: &tauri::App) -> Result<u16, String> {
         }
         Command::new(&backend_path)
             .current_dir(&root)
+            .env("PORT", port.to_string())
             .env("JOB_ONE_STOP_TAURI_MODE", "1")
             .stdout(Stdio::inherit())
             .stderr(Stdio::inherit())
@@ -89,20 +99,24 @@ fn start_backend(app: &tauri::App) -> Result<u16, String> {
     }
 
     let state = app.state::<BackendProcess>();
-    *state.0.lock().unwrap() = Some(child);
+    *state.child.lock().unwrap() = Some(child);
+    *state.port.lock().unwrap() = port;
 
     Ok(port)
 }
 
 #[tauri::command]
-fn backend_port() -> u16 {
-    8000
+fn backend_port(state: tauri::State<'_, BackendProcess>) -> u16 {
+    *state.port.lock().unwrap()
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
-        .manage(BackendProcess(Mutex::new(None)))
+        .manage(BackendProcess {
+            child: Mutex::new(None),
+            port: Mutex::new(0),
+        })
         .setup(|app| {
             match start_backend(app) {
                 Ok(_port) => {}
@@ -115,7 +129,7 @@ pub fn run() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let state = window.state::<BackendProcess>();
-                let child = state.0.lock().unwrap().take();
+                let child = state.child.lock().unwrap().take();
                 if let Some(mut child) = child {
                     let _ = child.kill();
                 }
