@@ -82,6 +82,10 @@ jobs:
             chmod +x src-tauri/resources/job-one-stop-backend
           fi
 
+      - name: Guard release payload against local credentials
+        shell: bash
+        run: bash scripts/release_secret_check.sh frontend/dist src-tauri/resources
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
