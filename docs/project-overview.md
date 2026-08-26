@@ -263,9 +263,11 @@ scoring:
 6. 提交代码，打标签 `v<X.Y.Z>` 并推送
    - workflow 会先校验「标签 == VERSION == 各清单」，不一致直接失败
    - 产物含各平台安装包、每个包的 `.sha256` 与按平台汇总的 `SHA256SUMS-<平台>.txt`
-7. 在 GitHub 上把草稿 Release 转为正式发布
+7. 按 [docs/releases/verification-checklist.md](releases/verification-checklist.md) 逐项手验
+   - 只列真实机器上必须用手验的项：跨平台安装、升级保数据、点击类交互、出站边界
+8. 在 GitHub 上把草稿 Release 转为正式发布
    - **只有正式 Release 会被应用内升级检查识别**（draft / pre-release 一律跳过）
-8. 部署时运行 `scripts/deploy_check.sh`
+9. 部署时运行 `scripts/deploy_check.sh`
 
 ---
 

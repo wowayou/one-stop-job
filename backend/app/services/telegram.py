@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -32,6 +33,25 @@ _SUPPORTED_DOCUMENT_IMAGE_MIME_TYPES = {"image/png", "image/jpeg", "image/webp"}
 _MAX_DOCUMENT_IMAGE_BYTES = 6_000_000
 
 
+def redact_token(text: str, token: str | None) -> str:
+    """把 bot token 从任何将要抛出或写日志的文本里抹掉。
+
+    **为什么必须有这一层**：Telegram 要求 token 出现在 URL 路径里，而 httpx 的
+    `HTTPStatusError` 消息带完整 URL——`raise_for_status()` 抛出后被上层
+    `logger.warning(..., exc_info=True)` 一记，明文 token 就永久留在 `data/app/backend.log`
+    里了（实测踩到：409 Conflict 那批日志每行都带着 token）。红线 §3.4 不泄密，日志同样算。
+
+    连 token 的后半段（`<bot_id>:<secret>` 里的 secret）也一起抹——只泄后半段照样能被拼回去。
+    """
+    if not token or not text:
+        return text
+    cleaned = text.replace(token, "***")
+    secret = token.split(":", 1)[-1]
+    if secret and secret != token and len(secret) >= 8:
+        cleaned = cleaned.replace(secret, "***")
+    return cleaned
+
+
 def bot_token() -> str | None:
     """从环境变量读取 bot token；未配置时返回 None（渠道自然关闭）。"""
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -42,6 +62,11 @@ def get_updates(token: str, offset: int | None, timeout: int) -> list[dict]:
     """长轮询拉取新消息。返回 update 列表；失败抛异常由调用方处理（不静默吞）。
 
     timeout 是 Telegram 端的长轮询秒数；httpx 读超时额外留出余量。
+
+    **异常一律经 `redact_token` 重包成 RuntimeError，并 `from None` 断开异常链**——
+    `raise_for_status()` 的原始异常消息带着含 token 的完整 URL，`from exc` 会让上层
+    `exc_info=True` 把它连同 __cause__ 一起打进日志。调用方（main.py 的轮询循环）本来就
+    catch 宽泛 Exception 做指数退避，换成 RuntimeError 不改变任何行为。
     """
     import httpx
 
@@ -49,12 +74,24 @@ def get_updates(token: str, offset: int | None, timeout: int) -> list[dict]:
     if offset is not None:
         params["offset"] = offset
     url = f"{_API_BASE}/bot{token}/getUpdates"
-    with httpx.Client(timeout=timeout + 10) as client:
-        resp = client.get(url, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-    if not data.get("ok"):
-        raise RuntimeError(f"Telegram getUpdates 失败: {data.get('description')}")
+    try:
+        with httpx.Client(timeout=timeout + 10) as client:
+            resp = client.get(url, params=params)
+            status = resp.status_code
+            body = resp.text
+    except Exception as exc:  # noqa: BLE001 - 传输层异常消息也可能带上 URL
+        raise RuntimeError(
+            f"Telegram getUpdates 请求失败: {redact_token(f'{type(exc).__name__}: {exc}', token)}"
+        ) from None
+    if status >= 400:
+        raise RuntimeError(f"Telegram getUpdates HTTP {status}: {redact_token(body[:300], token)}")
+    try:
+        data = json.loads(body)
+    except ValueError:
+        raise RuntimeError("Telegram getUpdates 返回了非 JSON 内容") from None
+    if not isinstance(data, dict) or not data.get("ok"):
+        description = data.get("description") if isinstance(data, dict) else None
+        raise RuntimeError(f"Telegram getUpdates 失败: {redact_token(str(description), token)}")
     result = data.get("result")
     return result if isinstance(result, list) else []
 
@@ -73,8 +110,13 @@ def send_message(token: str, chat_id: int, text: str) -> int | None:
             resp = client.post(url, json={"chat_id": chat_id, "text": text[:4000]})
             resp.raise_for_status()
             data = resp.json()
-    except Exception:  # noqa: BLE001 - 回执失败不影响已完成的落盘
-        logger.warning("Telegram 回执发送失败 chat_id=%s", chat_id, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - 回执失败不影响已完成的落盘
+        # 不用 exc_info：异常消息里的 URL 带着 token（见 redact_token 的说明）。
+        logger.warning(
+            "Telegram 回执发送失败 chat_id=%s：%s",
+            chat_id,
+            redact_token(f"{type(exc).__name__}: {exc}", token),
+        )
         return None
     if not isinstance(data, dict) or not data.get("ok"):
         return None

@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import importlib
+import logging
 from dataclasses import replace
 
 import httpx
+import pytest
 
 from backend.app.candidates import (
     CANDIDATE_COMMITTED,
@@ -2647,3 +2649,87 @@ def test_receipt_lookup_scans_a_bounded_window(monkeypatch, tmp_path):
         assert chat_ingest._find_ingest_thread_by_receipt(session, 111) is None
         assert chat_ingest._find_ingest_message_by_tg_id(session, 222) is None
         assert chat_ingest._find_ingest_thread_by_receipt(session, 999) is None
+
+
+# ==================== 修复：bot token 不许进日志/异常 ====================
+# 背景：Telegram 要求 token 出现在 URL 路径里，httpx 的 HTTPStatusError 消息带完整 URL，
+# 被上层 logger.warning(..., exc_info=True) 一记就永久留在 data/app/backend.log 里
+# （实测：409 Conflict 那批日志每行都带明文 token）。红线 §3.4 不泄密，日志同样算。
+
+_FAKE_TOKEN = "8733818890:AAGtH3frsVSm8oqGntgnn2An0N5FXSE2CtM"
+
+
+def _rendered_traceback(exc: BaseException) -> str:
+    """按 logging 的 `exc_info=True` 口径把异常渲染成字符串——那才是真正的泄露面。"""
+    import traceback
+
+    return "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+
+
+def test_redact_token_removes_full_token_and_secret_half():
+    text = f"url https://api.telegram.org/bot{_FAKE_TOKEN}/getUpdates and secret AAGtH3frsVSm8oqGntgnn2An0N5FXSE2CtM"
+    cleaned = telegram.redact_token(text, _FAKE_TOKEN)
+    assert _FAKE_TOKEN not in cleaned
+    # 只泄后半段照样能被拼回去，所以也要抹掉。
+    assert "AAGtH3frsVSm8oqGntgnn2An0N5FXSE2CtM" not in cleaned
+    assert "api.telegram.org" in cleaned   # 其余上下文要留着，否则日志没法排障
+
+
+def test_get_updates_http_error_never_carries_token(monkeypatch):
+    """409 Conflict（两个轮询抢同一个 bot）是现网真实踩到的那条路径。"""
+    import httpx
+
+    def fake_get(self, url, params=None):
+        return httpx.Response(409, text="Conflict: terminated by other getUpdates request", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    with pytest.raises(RuntimeError) as excinfo:
+        telegram.get_updates(_FAKE_TOKEN, None, 1)
+
+    assert _FAKE_TOKEN not in _rendered_traceback(excinfo.value)
+    assert "409" in str(excinfo.value)
+
+
+def test_get_updates_transport_error_never_carries_token(monkeypatch):
+    import httpx
+
+    def fake_get(self, url, params=None):
+        raise httpx.ConnectError(f"failed to connect to {url}", request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    with pytest.raises(RuntimeError) as excinfo:
+        telegram.get_updates(_FAKE_TOKEN, None, 1)
+
+    # 断言的是「logger.warning(exc_info=True) 实际会打出来的东西」，而不是异常对象的属性：
+    # `raise ... from None` 会置 __suppress_context__，被抑制的 __context__ 不进 traceback。
+    assert _FAKE_TOKEN not in _rendered_traceback(excinfo.value)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__suppress_context__ is True
+
+
+def test_get_updates_still_returns_results_on_success(monkeypatch):
+    """脱敏改造不能动正常路径。"""
+    import httpx
+
+    def fake_get(self, url, params=None):
+        return httpx.Response(
+            200,
+            json={"ok": True, "result": [{"update_id": 7}]},
+            request=httpx.Request("GET", url),
+        )
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    assert telegram.get_updates(_FAKE_TOKEN, 5, 1) == [{"update_id": 7}]
+
+
+def test_send_message_failure_log_never_carries_token(monkeypatch, caplog):
+    import httpx
+
+    def fake_post(self, url, json=None):
+        raise httpx.ConnectError(f"failed to connect to {url}", request=httpx.Request("POST", url))
+
+    monkeypatch.setattr(httpx.Client, "post", fake_post)
+    with caplog.at_level(logging.WARNING, logger=telegram.logger.name):
+        assert telegram.send_message(_FAKE_TOKEN, 42, "hello") is None
+    assert _FAKE_TOKEN not in caplog.text
+    assert "AAGtH3frsVSm8oqGntgnn2An0N5FXSE2CtM" not in caplog.text
