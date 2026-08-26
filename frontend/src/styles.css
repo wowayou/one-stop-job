@@ -5198,3 +5198,237 @@ ul.modal-notes {
 .update-strip strong {
   color: #7fd8c9;
 }
+
+/* 侧栏「运行状态」条：版本 / 后端 / 自动驾驶 / 更新检查，点进设置 → 诊断。
+   和 .update-strip 一样复用 .run-strip 外观，只补 <button> 需要的重置。 */
+.status-strip {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.status-strip:hover {
+  border-color: #3f5249;
+  background: #263330;
+}
+
+.status-strip:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
+
+/* ==================== 设置 → 诊断 ==================== */
+
+.diag-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--r-lg);
+  background: var(--c-bg-card);
+  padding: 12px 14px 14px;
+  margin: 0;
+}
+
+.diag-card legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-secondary);
+}
+
+.diag-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.diag-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-text-muted);
+}
+
+.diag-note code,
+.diag-chip small {
+  font-size: 11px;
+}
+
+.diag-note code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--c-bg-inset);
+}
+
+.diag-env-group {
+  display: grid;
+  gap: 6px;
+}
+
+.diag-env-label {
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.diag-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 未配置是中性灰、已配置才上品牌色：满屏绿点会让"缺了什么"看不出来。 */
+.diag-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 9px;
+  border-radius: var(--r-full);
+  border: 1px solid var(--c-border-subtle);
+  background: var(--c-bg-inset);
+  font-size: 12px;
+  color: var(--c-text-secondary);
+}
+
+.diag-chip small {
+  color: var(--c-text-faint);
+}
+
+.diag-chip.on {
+  border-color: #cfe6dd;
+  background: var(--c-brand-light);
+  color: var(--c-brand-text);
+}
+
+.diag-chip.on small {
+  color: var(--c-brand);
+}
+
+.diag-signal {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 11px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border-light);
+  background: var(--c-bg-subtle);
+}
+
+.diag-signal > div {
+  display: grid;
+  gap: 2px;
+}
+
+.diag-signal strong {
+  font-size: 13px;
+}
+
+.diag-signal span {
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--c-text-secondary);
+}
+
+.diag-signal small {
+  font-size: 11px;
+  color: var(--c-text-faint);
+}
+
+.diag-signal.ok {
+  border-color: #cfe6dd;
+  background: var(--c-brand-light);
+}
+
+.diag-signal.ok > svg {
+  color: var(--c-brand);
+}
+
+.diag-signal.warning > svg {
+  color: #9a7413;
+}
+
+.diag-signal.warning {
+  border-color: #ecdfc2;
+  background: #fdf7e9;
+}
+
+.diag-signal.error {
+  border-color: #f0d3d0;
+  background: #fdf1f0;
+}
+
+.diag-signal.error > svg {
+  color: #b04b41;
+}
+
+.diag-signal.unknown > svg {
+  color: var(--c-text-faint);
+}
+
+.diag-check-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+}
+
+.diag-check-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border-radius: var(--r-sm);
+  background: var(--c-bg-inset);
+}
+
+.diag-check-list li > div {
+  display: grid;
+  gap: 1px;
+}
+
+.diag-check-list strong {
+  font-size: 12px;
+}
+
+.diag-check-list span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--c-text-muted);
+}
+
+.diag-check-list li.ok > svg {
+  color: var(--c-brand);
+}
+
+.diag-check-list li.warning > svg {
+  color: #9a7413;
+}
+
+.diag-check-list li.error > svg {
+  color: #b04b41;
+}
+
+.diag-recovery-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.diag-log {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border-light);
+  background: var(--c-bg-inset);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

@@ -2,6 +2,7 @@ import { AlertTriangle, ChevronDown, ChevronUp, Info, Loader2, Pencil, Plus, Ref
 import { FormEvent, useEffect, useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
 import { AboutPanel } from "../components/AboutPanel";
+import { DiagnosticsPanel } from "../components/DiagnosticsPanel";
 import { ProviderModal, type ProviderModalSaveValues } from "../components/ProviderModal";
 import { DealbreakerChips } from "../components/DealbreakerChips";
 import { hasAnyBusy, hasBusy, type BusyState } from "../hooks/useBusyState";
@@ -37,6 +38,7 @@ const configSections = [
   ["profile", "个人画像"],
   ["scoring", "评分权重"],
   ["advanced", "高级"],
+  ["diagnostics", "诊断"],
   ["about", "关于"]
 ] as const;
 
@@ -365,6 +367,25 @@ export function ConfigView({
       ))}
     </div>
   );
+
+  if (activeSection === "diagnostics") {
+    return (
+      <section className="content-panel config-panel">
+        <div className="config-layout">
+          <div className="config-head">
+            <div>
+              <h2>诊断</h2>
+              <p>出问题时先看这里：.env 与 config.yaml 分开显示，另有备份、脱敏日志和缓存重置</p>
+            </div>
+          </div>
+          {tabs}
+          <div className="config-scroll">
+            <DiagnosticsPanel onNotify={onNotify} />
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   if (activeSection === "about") {
     return (

@@ -108,6 +108,17 @@ export const SIDEBAR_COLLAPSED_KEY = "job-one-stop.sidebar-collapsed.v1";
 export const WHATS_NEW_SEEN_KEY = "job-one-stop.whats-new-seen.v1";
 // AI「测试连接」的费用确认：勾了"下次不再提示"就存 true，直接发测试请求。
 export const AI_TEST_CONFIRM_SKIP_KEY = "job-one-stop.ai-test-confirm-skip.v1";
+// 「重置本地缓存」清的就是这一组：全是界面偏好/游标，**不含任何业务数据**。
+// 新增 localStorage 键时记得加进来，否则「重置」会漏掉它、用户以为清了其实没清。
+export const LOCAL_CACHE_KEYS = [
+  USAGE_GUIDE_SEEN_KEY,
+  ACTIVE_CHAT_THREAD_KEY,
+  CHAT_USE_AI_KEY,
+  SIDEBAR_COLLAPSED_KEY,
+  WHATS_NEW_SEEN_KEY,
+  AI_TEST_CONFIRM_SKIP_KEY
+] as const;
+
 export const GLOBAL_BUSY_KEYS = ["source-boss", "source-bebee", "upload", "wechat", "sprint", "manual", "profile", "export"] as const;
 
 export const PREVIEW_SECTION_LABELS: Record<string, string> = {

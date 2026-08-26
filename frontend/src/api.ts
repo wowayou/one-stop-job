@@ -217,3 +217,24 @@ export async function openExternal(url: string): Promise<boolean> {
     return false;
   }
 }
+
+/** 在系统文件管理器里打开本机目录（设置 → 诊断的「打开数据目录」）。
+ *
+ * 与 `openExternal` 分开是因为那个只放行 http(s)——把任意路径塞进同一个函数会让
+ * "只开网址"这条约束失效。桌面端走同一个已授权的 `shell:allow-open`（Windows 交给
+ * explorer、macOS 交给 open、Linux 交给 xdg-open）；浏览器里没有等价能力，返回 false
+ * 让调用方退回"显示路径 + 复制"。
+ */
+export async function openLocalPath(path: string): Promise<boolean> {
+  if (!path) return false;
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("plugin:shell|open", { path });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}

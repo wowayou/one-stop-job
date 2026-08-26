@@ -229,6 +229,15 @@ def clear_cache() -> None:
     _cache, _cached_at = None, 0.0
 
 
+def cached_result() -> dict[str, Any] | None:
+    """只读地看一眼缓存里上次检查的结果，**不触发任何请求**。
+
+    诊断页的"网络连接状态"用它当 GitHub 可达性的现成证据——为了画一个绿点专门去连
+    别人的服务器是不必要的出站流量（红线 §3.9）。没检查过就返回 None，由调用方说"未知"。
+    """
+    return {**_cache, "cached": True} if _cache is not None else None
+
+
 def _updates_config() -> dict[str, Any]:
     return get_settings().updates_config
 

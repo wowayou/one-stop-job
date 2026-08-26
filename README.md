@@ -75,6 +75,10 @@ docker compose up -d --build
 应用启动时也会静默检查一次。它只发现新版本，不会自动下载或安装自己；不想让它联网检查，
 把 `config.yaml` 的 `updates.enabled` 置为 `false` 即可。
 
+出问题时先看 **设置 → 诊断**：`.env` 与 `config.yaml` 分开列（前者只显示变量名和「已配置 /
+未配置」，永不显示值）、当前后端进程与端口、当前 AI Provider、网络信号，以及四个恢复入口——
+打开数据目录、一键备份、复制脱敏日志、重置本地缓存（只清界面偏好，不删数据）。
+
 > 首次启动可能提示未知开发者——这是正常的（未签名），按系统提示确认即可。
 >
 > 桌面应用基于 [Tauri](https://tauri.app/) 构建，源码在 `src-tauri/`，由 [CI](.github/workflows/release.yml) 自动打包发布。

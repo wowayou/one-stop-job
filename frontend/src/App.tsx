@@ -65,7 +65,8 @@ import {
   runCountsText,
   runDetailLines,
   runHasNoJobs,
-  skippedItems
+  skippedItems,
+  updateCheckLabel
 } from "./lib/format";
 import type {
   AiProbeResult,
@@ -143,8 +144,8 @@ function App() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [whatsNewOpen, setWhatsNewOpen] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
-  // 非 null 时让 ConfigView 重新挂载并直接停在该分区（点侧栏「有新版本」直达「关于」）。
-  const [configSectionRequest, setConfigSectionRequest] = useState<"about" | null>(null);
+  // 非 null 时让 ConfigView 重新挂载并直接停在该分区（侧栏「运行状态」→ 诊断、「有新版本」→ 关于）。
+  const [configSectionRequest, setConfigSectionRequest] = useState<"about" | "diagnostics" | null>(null);
   const [contextStatus, setContextStatus] = useState<ContextRepoStatus | null>(null);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [trashedJobs, setTrashedJobs] = useState<Job[]>([]);
@@ -1066,6 +1067,24 @@ function App() {
             </div>
           )}
         </div>
+        <button
+          type="button"
+          className="run-strip status-strip"
+          onClick={() => {
+            closeJobDrawer();
+            setConfigSectionRequest("diagnostics");
+            setActiveNav("config");
+          }}
+          title="打开「设置 → 诊断」"
+        >
+          <span>运行状态</span>
+          <strong>
+            {appVersion ? `v${appVersion}` : "读取中"} · {appVersion ? "后端已连接" : "后端未就绪"}
+          </strong>
+          <small>
+            {`自动驾驶 ${automation?.mode === "autopilot" ? "开" : "关"} · 更新检查 ${updateCheckLabel(updateInfo)}`}
+          </small>
+        </button>
         {updateInfo?.status === "update_available" && (
           <button
             type="button"

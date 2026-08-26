@@ -1,4 +1,4 @@
-import type { AiProbeResult, AiStatus, FollowUpTask, IngestCandidate, InterviewLog, Job, JobEditForm, SourceRun } from "../types";
+import type { AiProbeResult, AiStatus, FollowUpTask, IngestCandidate, InterviewLog, Job, JobEditForm, SourceRun, UpdateCheckResult } from "../types";
 import { draftKindLabels, OPPORTUNITY_DIMENSIONS } from "./constants";
 
 export function sumOpportunity(details: Record<string, number>) {
@@ -184,6 +184,21 @@ export function rankedJobs(jobs: Job[]) {
  * 回填），而不是配置里的第一张；发生过备用切换时明确说出来——"能用"和"主用能用"是两回事，
  * 前者掩盖了主 provider 已经挂了这件事。
  */
+/** 侧栏「运行状态」里那一小段更新检查结论。
+ *
+ * `offline` 与 `latest` 必须分开：连不上更新服务时说"已最新"是错的，也是这一版专门要避免的。
+ */
+export function updateCheckLabel(result: UpdateCheckResult | null) {
+  if (!result) return "未检查";
+  return {
+    update_available: "有新版本",
+    latest: "已最新",
+    offline: "连不上",
+    error: "失败",
+    disabled: "已关闭"
+  }[result.status];
+}
+
 export function aiProbeText(probe: AiProbeResult) {
   if (!probe.ok) return probe.reason;
   const parts = ["连接成功", probe.provider_label ?? "", probe.model, probe.latency_ms != null ? `${probe.latency_ms}ms` : ""];

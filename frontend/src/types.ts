@@ -192,6 +192,90 @@ export type UpdateCheckResult = {
   cached: boolean;
 };
 
+/** `GET /api/diagnostics/deployment` 的单条自检项（已有端点，本版才接进 UI）。 */
+export type DiagnosticCheck = {
+  name: string;
+  status: "ok" | "warning" | "error";
+  message: string;
+  path?: string;
+  key?: string;
+  label?: string;
+};
+
+export type DeploymentDiagnostics = {
+  status: "ok" | "degraded" | "error";
+  generated_at: string;
+  app: string;
+  checks: DiagnosticCheck[];
+};
+
+/** `GET /api/diagnostics/runtime`：诊断页的只读汇总。绝无任何密钥值。 */
+export type RuntimeDiagnostics = {
+  version: string;
+  generated_at: string;
+  process: {
+    pid: number;
+    python: string;
+    /** true = PyInstaller 打包的桌面端后端（不是 venv 里的 uvicorn）。 */
+    executable_frozen: boolean;
+    platform: string;
+    host: string;
+    /** 桌面端每次启动随机选空闲回环端口，所以这就是「当前 Tauri 后端端口」。 */
+    port: number;
+    tauri_mode: boolean;
+    started_at: string;
+    uptime_seconds: number;
+  };
+  /** `.env` 一侧：只有变量名与「是否有值」，没有值。 */
+  env: Array<{ group: string; vars: Array<{ name: string; configured: boolean }> }>;
+  config: {
+    path: string;
+    exists: boolean;
+    error: string | null;
+    sections: Array<{ name: string; present: boolean }>;
+  };
+  ai: {
+    enabled_in_config: boolean;
+    available: boolean;
+    provider_label: string;
+    model: string;
+    api_key_configured: boolean;
+    base_url_configured: boolean;
+    provider_count: number;
+    timeout_seconds: number;
+  };
+  data: {
+    path: string;
+    exists: boolean;
+    writable: boolean;
+    log_path: string;
+    log_exists: boolean;
+    backups_path: string;
+    backup_count: number;
+  };
+  /** probed 恒为 false：这一节只汇总已有信号，不会为了检测而发起网络请求。 */
+  network: {
+    probed: boolean;
+    note: string;
+    signals: Array<{ name: string; status: "ok" | "warning" | "error" | "unknown"; detail: string; checked_at: number | null }>;
+  };
+};
+
+export type LogTailResult = {
+  available: boolean;
+  message: string;
+  lines: number;
+  text: string;
+};
+
+export type BackupResult = {
+  ok: boolean;
+  message: string;
+  path: string | null;
+  size_bytes: number;
+  restore_hint?: string;
+};
+
 export type DecisionRuleCheck = {
   code: string;
   label: string;

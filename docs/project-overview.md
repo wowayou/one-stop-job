@@ -295,4 +295,4 @@ README.md ──────────┬──> QUICKSTART.md（快速开始�
 - **快速开始** → [QUICKSTART.md](../QUICKSTART.md)
 - **日常使用** → [docs/maintenance-guide.md](maintenance-guide.md)
 - **开发扩展** → [CLAUDE.md](../CLAUDE.md)
-- **故障排查** → [docs/operations.md](operations.md) + [docs/docker-optimization.md](docker-optimization.md)
+- **故障排查** → 应用内 **设置 → 诊断**（版本/进程/.env/config.yaml/AI/网络 + 备份与脱敏日志）；再看 [docs/operations.md](operations.md) + [docs/docker-optimization.md](docker-optimization.md)

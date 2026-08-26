@@ -34,7 +34,7 @@ from .schemas import (
     AppConfigUpdate,
 )
 from .services.ai import active_provider_display as ai_active_provider_display, is_ai_available, probe_ai_connection
-from .routers import chat, collect, companies, drafts, followups, interviews, jobs, misc, scoring, updates
+from .routers import chat, collect, companies, diagnostics, drafts, followups, interviews, jobs, misc, scoring, updates
 from .services.queries import validate_weights as _validate_weights
 from .services.chat_ingest import (
     _find_ingest_message_by_tg_id,
@@ -500,6 +500,7 @@ app.include_router(collect.router)
 app.include_router(scoring.router)
 app.include_router(misc.router)
 app.include_router(updates.router)
+app.include_router(diagnostics.router)
 
 
 CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach", "updates"}
