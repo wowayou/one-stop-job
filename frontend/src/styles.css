@@ -4922,3 +4922,279 @@ meter {
     animation: none;
   }
 }
+
+/* ==================== 关于 / 升级发现（设置 → 关于） ==================== */
+
+.about-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--c-border-light);
+  border-radius: var(--r-lg);
+  background: var(--c-bg-card);
+  padding: 14px 16px 16px;
+  margin: 0;
+}
+
+.about-card legend {
+  padding: 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--c-text-secondary);
+}
+
+.about-version-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.about-version-row > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: var(--r-md);
+  background: var(--c-bg-inset);
+}
+
+.about-version-row span {
+  font-size: 12px;
+  color: var(--c-text-muted);
+}
+
+.about-version-row strong {
+  font-size: 14px;
+  color: var(--c-text);
+}
+
+.about-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 13px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border-light);
+  background: var(--c-bg-subtle);
+}
+
+.about-status > div {
+  display: grid;
+  gap: 3px;
+}
+
+.about-status strong {
+  font-size: 13px;
+}
+
+.about-status span {
+  font-size: 13px;
+  color: var(--c-text-secondary);
+  line-height: 1.55;
+}
+
+.about-status small {
+  font-size: 12px;
+  color: var(--c-text-faint);
+}
+
+/* 四种状态各自的强调色：offline 与 latest 必须一眼分得开，不能都是绿的。 */
+.about-status.ok {
+  border-color: #cfe6dd;
+  background: var(--c-brand-light);
+}
+
+.about-status.ok > svg {
+  color: var(--c-brand);
+}
+
+.about-status.info {
+  border-color: #cddcf0;
+  background: #eef4fb;
+}
+
+.about-status.info > svg {
+  color: #2f6bb0;
+}
+
+.about-status.warn {
+  border-color: #ecdfc2;
+  background: #fdf7e9;
+}
+
+.about-status.warn > svg {
+  color: #9a7413;
+}
+
+.about-status.fail {
+  border-color: #f0d3d0;
+  background: #fdf1f0;
+}
+
+.about-status.fail > svg {
+  color: #b04b41;
+}
+
+.about-actions,
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.modal-actions {
+  justify-content: flex-end;
+}
+
+.about-download {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 12px 13px;
+  border-radius: var(--r-md);
+  border: 1px dashed var(--c-border);
+  background: var(--c-bg-subtle);
+}
+
+.about-download-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.about-download-head strong {
+  font-size: 15px;
+  color: var(--c-brand-text);
+}
+
+.about-download-head small {
+  font-size: 12px;
+  color: var(--c-text-faint);
+}
+
+.about-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--c-text-muted);
+}
+
+.about-note code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--c-bg-inset);
+  font-size: 11px;
+}
+
+.about-notes {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 12px 13px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border-light);
+  background: var(--c-bg-inset);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ==================== 本版新增 / AI 测试确认 ==================== */
+
+.whats-new-modal,
+.ai-test-modal {
+  gap: 14px;
+  max-width: 560px;
+}
+
+.whats-new-section-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 7px;
+  color: var(--c-brand-text);
+}
+
+.whats-new-section-head strong {
+  font-size: 13px;
+}
+
+.whats-new-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--c-text-secondary);
+}
+
+.whats-new-list.preserved {
+  color: var(--c-text-muted);
+}
+
+.whats-new-list code,
+.modal-notes code {
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--c-bg-inset);
+  font-size: 11px;
+}
+
+.modal-notes ul,
+ul.modal-notes {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 5px;
+}
+
+.checkbox-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--c-text-secondary);
+  cursor: pointer;
+}
+
+.checkbox-line input[type="checkbox"] {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--c-brand);
+  cursor: pointer;
+}
+
+/* 侧栏「测试连接」旁的费用提示：一行说清"真的会发请求"。
+   选择器带上 .run-strip 才压得住上面 `.run-strip small` 的字号/颜色。 */
+.run-strip .ai-test-hint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #9daba3;
+}
+
+/* 侧栏「有新版本」入口：只在真的有新版本时渲染，所以是条件出现的临时条目，不是常驻导航。
+   复用 .run-strip 的外观，这里只补 <button> 需要的重置与可点反馈。 */
+.update-strip {
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-color: #2d5f57;
+  background: #1b3833;
+}
+
+.update-strip:hover {
+  border-color: #3c8078;
+  background: #1f423c;
+}
+
+.update-strip:focus-visible {
+  outline: 2px solid var(--c-brand);
+  outline-offset: 2px;
+}
+
+.update-strip strong {
+  color: #7fd8c9;
+}

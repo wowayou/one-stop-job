@@ -251,9 +251,21 @@ scoring:
 
 1. 修改代码
 2. 运行 `scripts/quality_gate.sh`（必须全绿）
-3. 更新 `CHANGELOG.md`（如有）
-4. 提交代码
-5. 部署时运行 `scripts/deploy_check.sh`
+3. 定版本号：`python3 scripts/sync_version.py <X.Y.Z>`
+   - 唯一事实源是根目录 `VERSION`；脚本把它同步到 `frontend/package.json`、
+     `src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`、`src-tauri/tauri.conf.json`
+     和 `backend/app/version.py`，`tests/test_version_sync.py` 锁住一致性
+4. 写发布说明：新增 `docs/releases/v<X.Y.Z>.md`
+   - release workflow 直接读这个文件当 Release body；缺失时只写通用兜底文案
+5. 更新 `frontend/src/lib/whatsNew.ts` 的 `version` 与三段文案（升级后首次启动的说明弹窗）
+   - 由 `tests/test_version_sync.py` 锁住：`version` 与 `VERSION` 不等时测试直接翻红
+   - **刻意不自动同步**——自动改会让旧版功能列表挂上新版号，比"弹窗不出现"更糟
+6. 提交代码，打标签 `v<X.Y.Z>` 并推送
+   - workflow 会先校验「标签 == VERSION == 各清单」，不一致直接失败
+   - 产物含各平台安装包、每个包的 `.sha256` 与按平台汇总的 `SHA256SUMS-<平台>.txt`
+7. 在 GitHub 上把草稿 Release 转为正式发布
+   - **只有正式 Release 会被应用内升级检查识别**（draft / pre-release 一律跳过）
+8. 部署时运行 `scripts/deploy_check.sh`
 
 ---
 

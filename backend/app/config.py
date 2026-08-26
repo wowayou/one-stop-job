@@ -233,6 +233,12 @@ class Settings:
         value = self.config.get("reach", {})
         return value if isinstance(value, dict) else {}
 
+    @property
+    def updates_config(self) -> dict[str, Any]:
+        """升级发现配置段（`updates`）；默认值都在 `services/updates.py`，这里只原样取出。"""
+        value = self.config.get("updates", {})
+        return value if isinstance(value, dict) else {}
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -27,12 +27,14 @@ import { api, copyToClipboard, downloadApiFile, errorMessage, jsonBody } from ".
 import { hasAnyBusy, hasBusy, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour from "./Tour";
+import { AiTestConfirmModal } from "./components/AiTestConfirmModal";
 import { ExportCenterModal } from "./components/ExportCenterModal";
 import { JobEditModal } from "./components/JobEditModal";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { SprintBriefModal } from "./components/SprintBriefModal";
 import { StatBar } from "./components/StatBar";
 import { UsageGuideModal } from "./components/UsageGuideModal";
+import { WhatsNewModal } from "./components/WhatsNewModal";
 import { ChatView } from "./views/ChatView";
 import { CompaniesView } from "./views/CompaniesView";
 import { ConfigView } from "./views/ConfigView";
@@ -43,14 +45,18 @@ import { PrepView } from "./views/PrepView";
 import { TasksView } from "./views/TasksView";
 import { TrashView } from "./views/TrashView";
 import {
+  AI_TEST_CONFIRM_SKIP_KEY,
   applicationEventLabels,
   GLOBAL_BUSY_KEYS,
   SIDEBAR_COLLAPSED_KEY,
   TOUR_STEPS,
   USAGE_GUIDE_SEEN_KEY,
+  WHATS_NEW_SEEN_KEY,
   YUANBAO_PROMPT
 } from "./lib/constants";
+import { WHATS_NEW } from "./lib/whatsNew";
 import {
+  aiProbeText,
   aiStatusLabel,
   interviewLogToMarkdown,
   jobEditPayload,
@@ -85,6 +91,7 @@ import type {
   SourceRun,
   SprintBrief,
   StaleJob,
+  UpdateCheckResult,
   UserProfile
 } from "./types";
 
@@ -130,6 +137,14 @@ function App() {
   const [aiStatus, setAiStatus] = useState<AiStatus | null>(null);
   const [aiProbe, setAiProbe] = useState<AiProbeResult | null>(null);
   const [aiTesting, setAiTesting] = useState(false);
+  const [aiTestConfirmOpen, setAiTestConfirmOpen] = useState(false);
+  // 后端上报的运行版本（/api/health）。「本版新增」弹窗靠它判断是否升级后首次启动，
+  // 前端不另存一份版本号，避免与 VERSION / tauri.conf.json 漂移。
+  const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [whatsNewOpen, setWhatsNewOpen] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<UpdateCheckResult | null>(null);
+  // 非 null 时让 ConfigView 重新挂载并直接停在该分区（点侧栏「有新版本」直达「关于」）。
+  const [configSectionRequest, setConfigSectionRequest] = useState<"about" | null>(null);
   const [contextStatus, setContextStatus] = useState<ContextRepoStatus | null>(null);
   const [automation, setAutomation] = useState<AutomationStatus | null>(null);
   const [trashedJobs, setTrashedJobs] = useState<Job[]>([]);
@@ -291,18 +306,56 @@ function App() {
     async function waitForBackend() {
       for (let i = 0; i < 20; i++) {
         try {
-          await api("/api/health");
+          const health = await api<{ version?: string }>("/api/health");
+          if (health?.version) setAppVersion(health.version);
           break;
         } catch {
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
       await loadAll().catch((err) => notify("error", errorMessage(err, "加载数据失败")));
+      await checkUpdatesOnStartup();
     }
     waitForBackend();
   }, []);
 
+  /** 启动时静默检查一次新版本。
+   *
+   * 三条硬要求：① 失败一律吞掉，绝不影响主流程；② 放在 loadAll 之后，好让"有新版本"
+   * 这条通知盖在可能出现的"部分数据加载失败"上面；③ 是否检查由后端 config
+   * （updates.check_on_startup）说了算，不在前端复制一份策略——所以这里带 startup=true。
+   */
+  async function checkUpdatesOnStartup() {
+    try {
+      const result = await api<UpdateCheckResult>("/api/updates/check?startup=true");
+      setUpdateInfo(result);
+      if (result.status === "update_available") {
+        notify("info", `有新版本 v${result.latest_version} 可用（当前 v${result.current_version}）。`, [
+          "打开「设置 → 关于」可以看发布说明并下载对应平台的安装包。",
+          "应用不会自动下载或安装，升级也不会改动你的配置和数据。"
+        ]);
+      }
+    } catch {
+      // 离线、后端未就绪或端点不存在（旧后端）：静默忽略，「关于」面板里再显示具体原因。
+    }
+  }
+
+  // 升级后首次启动的「本版新增」说明，只弹一次。
   useEffect(() => {
+    if (!appVersion || appVersion !== WHATS_NEW.version) return;
+    try {
+      const seen = window.localStorage.getItem(WHATS_NEW_SEEN_KEY);
+      window.localStorage.setItem(WHATS_NEW_SEEN_KEY, appVersion);
+      // 全新安装（读不到这个键）不弹：首启已经有「开始使用」引导，两个弹窗叠在一起没人看。
+      if (seen && seen !== appVersion) setWhatsNewOpen(true);
+    } catch {
+      // localStorage 不可用：不弹，也不报错。
+    }
+  }, [appVersion]);
+
+  useEffect(() => {
+    // 离开设置页就清掉「直达关于」的请求，否则之后每次进设置都会停在关于而不是运行状态。
+    if (activeNav !== "config" && configSectionRequest) setConfigSectionRequest(null);
     if (activeNav === "trash") {
       reloadTrash();
       return;
@@ -536,7 +589,27 @@ function App() {
     });
   }
 
-  async function testAiConnection() {
+  /** 点「测试连接」：先确认，再发请求。
+   *
+   * 这个按钮听起来像本地自检，实际会真的调用 provider 接口并按对方规则计费。金额极小，
+   * 但"未经说明就花钱"要修。勾过「下次不再提示」后直接发。
+   */
+  function testAiConnection() {
+    if (aiTesting) return;
+    let skipConfirm = false;
+    try {
+      skipConfirm = window.localStorage.getItem(AI_TEST_CONFIRM_SKIP_KEY) === "true";
+    } catch {
+      skipConfirm = false;
+    }
+    if (skipConfirm) {
+      void runAiConnectionTest();
+      return;
+    }
+    setAiTestConfirmOpen(true);
+  }
+
+  async function runAiConnectionTest() {
     if (aiTesting) return;
     setAiTesting(true);
     setAiProbe(null);
@@ -545,7 +618,7 @@ function App() {
       setAiProbe(result);
       // 侧栏底部那行结果容易被折叠/截断看不到，这里再弹一条醒目通知，确保测试反馈一定可见。
       if (result.ok) {
-        notify("success", `AI 连接成功 · ${result.model}`, result.latency_ms != null ? [`响应 ${result.latency_ms}ms`] : undefined);
+        notify("success", aiProbeText(result), result.switched ? ["主用 Provider 不可达，请到「设置 → AI」检查那张卡。"] : undefined);
       } else {
         notify("error", "AI 连接失败", [result.reason]);
       }
@@ -985,17 +1058,30 @@ function App() {
             {aiTesting ? <Loader2 className="spin" size={13} /> : <RefreshCw size={13} />}
             {aiTesting ? "测试中…" : "测试连接"}
           </button>
+          <small className="ai-test-hint">会真的发一次最小请求（极低额费用），不发送岗位内容。</small>
           {aiProbe && (
             <div className={`ai-probe-result ${aiProbe.ok ? "ok" : "fail"}`} aria-live="polite">
               {aiProbe.ok ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
-              <span>
-                {aiProbe.ok
-                  ? `连接成功 · ${aiProbe.model}${aiProbe.latency_ms != null ? ` · ${aiProbe.latency_ms}ms` : ""}`
-                  : aiProbe.reason}
-              </span>
+              <span>{aiProbeText(aiProbe)}</span>
             </div>
           )}
         </div>
+        {updateInfo?.status === "update_available" && (
+          <button
+            type="button"
+            className="run-strip update-strip"
+            onClick={() => {
+              closeJobDrawer();
+              setConfigSectionRequest("about");
+              setActiveNav("config");
+            }}
+            title={`打开「设置 → 关于」查看 v${updateInfo.latest_version}`}
+          >
+            <span>有新版本</span>
+            <strong>v{updateInfo.latest_version}</strong>
+            <small>当前 v{updateInfo.current_version} · 点这里查看发布说明并下载</small>
+          </button>
+        )}
       </aside>
 
       <main className="workspace">
@@ -1169,6 +1255,8 @@ function App() {
           )}
           {activeNav === "config" && (
             <ConfigView
+              key={configSectionRequest ?? "default"}
+              initialSection={configSectionRequest ?? undefined}
               sources={sources}
               runs={runs}
               busy={busy}
@@ -1405,6 +1493,24 @@ function App() {
         />
       )}
       {tourOpen && <Tour steps={TOUR_STEPS} onClose={() => setTourOpen(false)} />}
+      {whatsNewOpen && <WhatsNewModal content={WHATS_NEW} onClose={() => setWhatsNewOpen(false)} />}
+      {aiTestConfirmOpen && (
+        <AiTestConfirmModal
+          aiStatus={aiStatus}
+          onCancel={() => setAiTestConfirmOpen(false)}
+          onConfirm={(skipNextTime) => {
+            if (skipNextTime) {
+              try {
+                window.localStorage.setItem(AI_TEST_CONFIRM_SKIP_KEY, "true");
+              } catch {
+                // localStorage 不可用：这次照样测，只是下次还会再问一遍。
+              }
+            }
+            setAiTestConfirmOpen(false);
+            void runAiConnectionTest();
+          }}
+        />
+      )}
     </div>
   );
 }

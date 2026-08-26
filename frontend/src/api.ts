@@ -192,3 +192,28 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 }
+
+/** 在系统默认浏览器里打开外部链接（发布页 / 下载页）。
+ *
+ * 桌面端不能靠 `target="_blank"`：Tauri 的 webview 不会把它交给系统浏览器，CSP 也只
+ * 放行 `'self'` 与本机端口。这里走已授权的 shell 插件命令（capabilities/default.json
+ * 里的 `shell:allow-open`），所以**不需要额外的 npm 依赖**；浏览器/Vite 模式下退回
+ * window.open。返回是否成功，让调用方决定要不要提示"请手动复制链接"。
+ */
+export async function openExternal(url: string): Promise<boolean> {
+  if (!/^https?:\/\//i.test(url)) return false;
+  if (typeof window !== "undefined" && "__TAURI_INTERNALS__" in window) {
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      await invoke("plugin:shell|open", { path: url });
+      return true;
+    } catch {
+      // 旧版桌面包没有该权限时继续尝试 window.open。
+    }
+  }
+  try {
+    return Boolean(window.open(url, "_blank", "noopener,noreferrer"));
+  } catch {
+    return false;
+  }
+}

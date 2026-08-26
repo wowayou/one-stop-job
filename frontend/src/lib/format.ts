@@ -1,4 +1,4 @@
-import type { AiStatus, FollowUpTask, IngestCandidate, InterviewLog, Job, JobEditForm, SourceRun } from "../types";
+import type { AiProbeResult, AiStatus, FollowUpTask, IngestCandidate, InterviewLog, Job, JobEditForm, SourceRun } from "../types";
 import { draftKindLabels, OPPORTUNITY_DIMENSIONS } from "./constants";
 
 export function sumOpportunity(details: Record<string, number>) {
@@ -176,6 +176,21 @@ export function rankedJobs(jobs: Job[]) {
     if (a.favorite !== b.favorite) return Number(b.favorite) - Number(a.favorite);
     return b.id - a.id;
   });
+}
+
+/** 「测试连接」结果的一行文案。
+ *
+ * 成功时要报**实际命中**的那张 provider 卡（后端 `probe_ai_connection` 用 `_chat(trace=...)`
+ * 回填），而不是配置里的第一张；发生过备用切换时明确说出来——"能用"和"主用能用"是两回事，
+ * 前者掩盖了主 provider 已经挂了这件事。
+ */
+export function aiProbeText(probe: AiProbeResult) {
+  if (!probe.ok) return probe.reason;
+  const parts = ["连接成功", probe.provider_label ?? "", probe.model, probe.latency_ms != null ? `${probe.latency_ms}ms` : ""];
+  const summary = parts.filter(Boolean).join(" · ");
+  if (!probe.switched) return summary;
+  const position = probe.provider_index && probe.provider_total ? `第 ${probe.provider_index}/${probe.provider_total} 个` : "备用";
+  return `${summary}（主用不可达，已切到${position} Provider）`;
 }
 
 export function aiStatusLabel(status: AiStatus | null) {

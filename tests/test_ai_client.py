@@ -288,3 +288,85 @@ def test_chat_raises_after_all_providers_exhausted_and_never_logs_raw_key(monkey
     assert len(_KeyRoutedOpenAI.calls) == 2 * expected_calls_per_provider
     assert secret_1 not in caplog.text
     assert secret_2 not in caplog.text
+
+
+_LABELLED_PROVIDERS_YAML = (
+    "ai:\n"
+    "  enabled: true\n"
+    "  providers:\n"
+    "    - label: 主用-qwen\n"
+    "      api_key_env: OPENAI_API_KEY\n"
+    "      model: gpt-first\n"
+    "    - label: 备用-deepseek\n"
+    "      api_key_env: OPENAI_API_KEY_BACKUP\n"
+    "      model: gpt-second\n"
+)
+
+
+def test_probe_reports_actual_provider_when_fallback_switched(monkeypatch, tmp_path):
+    """「测试连接」必须报**实际命中**的那张卡，而不是恒显第一张。
+
+    设置页要回答"是否发生了备用 Provider 切换"，靠的就是 `_chat(trace=...)` 回填的
+    provider_index/label 与 switched。
+    """
+    _reload_settings(monkeypatch, tmp_path, _LABELLED_PROVIDERS_YAML)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-first")
+    monkeypatch.setenv("OPENAI_API_KEY_BACKUP", "sk-second")
+
+    def first_boom(**_kw):
+        raise RuntimeError("first provider unreachable")
+
+    _KeyRoutedOpenAI.reset()
+    _KeyRoutedOpenAI.behaviors = {
+        "sk-first": first_boom,
+        "sk-second": lambda **_kw: _FakeResp("ok"),
+    }
+    monkeypatch.setattr("openai.OpenAI", _KeyRoutedOpenAI)
+    _no_sleep(monkeypatch)
+
+    result = ai_module.probe_ai_connection()
+
+    assert result["ok"] is True
+    assert result["provider_label"] == "备用-deepseek"
+    assert (result["provider_index"], result["provider_total"]) == (2, 2)
+    assert result["switched"] is True
+    assert result["model"] == "gpt-second"   # 模型也要跟着实际命中的那张卡
+    assert result["latency_ms"] is not None
+
+
+def test_probe_reports_no_switch_when_first_provider_answers(monkeypatch, tmp_path):
+    _reload_settings(monkeypatch, tmp_path, _LABELLED_PROVIDERS_YAML)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-first")
+    monkeypatch.setenv("OPENAI_API_KEY_BACKUP", "sk-second")
+
+    _KeyRoutedOpenAI.reset()
+    _KeyRoutedOpenAI.behaviors = {"sk-first": lambda **_kw: _FakeResp("ok")}
+    monkeypatch.setattr("openai.OpenAI", _KeyRoutedOpenAI)
+    _no_sleep(monkeypatch)
+
+    result = ai_module.probe_ai_connection()
+
+    assert (result["provider_label"], result["provider_index"], result["switched"]) == ("主用-qwen", 1, False)
+
+
+def test_active_provider_display_exposes_label_but_never_the_key(monkeypatch, tmp_path):
+    _reload_settings(monkeypatch, tmp_path, _LABELLED_PROVIDERS_YAML)
+    secret = "sk-never-leak-this-0001"
+    monkeypatch.setenv("OPENAI_API_KEY", secret)
+
+    display = ai_module.active_provider_display()
+
+    assert display["label"] == "主用-qwen"
+    assert display["api_key_configured"] is True
+    assert secret not in repr(display)
+
+
+def test_provider_label_falls_back_to_env_name_not_key(monkeypatch, tmp_path):
+    """没写 label 时退到 `api_key_env` 变量名——是变量名，不是密钥值。"""
+    _reload_settings(monkeypatch, tmp_path, "ai:\n  enabled: true\n  providers:\n    - api_key_env: OPENAI_API_KEY\n      model: m\n")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-value")
+
+    providers = ai_module._providers()
+
+    assert providers[0]["label"] == "OPENAI_API_KEY"
+    assert ai_module.active_provider_display()["label"] == "OPENAI_API_KEY"

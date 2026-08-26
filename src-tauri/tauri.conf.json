@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicehash/tauri/dev/crates/tauri-utils/schema.json",
   "productName": "job-one-stop",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "identifier": "com.job-one-stop.app",
   "build": {
     "frontendDist": "../frontend/dist",

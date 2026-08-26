@@ -34,7 +34,7 @@ from .schemas import (
     AppConfigUpdate,
 )
 from .services.ai import active_provider_display as ai_active_provider_display, is_ai_available, probe_ai_connection
-from .routers import chat, collect, companies, drafts, followups, interviews, jobs, misc, scoring
+from .routers import chat, collect, companies, drafts, followups, interviews, jobs, misc, scoring, updates
 from .services.queries import validate_weights as _validate_weights
 from .services.chat_ingest import (
     _find_ingest_message_by_tg_id,
@@ -48,6 +48,7 @@ from .services.context_repository import ContextRepository
 from .services.decision_reply import find_or_create_mobile_thread, reply_in_thread
 from .services.job_ops import _read_upload_file
 from .services.sources import list_source_definitions, source_health
+from .version import APP_VERSION
 
 
 settings = get_settings()
@@ -476,7 +477,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title=settings.app_name, version="0.2.3", lifespan=lifespan)
+app = FastAPI(title=settings.app_name, version=APP_VERSION, lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -498,9 +499,10 @@ app.include_router(chat.router)
 app.include_router(collect.router)
 app.include_router(scoring.router)
 app.include_router(misc.router)
+app.include_router(updates.router)
 
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach", "updates"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 
@@ -907,6 +909,7 @@ async def health() -> dict:
     ai_cfg = ai_cfg if isinstance(ai_cfg, dict) else {}
     return {
         "status": "ok",
+        "version": APP_VERSION,
         "ai_enabled": bool(ai_cfg.get("enabled")) and is_ai_available(),
         "config_error": bool(settings.config_error),
     }
@@ -961,6 +964,7 @@ async def ai_status() -> dict:
         "available": bool(ai_cfg.get("enabled")) and is_ai_available(),
         "provider": str(ai_cfg.get("provider") or "openai_compatible"),
         "model": active["model"],
+        "provider_label": active["label"],
         "api_key_configured": active["api_key_configured"],
         "base_url_configured": active["base_url_configured"],
         "provider_keys": _provider_key_status(ai_cfg),

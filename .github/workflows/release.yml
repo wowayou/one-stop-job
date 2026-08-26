@@ -42,6 +42,19 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify version matches tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [ "$tag" != "$file_version" ]; then
+            echo "标签 v$tag 与 VERSION($file_version) 不一致：先跑 python3 scripts/sync_version.py $tag 再打标签" >&2
+            exit 1
+          fi
+          python3 scripts/sync_version.py --check
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -82,6 +95,35 @@ jobs:
             chmod +x src-tauri/resources/job-one-stop-backend
           fi
 
+      - name: Resolve release notes
+        id: notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="docs/releases/${GITHUB_REF_NAME}.md"
+          {
+            echo 'body<<RELEASE_NOTES_EOF'
+            if [ -f "$notes_file" ]; then
+              # 首行是 "# job-one-stop vX.Y.Z" 标题，Release 页面自带标题，去掉避免重复。
+              tail -n +2 "$notes_file"
+            else
+              echo "job-one-stop ${GITHUB_REF_NAME}"
+              echo
+              echo "本次发布没有提供 docs/releases/${GITHUB_REF_NAME}.md，请查看提交记录了解变更。"
+              echo
+              echo "## 安全边界"
+              echo "- 不自动投递、不自动向招聘者发送消息、不绕过验证码或风控页。"
+              echo
+              echo "## 安装说明"
+              echo "- Windows：下载 .msi 或 .exe 双击安装。"
+              echo "- macOS：下载对应架构 .dmg（Apple Silicon 选 aarch64，Intel 选 x64），拖入 Applications；首次打开可右键选择“打开”。"
+              echo "- Linux：下载 .AppImage，添加执行权限后运行；也可使用 .deb 或 .rpm。"
+              echo
+              echo "安装包未做商业代码签名，系统提示未知开发者时按流程确认即可。"
+            fi
+            echo RELEASE_NOTES_EOF
+          } >> "$GITHUB_OUTPUT"
+
       - name: Guard release payload against local credentials
         shell: bash
         run: bash scripts/release_secret_check.sh frontend/dist src-tauri/resources
@@ -95,34 +137,57 @@ jobs:
           tauriScript: cargo tauri
           tagName: ${{ github.ref_name }}
           releaseName: "job-one-stop ${{ github.ref_name }}"
-          releaseBody: |
-            job-one-stop ${{ github.ref_name }} 加入自动驾驶、三级求职面和完整首次使用引导。自动驾驶只在本地完成搜集、去重、分类、评分和材料准备；投递与招聘者沟通仍需用户确认。
-
-            ${{ github.ref_name }} 同时修复 Tauri CLI 安装和 Tauri 前端构建路径问题。
-
-            ## 本版重点
-            - 自动驾驶每日扫描，首页和设置页均可开启、停止或立即扫描
-            - 核心 / 相邻 / 探索三级求职面，按岗位族生成搜索计划并重评候选
-            - 候选评分闸门、硬条件拦截和每日待确认上限，过滤结果保留审计摘要
-            - 自动生成本地材料包：简历版本建议、投递理由、风险问题
-            - 候选卡展示岗位族、能力重合、必要条件缺口和可补齐差距
-            - 新增首次使用检查、产品导览、侧栏使用指南和完整操作手册
-            - 写入个人看板时附带 JD 链接，并修复链接数字被误判为日期的问题
-
-            ## 安全边界
-            - 不自动投递
-            - 不自动向招聘者发送消息
-            - 不绕过验证码、风控页或平台限制
-
-            ## 升级说明
-            - 默认仍为“手动 + 核心”，升级后不会自行启动自动化
-            - 无数据库迁移；原有岗位状态和个人看板不会被自动改变
-
-            ## 安装说明
-            - **Windows**: 下载 .msi 或 .exe，双击安装
-            - **macOS**: 下载 .dmg，拖入 Applications（首次打开需右键 → 打开）
-            - **Linux**: 下载 .AppImage，chmod +x 后双击运行
-            > 首次启动可能提示"未知开发者"——这是正常的（未签名），按系统提示确认即可。
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
+
+      # 每个安装包配一个 `<名字>.sha256` 旁挂文件，外加一份按平台汇总的 SHA256SUMS。
+      # 应用内「关于」面板优先链接旁挂文件（backend/app/services/updates.py::find_checksum_asset），
+      # 汇总文件是给命令行核对用的：sha256sum -c SHA256SUMS-<平台>.txt
+      - name: Generate and upload SHA-256 checksums
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          bundle_dir="src-tauri/target/${{ matrix.target }}/release/bundle"
+          if [ ! -d "$bundle_dir" ]; then
+            echo "没找到打包产物目录：$bundle_dir" >&2
+            exit 1
+          fi
+
+          # macOS 没有 sha256sum，Linux 与 Windows(git bash) 没有 shasum，取能用的那个。
+          sha256_of() {
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "$1"
+            else
+              shasum -a 256 "$1"
+            fi
+          }
+
+          sums_file="SHA256SUMS-${{ matrix.name }}.txt"
+          : > "$sums_file"
+          uploads=()
+          while IFS= read -r artifact; do
+            name="$(basename "$artifact")"
+            # 校验和文件里只写基名，安装包和 .sha256 放在一起时 `-c` 才校验得动。
+            line="$(cd "$(dirname "$artifact")" && sha256_of "$name")"
+            printf '%s\n' "$line" > "${artifact}.sha256"
+            printf '%s\n' "$line" >> "$sums_file"
+            uploads+=("$artifact.sha256")
+          done < <(find "$bundle_dir" -type f \
+            \( -name '*.msi' -o -name '*-setup.exe' -o -name '*.dmg' \
+               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+               -o -name '*.app.tar.gz' \) | sort)
+
+          if [ "${#uploads[@]}" -eq 0 ]; then
+            echo "打包产物里没有可校验的安装包，检查 tauri bundle targets" >&2
+            exit 1
+          fi
+
+          echo "本平台（${{ matrix.name }}）校验和："
+          cat "$sums_file"
+          # 草稿 Release 也能按标签上传；--clobber 让重跑 workflow 时覆盖而不是失败。
+          gh release upload "${GITHUB_REF_NAME}" "${uploads[@]}" "$sums_file" --clobber

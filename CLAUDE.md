@@ -54,6 +54,8 @@
 - **出站可达性**：`api.telegram.org` 在国内常被 DNS 污染，直连是 `[Errno 101] Network is unreachable`；而自启进程由 Windows 启动文件夹的 `.bat` → `wsl.exe` 拉起，**拿不到交互 shell 的代理变量**。代理写进 `.env`（`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`，`config.py` 的 `load_dotenv` 会灌进 `os.environ`，httpx 自动生效），`NO_PROXY` 保留国内域名让 AI/公众号/BOSS 继续直连。诊断顺序：`data/app/backend.log` → `daily_digest_state.json` → `source_runs` 表。
 - `backend/app/main.py` — app 装配（中间件/异常处理/静态挂载/`include_router`）+ 生命周期 + Telegram 轮询循环 + 晨间日清单/自动驾驶循环（`_daily_digest_loop` 常驻低频检查，关闭时不采集）+ SPA 兜底路由 + meta 组端点（config/health/context/diagnostics/ai，与模块级 `settings` 缓存耦合，暂留此处）。**新增业务端点走 `routers/`，不要往 main.py 加路由。**
 - `backend/app/services/automation.py` — 自动驾驶的薄服务层：读写模式/相邻度、调用既有 `run_source` 扫描、批量追加 FitScore 并原位重评候选。不得复制采集漏斗，也不得实现任何外部投递动作。
+- `backend/app/services/updates.py` + `backend/app/routers/updates.py` — 升级发现（`GET /api/updates/check`）：查 GitHub 公开 Releases，语义版本比较，只认正式 Release（draft / pre-release 一律跳过），结果按 `updates.cache_ttl_hours` 缓存（失败只短缓存 5 分钟，手动检查 `force=true` 绕过）。**只发现，不安装**——不下载安装包、不改文件、不重启进程；应用内一键更新需要代码签名与 updater 公钥，未做也不允许悄悄补上。平台/架构由后端 `sys.platform` / `platform.machine()` 判定（同一台机器，比在 webview 里猜 UA 可靠），安装包按后缀优先级 + 架构关键字匹配；匹配不到只给发布页链接，绝不塞一个错架构的包。`offline` 与 `latest` 必须分开——网络不通时显示「无法连接更新服务」，不能误报「已是最新」。
+- `VERSION` + `backend/app/version.py` + `scripts/sync_version.py` — 版本号唯一事实源是根目录 `VERSION`，脚本同步到 `frontend/package.json` / `src-tauri/Cargo.toml` / `src-tauri/Cargo.lock` / `src-tauri/tauri.conf.json` / `backend/app/version.py`，`tests/test_version_sync.py` 锁住一致性。**不要在任何一处单独改版本号**：升级检查靠语义版本比较判新旧，漂移会让用户「装完就被再提示一次升级」。release workflow 打标签时会校验「标签 == VERSION == 各清单」。
 - `backend/app/routers/<域>.py` — 按域拆分的 `APIRouter`（jobs/chat/collect/scoring/misc/companies/drafts/followups/interviews），main.py `include_router` 挂载。路由只依赖 `deps/models/schemas/services/config`，**绝不 import main**（循环）。
 - `backend/app/services/queries.py` — 跨路由共享的查询/落盘 helper（`query_jobs`/`get_profile`/`score_job_into_db`/`application_events`/`download_response`/`job_response`/`validate_weights`）。
 - `backend/app/services/{job_ops,collect_ops,prep_ops,sprint_ops,chat_support}.py` — 各域从 main 下沉的专属 helper（岗位状态重算/删除、采集运行、面试准备、冲刺包、聊天上下文）。`collect_ops._triage_records` 是采集漏斗（区域过滤 → 已知刷新 / 全新 → 判重 → 评分 → 候选闸门）的唯一实现，`run_collector` 与 `run_wechat_collection` 共用；**顺序不可调**：闸门筛的是评分产物，挪到 `attach_candidate_scores` 之前就变成按空字段过滤，会把整批候选静默挡掉。计数摘要 `collect_run_summary` 同时供聊天正文与手机回执，两处措辞不许各写一遍。
@@ -94,6 +96,8 @@
 7. **不静默丢数据**:解析/抓取失败要进 `report.skipped` 带原因;一篇都拆不出时兜底产出至少 1 条,而不是返回空。
 8. **来源解耦**:`scoring.py` / `prep.py` / 前端视图保持 source-agnostic,禁止出现 `if source == "xxx"` 的业务特判。
 9. **网络访问统一封装**:一律走 `httpx`,带超时、移动端 UA、限速;不在路由函数里裸发请求。重依赖(如 `playwright`)放 `requirements-automation.txt` 并**延迟 import**,默认关闭。
+   - **升级检查**(`services/updates.py`)是除采集/AI 之外唯一的出站请求:GitHub 公开只读 Releases 接口,不带凭据、不上传任何本地数据,`updates.enabled=false` 即完全不发。它不属于 §2 的"对外动作"(不联系任何第三方、不外发联系方式),但同样受"只发现不执行"约束——**下载与安装必须由本人在系统浏览器/系统安装器里完成**,应用不得自行下载、替换或重启自己。
+   - 前端打开外部链接一律走 `api.ts` 的 `openExternal`(桌面端经已授权的 `shell:allow-open`,浏览器退回 `window.open`)。桌面端 CSP 只放行 `connect-src 'self' http://127.0.0.1:*`,所以**任何第三方接口都不能从 webview 直接 fetch**,必须由后端代理——这也是升级检查放后端的原因。
 10. **外部上下文写入唯一通道**:`JOB_ONE_STOP_CONTEXT_REPO_PATH` 指向的仓库不是应用数据库。读取只走 `ContextRepository` 白名单;写入未经本人在 Web 点击确认,不得写入任何字节;确认后也只允许 `ContextWriter` 在白名单 `board` 文件的指定列内插入一行(不改写、不删除既有内容,不创建/移动/删除文件,不 EOF 追加——看板是 Obsidian Kanban 文件,尾部有设置块)。`ContextWriter` 的引用只允许出现在 context_repository.py / board_write.py / main.py(AST 绊线测试锁定);不得把宿主机绝对路径返回 API。看板列=岗位状态唯一事实源,状态流转由本人在 Obsidian 拖卡完成,应用绝不写「移动卡片/状态变更」类内容;岗位卡(cards/)在拿到真实样例并回读 roadmap 之前不开放写入。
 11. **KISS 优先**:聊天是默认入口，岗位管理是按需展开的辅助能力。新增功能前先证明它解决高频用户动作；优先复用现有模型、路由和组件，不为低频场景增加常驻导航、后台服务、抽象层或新依赖。
 
@@ -117,6 +121,7 @@
 - 配置:`config.yaml`(每来源一段 + `scoring`/`followup` 等功能段)+ `.env`(密钥)。AI 走 OpenAI 兼容协议(`OPENAI_API_KEY`/`OPENAI_BASE_URL`),`ai.enabled` 默认关;启用后既做公众号 LLM 兜底抽取,也做面试准备按 JD 定制(`ai.tailor_interview_prep_llm`),不可用/失败时逐键回退 `prep.py` 模板。`followup.stale_days` 控制 fit/interview 岗位多少天无活动算「需跟进」(`services/followup.py`,source-agnostic)。
   多 provider 容错:`ai.providers` 列表(可选)按顺序尝试多个 OpenAI 兼容 provider,每个失败先退避重试再切下一个,全部失败才落进既有的规则/模板降级;密钥各进不同 `.env` 变量(`api_key_env`/`base_url_env`/`model_env` 指名去哪个 env 读),不进 `config.yaml`。不配置 `providers` 时行为与单一 `OPENAI_*` 环境变量完全一致(见 `services/ai.py::_providers`)。
   Provider 卡可在设置页(`ConfigView` AI 区)以弹窗形式增/删/改/排序:每次操作都单独 `PUT /api/config` 落盘 `ai.providers`(`label`/`api_key_env`/`base_url`/`model`,均非密钥);Key 只经 `POST /api/ai/credentials` 写 `PROJECT_DIR/.env`(`env_name` 需匹配 `_ENV_NAME_PATTERN` 大写变量名,`_is_sensitive_key_name` 放行 `*_env` 结尾的引用字段,拦截字面量密钥字段),写完立即 `os.environ[...] + get_settings.cache_clear()`,单进程部署下同进程内即时生效,无需重启;`GET /api/ai/status` 的 `provider_keys` 只按 `api_key_env` 回布尔「该变量是否有值」,绝不回传密钥本身。
+  `updates` 段控制升级发现(`enabled` / `repo` / `check_on_startup` / `cache_ttl_hours` / `timeout_seconds`);默认值都写在 `services/updates.py`,配置段缺失时按默认值工作,`enabled=false` 即完全不发出站请求。
 - 外部个人上下文路径只进环境变量 `JOB_ONE_STOP_CONTEXT_REPO_PATH`；应用通过只读 `ContextRepository` 检查入口、决策规则、画像、看板和岗位卡，不在 `config.yaml` 保存宿主机绝对路径。
 - 依赖:核心进 `requirements.txt`;可选/重依赖进 `requirements-automation.txt`。
 

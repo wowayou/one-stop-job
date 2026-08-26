@@ -247,3 +247,16 @@ ai:
   #   - api_key_env: OPENAI_API_KEY_BACKUP
   #     base_url_env: OPENAI_BASE_URL_BACKUP
   #     model: gpt-4o-mini
+
+# ==================== 升级发现 ====================
+# 只做「发现 + 打开下载页」，**不下载、不安装、不重启**。一键更新需要代码签名与
+# updater 公钥，属于后续阶段。唯一的出站动作是一次公开只读的 GitHub Releases GET，
+# 不带凭据、不上传任何本地数据；关掉 enabled 就完全不发这个请求。
+# 只识别正式 Release（draft / pre-release 一律跳过），版本按语义版本比较。
+updates:
+  enabled: true
+  repo: "wowayou/one-stop-job"   # 发布仓库 owner/name
+  check_on_startup: true          # 启动时静默检查一次；失败只在「关于」面板显示，不打扰主流程
+  cache_ttl_hours: 6              # 成功结果的本地缓存时长；手动「检查更新」按钮绕过缓存
+  timeout_seconds: 10
+  # api_base: "https://api.github.com"   # 需要走镜像/自建静态清单时才改

@@ -134,7 +134,15 @@ def _normalize_provider(entry: dict) -> dict | None:
         timeout = get_settings().ai_timeout_seconds
 
     resolved = {"api_key": api_key, "base_url": base_url, "timeout": timeout}
-    return {"client_factory": lambda resolved=resolved: _client_for(resolved), "model": model}
+    label = entry.get("label")
+    if not isinstance(label, str) or not label.strip():
+        # 没写 label 时用 api_key_env 兜底：它是每张卡的天然标识，且不是密钥本身（只是变量名）。
+        label = str(api_key_env)
+    return {
+        "client_factory": lambda resolved=resolved: _client_for(resolved),
+        "model": model,
+        "label": label.strip(),
+    }
 
 
 def _providers() -> list[dict]:
@@ -153,7 +161,7 @@ def _providers() -> list[dict]:
 
     if not os.getenv("OPENAI_API_KEY"):
         return []
-    return [{"client_factory": _client, "model": _model()}]
+    return [{"client_factory": _client, "model": _model(), "label": "OPENAI_API_KEY（默认）"}]
 
 
 def is_ai_available() -> bool:
@@ -178,12 +186,16 @@ def _split_chunks(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _chat(system: str, user) -> str:
+def _chat(system: str, user, *, trace: dict | None = None) -> str:
     """按 `_providers()` 顺序尝试调用；单个 provider 失败按退避重试有限次数后换下一个。
 
     全部 provider 都失败时抛出最后一个异常，交由调用方既有的 try/except 走规则/模板
     降级（CLAUDE.md：AI 失败不改变现有降级语义）。没有任何可用 provider（无 key）时
     同样抛出——调用方基本都已用 `is_ai_available()` 短路，正常不会走到这里。
+
+    `trace` 只由「测试连接」（`probe_ai_connection`）传入：成功时原地写入实际命中的
+    provider 序号/标签/模型与是否发生过备用切换，让设置页能显示「实际命中的是第几张卡」
+    而不是永远显示第一张。业务调用方一律不传，行为与加它之前逐字相同。
     """
     providers = _providers()
     if not providers:
@@ -210,6 +222,17 @@ def _chat(system: str, user) -> str:
                 except Exception:
                     # 某些兼容端点不支持 response_format，退回普通调用
                     resp = client.chat.completions.create(model=model, messages=messages, temperature=0)
+                if trace is not None:
+                    trace.update(
+                        {
+                            "provider_index": index,
+                            "provider_total": len(providers),
+                            "provider_label": provider.get("label"),
+                            "model": model,
+                            "attempts": attempt + 1,
+                            "switched": index > 1,
+                        }
+                    )
                 return resp.choices[0].message.content or ""
             except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常以便重试/切换
                 last_exc = exc
@@ -525,8 +548,9 @@ def active_provider_display() -> dict:
     """状态展示用：当前 `_chat` 会**先**用的那个 provider 的 model 与 key/base_url 是否就绪。
 
     配了 `ai.providers` 就取第一条（`_chat` 的实际起点），否则回退单一 `OPENAI_*`。
-    只回 model 名与两个布尔——**绝不回传密钥值**。修正过去 `ai_status` 恒读 `OPENAI_MODEL`
-    导致「配了 qwen 卡、状态却显示 deepseek」的不一致。
+    只回 model 名、provider 标签与两个布尔——**绝不回传密钥值**（`label` 来自 config.yaml
+    的展示名，没写时退到 `api_key_env` 变量名，仍然只是变量名而非密钥）。
+    修正过去 `ai_status` 恒读 `OPENAI_MODEL` 导致「配了 qwen 卡、状态却显示 deepseek」的不一致。
     """
     from ..config import get_settings
 
@@ -538,13 +562,16 @@ def active_provider_display() -> dict:
         base_url_env = first.get("base_url_env")
         base_url = (os.getenv(base_url_env) if base_url_env else None) or first.get("base_url")
         key_env = first.get("api_key_env")
+        label = first.get("label")
         return {
             "model": model,
+            "label": label.strip() if isinstance(label, str) and label.strip() else str(key_env or "provider #1"),
             "api_key_configured": bool(os.getenv(key_env)) if key_env else False,
             "base_url_configured": bool(base_url),
         }
     return {
         "model": _model(),
+        "label": "OPENAI_API_KEY（默认）",
         "api_key_configured": bool(os.getenv("OPENAI_API_KEY")),
         "base_url_configured": bool(os.getenv("OPENAI_BASE_URL")),
     }
@@ -611,10 +638,13 @@ def probe_ai_connection() -> dict:
     - 调用失败：ok=False，stage="call"，按 401/404/429/超时给出具体原因。
 
     多 provider 语义：本函数走 `_chat()` 同一条容错路径——配置了多个 provider 时，
-    只要其中任意一个最终连通就算成功，中间失败的 provider 只在日志里可见（`_chat`
-    内部 `logger.warning`），不会体现在这里的返回值里。`model` 字段展示第一个 provider
-    的 model 仅供参考；实际命中的是第几个 provider 由 `_chat` 内部顺序/重试决定，
-    不在返回值里单独报告。
+    只要其中任意一个最终连通就算成功。成功时通过 `_chat(trace=...)` 把**实际命中**的
+    provider 报出来：`provider_label` / `provider_index` / `provider_total` /
+    `switched`（是否越过了前面的卡，即发生了备用切换），`model` 也换成实际命中那张卡的
+    模型，而不是恒显第一张。失败时没有"命中"可言，这几个键不出现（前端按缺省处理）。
+
+    成本口径：本函数只发一条合成的最小请求（system + "回复 ok"），不含任何岗位/个人内容，
+    但它是**真实调用**，会按 provider 的计费规则产生极小额费用——设置页在按钮旁明说了这点。
     """
     providers = _providers()
     model = providers[0]["model"] if providers else _model()
@@ -622,8 +652,9 @@ def probe_ai_connection() -> dict:
         return {"ok": False, "stage": "config", "reason": "未配置任何 AI provider（缺少 API Key）", "model": model}
 
     started = time.monotonic()
+    trace: dict = {}
     try:
-        _chat(_PROBE_SYSTEM, _PROBE_USER)
+        _chat(_PROBE_SYSTEM, _PROBE_USER, trace=trace)
     except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常
         logger.warning("AI 连接自检失败", exc_info=True)
         code = _status_code(exc)
@@ -648,4 +679,14 @@ def probe_ai_connection() -> dict:
         return {"ok": False, "stage": "call", "reason": reason, "model": model}
 
     latency_ms = int((time.monotonic() - started) * 1000)
-    return {"ok": True, "stage": "call", "reason": "调用成功", "model": model, "latency_ms": latency_ms}
+    return {
+        "ok": True,
+        "stage": "call",
+        "reason": "调用成功",
+        "model": trace.get("model") or model,
+        "latency_ms": latency_ms,
+        "provider_label": trace.get("provider_label"),
+        "provider_index": trace.get("provider_index"),
+        "provider_total": trace.get("provider_total") or len(providers),
+        "switched": bool(trace.get("switched")),
+    }

@@ -68,6 +68,13 @@ docker compose up -d --build
 - **macOS**: 下载 .dmg，拖入 Applications（首次打开需右键 -> 打开）
 - **Linux**: 下载 .AppImage，chmod +x 后双击运行
 
+每个安装包都带一个同名 `.sha256` 校验文件，下载后可核对：
+`sha256sum -c <安装包名>.sha256`（macOS 用 `shasum -a 256 -c`）。
+
+装好之后，**设置 → 关于**里可以看到当前版本、手动「检查更新」并打开对应平台的下载页；
+应用启动时也会静默检查一次。它只发现新版本，不会自动下载或安装自己；不想让它联网检查，
+把 `config.yaml` 的 `updates.enabled` 置为 `false` 即可。
+
 > 首次启动可能提示未知开发者——这是正常的（未签名），按系统提示确认即可。
 >
 > 桌面应用基于 [Tauri](https://tauri.app/) 构建，源码在 `src-tauri/`，由 [CI](.github/workflows/release.yml) 自动打包发布。

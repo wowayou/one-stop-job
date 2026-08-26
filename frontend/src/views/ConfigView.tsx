@@ -1,6 +1,7 @@
 import { AlertTriangle, ChevronDown, ChevronUp, Info, Loader2, Pencil, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import { FormEvent, useEffect, useState } from "react";
 import { api, errorMessage, jsonBody } from "../api";
+import { AboutPanel } from "../components/AboutPanel";
 import { ProviderModal, type ProviderModalSaveValues } from "../components/ProviderModal";
 import { DealbreakerChips } from "../components/DealbreakerChips";
 import { hasAnyBusy, hasBusy, type BusyState } from "../hooks/useBusyState";
@@ -35,12 +36,14 @@ const configSections = [
   ["sources", "采集来源"],
   ["profile", "个人画像"],
   ["scoring", "评分权重"],
-  ["advanced", "高级"]
+  ["advanced", "高级"],
+  ["about", "关于"]
 ] as const;
 
 type ConfigSection = (typeof configSections)[number][0];
 
 export function ConfigView({
+  initialSection,
   sources,
   runs,
   busy,
@@ -54,6 +57,8 @@ export function ConfigView({
   automation,
   onAutomationChanged
 }: {
+  /** 直接停在某个分区（App 里点侧栏「有新版本」→「关于」）。靠外层换 key 重新挂载生效。 */
+  initialSection?: ConfigSection;
   sources: JobSourceStatus[];
   runs: SourceRun[];
   busy: BusyState;
@@ -70,7 +75,7 @@ export function ConfigView({
   const [payload, setPayload] = useState<AppConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [automationBusy, setAutomationBusy] = useState(false);
-  const [activeSection, setActiveSection] = useState<ConfigSection>("status");
+  const [activeSection, setActiveSection] = useState<ConfigSection>(initialSection ?? "status");
   const [envExampleOpen, setEnvExampleOpen] = useState(false);
   useEscapeClose(envExampleOpen, () => setEnvExampleOpen(false));
   // key 本身绝不进 React state 以外的任何地方（不落 config 草稿、不进 URL/日志）；
@@ -360,6 +365,25 @@ export function ConfigView({
       ))}
     </div>
   );
+
+  if (activeSection === "about") {
+    return (
+      <section className="content-panel config-panel">
+        <div className="config-layout">
+          <div className="config-head">
+            <div>
+              <h2>关于</h2>
+              <p>版本、升级检查与下载入口；只发现新版本，不会自动下载或安装</p>
+            </div>
+          </div>
+          {tabs}
+          <div className="config-scroll">
+            <AboutPanel onNotify={onNotify} />
+          </div>
+        </div>
+      </section>
+    );
+  }
 
   if (activeSection === "scoring") {
     // 评分权重存在 UserProfile.weights，和「个人画像」共享同一条数据库行，但用途和字段独立，

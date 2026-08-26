@@ -103,6 +103,11 @@ export const USAGE_GUIDE_SEEN_KEY = "job-one-stop.usage-guide-seen.v2";
 export const ACTIVE_CHAT_THREAD_KEY = "job-one-stop.active-chat-thread.v1";
 export const CHAT_USE_AI_KEY = "job-one-stop.chat-use-ai.v1";
 export const SIDEBAR_COLLAPSED_KEY = "job-one-stop.sidebar-collapsed.v1";
+// 「本版新增」弹窗：存的是"已看过说明的版本号"，不是布尔——只有版本号变了才再弹一次。
+// 全新安装（读不到这个键）时不弹，让位给「开始使用」引导，避免首启两个弹窗叠一起。
+export const WHATS_NEW_SEEN_KEY = "job-one-stop.whats-new-seen.v1";
+// AI「测试连接」的费用确认：勾了"下次不再提示"就存 true，直接发测试请求。
+export const AI_TEST_CONFIRM_SKIP_KEY = "job-one-stop.ai-test-confirm-skip.v1";
 export const GLOBAL_BUSY_KEYS = ["source-boss", "source-bebee", "upload", "wechat", "sprint", "manual", "profile", "export"] as const;
 
 export const PREVIEW_SECTION_LABELS: Record<string, string> = {

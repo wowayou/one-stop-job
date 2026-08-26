@@ -147,6 +147,8 @@ export type AiStatus = {
   available: boolean;
   provider: string;
   model: string;
+  /** 当前会**先**用的那张 provider 卡的展示名（config.yaml 的 label，没写则退到 api_key_env 变量名）。 */
+  provider_label: string;
   api_key_configured: boolean;
   base_url_configured: boolean;
   /** 按 provider 卡的 api_key_env 变量名 -> 该 env 是否已配置；只含布尔值，绝无 key 本身。 */
@@ -159,6 +161,35 @@ export type AiProbeResult = {
   reason: string;
   model: string;
   latency_ms?: number;
+  /** 以下四项只在成功时返回：实际命中的那张 provider 卡，而不是配置里的第一张。 */
+  provider_label?: string | null;
+  provider_index?: number | null;
+  provider_total?: number | null;
+  /** true = 前面的卡失败后切到了备用 provider。 */
+  switched?: boolean;
+};
+
+/** `GET /api/updates/check` 的返回。只发现新版本，不下载也不安装。 */
+export type UpdateCheckResult = {
+  /** disabled=配置关闭；update_available=有新版；latest=已最新；offline=连不上更新服务；error=服务端/解析出错。
+   *  offline 与 latest 必须分开显示——连不上时绝不能说"已是最新"。 */
+  status: "disabled" | "update_available" | "latest" | "offline" | "error";
+  message: string;
+  current_version: string;
+  latest_version: string | null;
+  release_url: string | null;
+  release_notes: string | null;
+  published_at: string | null;
+  /** 本机平台/架构对应的安装包；发布里没有匹配架构时为 null（只给发布页链接）。 */
+  download: { name: string | null; url: string | null; size: number | null } | null;
+  /** 该安装包的 .sha256 校验文件，或整包的 SHA256SUMS.txt。 */
+  checksum_url: string | null;
+  assets: Array<{ name: string | null; url: string | null; size: number | null }>;
+  platform: { os: string; arch: string; label: string };
+  repo: string;
+  /** 后端完成这次检查的 Unix 秒；cached=true 表示命中本地缓存没有重新请求。 */
+  checked_at: number;
+  cached: boolean;
 };
 
 export type DecisionRuleCheck = {
