@@ -30,6 +30,7 @@ import { hasAnyBusy, hasBusy, useBusyState } from "./hooks/useBusyState";
 import { isTypingElement, useEscapeClose } from "./hooks/useEscapeClose";
 import Tour from "./Tour";
 import { AiTestConfirmModal } from "./components/AiTestConfirmModal";
+import { CollectMenu } from "./components/CollectMenu";
 import { ExportCenterModal } from "./components/ExportCenterModal";
 import { JobEditModal } from "./components/JobEditModal";
 import { NoticeBanner } from "./components/NoticeBanner";
@@ -1151,34 +1152,26 @@ function App() {
               <button className="icon-button" title="导出中心" onClick={() => setExportCenterOpen(true)} disabled={hasBusy(busy, "export")}>
                 {hasBusy(busy, "export") ? <Loader2 size={18} className="spin" /> : <Download size={18} />}
               </button>
-              <button data-tour="collect" className="icon-button" title="运行 BOSS 采集" onClick={runBossCollection} disabled={toolbarBusy}>
-                {hasBusy(busy, "source-boss") ? <Loader2 size={18} className="spin" /> : <RefreshCw size={18} />}
-              </button>
-              <button className="icon-button" title="采集 beBee(按 config.yaml 角色页)" onClick={collectBeBee} disabled={toolbarBusy}>
-                {hasBusy(busy, "source-bebee") ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
-              </button>
-              <button className="icon-button" title="采集海尔招聘官网" onClick={collectHaier} disabled={toolbarBusy}>
-                {hasBusy(busy, "source-haier") ? <Loader2 size={18} className="spin" /> : <Factory size={18} />}
-              </button>
-              <button className="icon-button" title="采集海信招聘官网" onClick={collectHisense} disabled={toolbarBusy}>
-                {hasBusy(busy, "source-hisense") ? <Loader2 size={18} className="spin" /> : <Landmark size={18} />}
-              </button>
-              <button className="icon-button" title="导入 CSV/XLSX" onClick={() => setUploadOpen(true)} disabled={toolbarBusy}>
-                {hasBusy(busy, "upload") ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}
-              </button>
-              <button
-                data-tour="wechat"
-                className="icon-button"
-                title="公众号 / 元宝导入"
-                onClick={() => {
-                  closeJobDrawer();
-                  setWechatResult(null);
-                  setWechatOpen(true);
-                }}
+              <CollectMenu
                 disabled={toolbarBusy}
-              >
-                <MessageSquareText size={18} />
-              </button>
+                items={[
+                  { key: "boss", label: "BOSS 采集", hint: "config.yaml 关键词", icon: RefreshCw, busy: hasBusy(busy, "source-boss"), onClick: runBossCollection },
+                  { key: "bebee", label: "beBee 采集", hint: "config.yaml 角色页", icon: Globe, busy: hasBusy(busy, "source-bebee"), onClick: collectBeBee },
+                  { key: "haier", label: "海尔招聘官网", icon: Factory, busy: hasBusy(busy, "source-haier"), onClick: collectHaier },
+                  { key: "hisense", label: "海信招聘官网", icon: Landmark, busy: hasBusy(busy, "source-hisense"), onClick: collectHisense },
+                  { key: "import", label: "导入 CSV / XLSX", icon: Upload, busy: hasBusy(busy, "upload"), onClick: () => setUploadOpen(true) },
+                  {
+                    key: "wechat",
+                    label: "公众号 / 元宝导入",
+                    icon: MessageSquareText,
+                    onClick: () => {
+                      closeJobDrawer();
+                      setWechatResult(null);
+                      setWechatOpen(true);
+                    },
+                  },
+                ]}
+              />
               <button data-tour="sprint" className="icon-button" title="生成今日求职冲刺包" onClick={createSprintBrief} disabled={toolbarBusy}>
                 {hasBusy(busy, "sprint") ? <Loader2 size={18} className="spin" /> : <ClipboardList size={18} />}
               </button>

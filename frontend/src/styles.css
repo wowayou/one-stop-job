@@ -570,6 +570,61 @@ nav {
   flex-wrap: wrap;
 }
 
+/* 采集入口下拉：触发键沿用 .icon-button 尺寸，菜单绝对定位在按钮下方右对齐。 */
+.collect-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.collect-menu-list {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 220px;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--c-bg-card);
+  border: 1px solid var(--c-border);
+  border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(23, 32, 27, 0.16);
+}
+
+.collect-menu-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: var(--c-text);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.collect-menu-list button:hover:not(:disabled) {
+  background: var(--c-bg-hover);
+}
+
+.collect-menu-list button:disabled {
+  color: var(--c-text-faint);
+  cursor: default;
+}
+
+.collect-menu-label {
+  flex: 1;
+}
+
+.collect-menu-list small {
+  color: var(--c-text-muted);
+  font-weight: 500;
+}
+
 .icon-button {
   width: 38px;
   height: 38px;
