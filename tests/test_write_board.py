@@ -173,6 +173,54 @@ def test_board_write_inserts_line_after_template_and_marks_board_written(monkeyp
 # ==================== b. 重复 board-write 同一候选 -> 跳过不重复写 ====================
 
 
+def test_board_write_accepts_multiple_indexes_in_one_call(monkeypatch, tmp_path):
+    """候选卡「入库并写入看板」批量流依赖 board-write 端点一次接收多个 index：
+    先 commit 两条，再用一次调用把两条都写进收集箱，两行按序插入且互不影响。"""
+    main, context_root = _setup(monkeypatch, tmp_path, "wb-multi.sqlite3")
+    from backend.app.services import ai
+
+    monkeypatch.setattr(
+        ai,
+        "extract_jobs_freeform",
+        lambda text, image_data_url=None, prior_candidates=None: [
+            {"title": "后端工程师", "company_name": "示例甲", "salary_text": "20-30K"},
+            {"title": "前端工程师", "company_name": "示例乙", "salary_text": "18-26K"},
+        ],
+    )
+    board_path = _board_path(context_root)
+
+    async def scenario():
+        async for client in _client(main.app):
+            ingested = (await client.post("/api/ingest", json={"text": "招聘 两个岗位"})).json()
+            thread_id = ingested["thread"]["id"]
+            assistant_id = ingested["assistant_message"]["id"]
+            assert len(ingested["assistant_message"]["metadata_json"]["candidates"]) == 2
+
+            commit = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/commit",
+                json={"message_id": assistant_id, "indexes": [0, 1]},
+            )
+            assert commit.status_code == 200, commit.text
+            assert commit.json()["created"] == 2
+
+            written = await client.post(
+                f"/api/chat/threads/{thread_id}/candidates/board-write",
+                json={"message_id": assistant_id, "indexes": [0, 1]},
+            )
+            assert written.status_code == 200, written.text
+            results = written.json()["results"]
+            assert all(r["ok"] for r in results) and len(results) == 2
+
+            content = board_path.read_text(encoding="utf-8")
+            line_a = _expected_inbox_line("示例甲", "后端工程师", "20-30K")
+            line_b = _expected_inbox_line("示例乙", "前端工程师", "18-26K")
+            assert line_a in content and line_b in content
+            # 两行都插在模板行之后的收集箱列里，且顺序与 index 一致。
+            assert content.index(line_a) < content.index(line_b)
+
+    asyncio.run(scenario())
+
+
 def test_board_write_is_idempotent_and_does_not_duplicate_line(monkeypatch, tmp_path):
     main, context_root = _setup(monkeypatch, tmp_path, "wb-idempotent.sqlite3")
     _patch_freeform(monkeypatch, "前端工程师", "示例科技三部", "15-25K")

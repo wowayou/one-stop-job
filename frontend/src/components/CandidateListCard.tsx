@@ -70,6 +70,8 @@ export function CandidateListCard({
   onError: (message: string) => void;
 }) {
   const pendingIndexes = candidates.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
+  // 可见待选（不含折叠的硬阻断）：全选/清空只作用于这批，避免把默认折叠的排除项也一并勾上。
+  const selectablePending = pendingIndexes.filter((i) => !candidates[i]?.hard_blocked);
   const [selected, setSelected] = useState<number[]>(defaultSelection(candidates, pendingIndexes));
   const [busy, setBusy] = useState(false);
   const [boardWriteBusyIndex, setBoardWriteBusyIndex] = useState<number | null>(null);
@@ -80,6 +82,12 @@ export function CandidateListCard({
   function toggle(index: number) {
     if (candidates[index]?.status === "committed" || candidates[index]?.status === "skipped") return;
     setSelected((prev) => (prev.includes(index) ? prev.filter((i) => i !== index) : [...prev, index]));
+  }
+
+  // 全选只针对可见待选；已全选时再点即清空，单一按钮完成双向切换。
+  const allSelectableSelected = selectablePending.length > 0 && selectablePending.every((i) => selected.includes(i));
+  function toggleSelectAll() {
+    setSelected((prev) => (allSelectableSelected ? prev.filter((i) => !selectablePending.includes(i)) : Array.from(new Set([...prev, ...selectablePending]))));
   }
 
   async function commit(indexes: number[]) {
@@ -95,6 +103,44 @@ export function CandidateListCard({
       setSelected(defaultSelection(next, nextPending));
     } catch (err) {
       onError(errorMessage(err, "入库失败"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // 一键入库并写入看板：先 commit 得到 job_id，再对同批刚入库的候选批量 board-write。
+  // board-write 端点本来就收 indexes 列表、逐条处理（失败只影响该条），无需改后端。
+  async function commitAndWrite(indexes: number[]) {
+    if (!indexes.length) return;
+    setBusy(true);
+    try {
+      const committed = await api<{ assistant_message: ChatMessage }>(`/api/chat/threads/${threadId}/candidates/commit`, {
+        method: "POST",
+        ...jsonBody({ message_id: messageId, indexes }),
+      });
+      onUpdated(committed.assistant_message);
+      // commit 后候选 status 变 committed；只对刚刚选中、已拿到 job_id、尚未写看板的那批 board-write。
+      const after = committed.assistant_message.metadata_json?.candidates ?? [];
+      const writable = indexes.filter((i) => after[i]?.status === "committed" && after[i]?.job_id != null && !after[i]?.board_written);
+      if (!writable.length) {
+        const nextPending = after.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
+        setSelected(defaultSelection(after, nextPending));
+        return;
+      }
+      const reply = await api<{ assistant_message: ChatMessage; results: BoardWriteResult[] }>(
+        `/api/chat/threads/${threadId}/candidates/board-write`,
+        { method: "POST", ...jsonBody({ message_id: messageId, indexes: writable }) }
+      );
+      onUpdated(reply.assistant_message);
+      const failed = reply.results.filter((r) => !r.ok);
+      if (failed.length) {
+        onError(`已入库；${failed.length} 条写入看板失败：${failed.map((r) => r.reason).join("；")}`);
+      }
+      const next = reply.assistant_message.metadata_json?.candidates ?? [];
+      const nextPending = next.map((c, i) => (c.status === "pending" || !c.status ? i : -1)).filter((i) => i >= 0);
+      setSelected(defaultSelection(next, nextPending));
+    } catch (err) {
+      onError(errorMessage(err, "入库并写入看板失败"));
     } finally {
       setBusy(false);
     }
@@ -164,7 +210,7 @@ export function CandidateListCard({
   function renderCandidate(item: IngestCandidate, index: number) {
     const status = item.status || "pending";
     return (
-      <li key={`${item.title}-${index}`} className={`candidate-item status-${status}`}>
+      <li key={`${item.title}-${index}`} className={`candidate-item status-${status}${selected.includes(index) ? " selected" : ""}`}>
         <label>
           {status === "pending" ? (
             <input
@@ -305,11 +351,31 @@ export function CandidateListCard({
   }
 
   return (
-    <div className="candidate-card" aria-label="入库候选">
+    <div
+      className="candidate-card"
+      aria-label="入库候选"
+      onKeyDown={(e) => {
+        // ⌘/Ctrl+Enter 提交选中（焦点在卡片内任意处均可）；空格勾选由 checkbox 原生处理。
+        if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && !busy && selected.length) {
+          e.preventDefault();
+          void commit(selected);
+        }
+      }}
+    >
       <div className="candidate-head">
         <strong>候选岗位</strong>
         <small>默认不入库；勾选后点「入库选中」</small>
       </div>
+      {selectablePending.length > 0 && (
+        <div className="candidate-toolbar">
+          <button type="button" className="link-action" disabled={busy} onClick={toggleSelectAll}>
+            {allSelectableSelected ? "清空" : "全选待选"}
+          </button>
+          <span className="candidate-toolbar-count">
+            已选 {selected.length} / 共 {selectablePending.length}
+          </span>
+        </div>
+      )}
       <ul className="candidate-list">
         {visibleIndexes.map((index) => renderCandidate(candidates[index], index))}
       </ul>
@@ -335,6 +401,17 @@ export function CandidateListCard({
           <button className="primary-action" type="button" disabled={busy || !selected.length} onClick={() => void commit(selected)}>
             {busy ? "处理中…" : `入库选中（${selected.length}）`}
           </button>
+          {boardWriteEnabled && (
+            <button
+              className="primary-action ghost"
+              type="button"
+              title="先入库，再把同批候选批量写入看板收集箱"
+              disabled={busy || !selected.length}
+              onClick={() => void commitAndWrite(selected)}
+            >
+              {busy ? "处理中…" : `入库并写入看板（${selected.length}）`}
+            </button>
+          )}
           <button className="small-action" type="button" disabled={busy} onClick={() => void commit([])}>
             全部跳过
           </button>

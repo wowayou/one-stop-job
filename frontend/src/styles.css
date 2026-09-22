@@ -3530,6 +3530,13 @@ meter {
   cursor: pointer;
 }
 
+/* 选中行整行高亮：勾了哪些一眼可见，不用盯着小小的复选框。 */
+.candidate-item.selected > label {
+  border-color: var(--c-brand);
+  background: var(--c-brand-light);
+  box-shadow: inset 0 0 0 1px var(--c-brand);
+}
+
 /* 全局 input 规则（width:100% + min-height:38px）会把候选前的复选框撑成一个大方块，
    把标题和公司信息挤到行尾——真机上看着像排版坏了。这里按 checkbox 还原原生尺寸，
    并与下面 .candidate-status-icon 的占位保持一致，pending 与非 pending 行左侧对齐。 */
@@ -3760,6 +3767,56 @@ meter {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+/* 批量工具栏：列表上方的全选/清空 + 实时计数，让长列表不用逐个勾。 */
+.candidate-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -2px 0 2px;
+}
+
+.candidate-toolbar-count {
+  color: var(--c-text-muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.link-action {
+  background: none;
+  border: none;
+  padding: 0;
+  min-height: 0;
+  color: var(--c-brand-text);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.link-action:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.link-action:disabled {
+  color: var(--c-text-faint);
+  cursor: default;
+}
+
+/* 「入库并写入看板」：主按钮的描边变体，与「入库选中」同重量但不抢主。 */
+.primary-action.ghost {
+  background: var(--c-brand-light);
+  color: var(--c-brand-text);
+  box-shadow: inset 0 0 0 1px var(--c-brand);
+}
+
+.primary-action.ghost:hover:not(:disabled) {
+  background: var(--c-brand-light);
+  box-shadow: inset 0 0 0 1px var(--c-brand), 0 4px 12px rgba(20, 125, 116, 0.18);
+}
+
+.primary-action.ghost:disabled:hover {
+  background: var(--c-brand-light);
 }
 
 .candidate-board-write {
