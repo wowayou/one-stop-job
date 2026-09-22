@@ -18,7 +18,7 @@ from ..deps import SessionDep
 from ..models import SourceRun
 from ..schemas import AutomationSettingsUpdate, WeChatCollectRequest
 from ..services.collect_ops import run_collector, run_source, run_wechat_collection, source_status_payload
-from ..services.collectors import HaierCollector
+from ..services.collectors import HaierCollector, HisenseCollector
 from ..services.automation import automation_mode, rescore_all_jobs, rescore_pending_candidates
 from ..services.chat_ingest import recent_collect_candidates
 from ..services.sources import get_source_definition, list_source_definitions
@@ -118,6 +118,15 @@ async def collect_haier(session: SessionDep) -> dict:
     source_label = str(cfg.get("source_label") or "海尔招聘")
     collector = HaierCollector(cfg=cfg, source=source_label)
     return run_collector(session, source_label, collector, {"source_key": "haier"})
+
+
+@router.post("/api/collect/hisense")
+async def collect_hisense(session: SessionDep) -> dict:
+    """海信招聘官网（北森 SaaS）:分页 POST 公开列表 JSON → 解析 → 走统一初筛入候选。"""
+    cfg = get_settings().hisense_config
+    source_label = str(cfg.get("source_label") or "海信招聘")
+    collector = HisenseCollector(cfg=cfg, source=source_label)
+    return run_collector(session, source_label, collector, {"source_key": "hisense"})
 
 
 @router.post("/api/collect/wechat")

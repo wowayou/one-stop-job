@@ -10,6 +10,7 @@ import {
   FileQuestion,
   Globe,
   Info,
+  Landmark,
   Loader2,
   MessageSquareText,
   NotebookPen,
@@ -583,6 +584,20 @@ function App() {
     });
   }
 
+  async function collectHisense() {
+    if (hasAnyBusy(busy, [...GLOBAL_BUSY_KEYS])) return;
+    await runBusy("source-hisense", async () => {
+      notify("info", "正在抓取海信招聘官网岗位…");
+      try {
+        const run = await api<SourceRun>("/api/collect/hisense", { method: "POST" });
+        notifyRun("海信招聘采集", run, "未读取到岗位。海信官网结构可能有变，请在采集记录里查看跳过原因。");
+        await loadAll();
+      } catch (err) {
+        notify("error", errorMessage(err, "海信招聘采集失败"));
+      }
+    });
+  }
+
   async function collectWeChat(event: FormEvent) {
     event.preventDefault();
     if (!wechatText.trim()) return;
@@ -1144,6 +1159,9 @@ function App() {
               </button>
               <button className="icon-button" title="采集海尔招聘官网" onClick={collectHaier} disabled={toolbarBusy}>
                 {hasBusy(busy, "source-haier") ? <Loader2 size={18} className="spin" /> : <Factory size={18} />}
+              </button>
+              <button className="icon-button" title="采集海信招聘官网" onClick={collectHisense} disabled={toolbarBusy}>
+                {hasBusy(busy, "source-hisense") ? <Loader2 size={18} className="spin" /> : <Landmark size={18} />}
               </button>
               <button className="icon-button" title="导入 CSV/XLSX" onClick={() => setUploadOpen(true)} disabled={toolbarBusy}>
                 {hasBusy(busy, "upload") ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}

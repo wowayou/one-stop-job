@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from . import bebee, haier, wechat
+from . import bebee, haier, hisense, wechat
 from .normalizer import dataframe_from_csv_text, normalize_dataframe, normalize_record
 
 
@@ -413,6 +413,65 @@ class HaierCollector:
                 records.append(normalized)
 
             # 已抓满总数就停,不再空翻。
+            if total is not None and len(records) >= total:
+                break
+
+        self.report["jobs"] = len(records)
+        return records
+
+
+@dataclass
+class HisenseCollector:
+    """海信招聘官网采集器:分页 POST 公开列表 JSON → 解析 → 规范化记录。
+
+    每个岗位有自己的详情 url(基于 GUID),external_id 走默认 sha1(url) 即天然唯一。
+    按页限速、上限 max_pages,遵循 §3.3 低频人工触发。列表已带职责/要求,不抓详情页。
+    """
+
+    cfg: dict = field(default_factory=dict)  # config.yaml 的 hisense 段
+    source: str = "海信招聘"
+
+    def __post_init__(self) -> None:
+        self.report: dict = {"pages_total": 0, "pages_ok": 0, "jobs": 0, "skipped": []}
+
+    def collect(self) -> list[dict]:
+        list_url = self.cfg.get("list_url", hisense.DEFAULT_LIST_URL)
+        page_size = max(1, int(self.cfg.get("page_size", 20) or 20))
+        max_pages = max(1, int(self.cfg.get("max_pages", 3) or 1))
+        rate = float(self.cfg.get("rate_limit_seconds", 2) or 0)
+
+        records: list[dict] = []
+        seen_external: set[str] = set()
+        total: int | None = None
+
+        # 北森接口 PageIndex 从 0 开始。
+        for page in range(0, max_pages):
+            self.report["pages_total"] += 1
+            try:
+                if page > 0 and rate:
+                    time.sleep(rate)
+                payload = hisense.fetch_job_list(list_url, page, page_size, self.cfg)
+                jobs = hisense.parse_jobs(payload, self.cfg)
+            except Exception as exc:  # 网络/解析失败 → 跳过该页并记录,不中断整批
+                self.report["skipped"].append({"page": page, "reason": f"抓取/解析失败: {exc}"})
+                continue
+
+            if total is None:
+                total = hisense.total_count(payload)
+
+            self.report["pages_ok"] += 1
+            if not jobs:
+                self.report["skipped"].append({"page": page, "reason": "该页无岗位（可能已翻过末页）"})
+                break
+
+            for raw in jobs:
+                normalized = normalize_record(raw, source=self.source)
+                ext = normalized.get("external_id")
+                if ext in seen_external:
+                    continue
+                seen_external.add(ext)
+                records.append(normalized)
+
             if total is not None and len(records) >= total:
                 break
 

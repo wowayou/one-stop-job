@@ -169,6 +169,11 @@ class Settings:
         return value if isinstance(value, dict) else {}
 
     @property
+    def hisense_config(self) -> dict[str, Any]:
+        value = self.config.get("hisense", {})
+        return value if isinstance(value, dict) else {}
+
+    @property
     def collect_config(self) -> dict[str, Any]:
         """跨来源的采集口径（目前只有 `area_filter` 区域白名单）；与各来源自己的配置段无关。"""
         value = self.config.get("collect", {})

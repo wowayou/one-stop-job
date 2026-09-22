@@ -164,6 +164,24 @@ haier:
   timeout_seconds: 20
   user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
 
+# ==================== 海信招聘官网（jobs.hisense.com）====================
+# 海信招聘门户是北森（Beisen）iTalent SaaS 的纯前端 SPA，岗位走公开 API（无需登录）：
+# POST /api/Jobad/GetJobAdPageList，一页一批，Count 是总数。列表已带职责/要求，无需拓详情页。
+# 只读公开列表，不触碰投递/登录（红线 §3.2/§3.3）；低频、人工触发。海信不公布薪资（Salary 恒空）。
+# 触发：topbar「采集海信招聘官网」按钮，或 POST /api/collect/hisense。
+hisense:
+  enabled: true
+  source_label: "海信招聘"
+  company_name: "海信集团"
+  list_url: "https://jobs.hisense.com/api/Jobad/GetJobAdPageList"
+  detail_url_template: "https://jobs.hisense.com/social/detail?jobAdId={id}"
+  category: "1" # 1 = 社会招聘
+  page_size: 20
+  max_pages: 3
+  rate_limit_seconds: 2
+  timeout_seconds: 20
+  user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+
 # ==================== Telegram 入口（可选，默认关）====================
 # 手机把岗位链接发给你的 Telegram bot → 后端长轮询拉取 → 抽链落盘 + 评分 → 回执给你自己。
 # bot token 只进 .env（TELEGRAM_BOT_TOKEN）；这里只放开关与白名单。
