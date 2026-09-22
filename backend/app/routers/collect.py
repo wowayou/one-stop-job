@@ -17,7 +17,8 @@ from ..config import get_settings, load_yaml_config, save_yaml_config
 from ..deps import SessionDep
 from ..models import SourceRun
 from ..schemas import AutomationSettingsUpdate, WeChatCollectRequest
-from ..services.collect_ops import run_source, run_wechat_collection, source_status_payload
+from ..services.collect_ops import run_collector, run_source, run_wechat_collection, source_status_payload
+from ..services.collectors import HaierCollector
 from ..services.automation import automation_mode, rescore_all_jobs, rescore_pending_candidates
 from ..services.chat_ingest import recent_collect_candidates
 from ..services.sources import get_source_definition, list_source_definitions
@@ -108,6 +109,15 @@ async def collect_source(source_key: str, session: SessionDep) -> dict:
 async def collect_bebee(session: SessionDep) -> dict:
     """beBee 渠道:抓 config.yaml bebee.role_urls 列表页 → 解析 JobPosting → 入库。"""
     return run_source(session, "bebee")
+
+
+@router.post("/api/collect/haier")
+async def collect_haier(session: SessionDep) -> dict:
+    """海尔招聘官网:分页抓公开列表 JSON → 解析 → 走统一初筛入候选（不直接建 Job）。"""
+    cfg = get_settings().haier_config
+    source_label = str(cfg.get("source_label") or "海尔招聘")
+    collector = HaierCollector(cfg=cfg, source=source_label)
+    return run_collector(session, source_label, collector, {"source_key": "haier"})
 
 
 @router.post("/api/collect/wechat")

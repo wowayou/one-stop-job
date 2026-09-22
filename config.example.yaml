@@ -149,6 +149,21 @@ bebee:
   rate_limit_seconds: 3 # 多个角色页之间的固定间隔,避免触发风控
   timeout_seconds: 20
 
+# ==================== 海尔招聘官网（maker.haier.net）====================
+# 只读公开岗位列表 JSON（/client/job/searchdata.html?page=N，每页 20 条）；不触碰投递/登录，
+# 低频、人工触发（红线 §3.2/§3.3）。全新岗位走统一初筛进候选，勾选后才入库。
+# 触发：topbar「采集海尔招聘官网」按钮，或 POST /api/collect/haier。
+haier:
+  enabled: true
+  source_label: "海尔招聘"
+  company_name: "海尔集团" # 列表接口不带公司名，统一挂这个；xwinfo 业务链进 description
+  list_url: "https://maker.haier.net/client/job/searchdata.html"
+  detail_url_template: "https://maker.haier.net/client/job/detail/id/{id}/recommend_record/1"
+  max_pages: 3 # 每页 20 条；候选闸门会再收窄，别一次翻太多页给对方压力
+  rate_limit_seconds: 2 # 翻页之间的固定间隔
+  timeout_seconds: 20
+  user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+
 # ==================== Telegram 入口（可选，默认关）====================
 # 手机把岗位链接发给你的 Telegram bot → 后端长轮询拉取 → 抽链落盘 + 评分 → 回执给你自己。
 # bot token 只进 .env（TELEGRAM_BOT_TOKEN）；这里只放开关与白名单。

@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Download,
+  Factory,
   FileQuestion,
   Globe,
   Info,
@@ -568,6 +569,20 @@ function App() {
     await collectSource("bebee", "beBee 采集", "当前 URL 可能不含 JobPosting/岗位卡片，或岗位由 JS 接口渲染。请更换 URL，或提供页面 HTML/JSON 样例。");
   }
 
+  async function collectHaier() {
+    if (hasAnyBusy(busy, [...GLOBAL_BUSY_KEYS])) return;
+    await runBusy("source-haier", async () => {
+      notify("info", "正在抓取海尔招聘官网岗位…");
+      try {
+        const run = await api<SourceRun>("/api/collect/haier", { method: "POST" });
+        notifyRun("海尔招聘采集", run, "未读取到岗位。海尔官网结构可能有变，请在采集记录里查看跳过原因。");
+        await loadAll();
+      } catch (err) {
+        notify("error", errorMessage(err, "海尔招聘采集失败"));
+      }
+    });
+  }
+
   async function collectWeChat(event: FormEvent) {
     event.preventDefault();
     if (!wechatText.trim()) return;
@@ -1126,6 +1141,9 @@ function App() {
               </button>
               <button className="icon-button" title="采集 beBee(按 config.yaml 角色页)" onClick={collectBeBee} disabled={toolbarBusy}>
                 {hasBusy(busy, "source-bebee") ? <Loader2 size={18} className="spin" /> : <Globe size={18} />}
+              </button>
+              <button className="icon-button" title="采集海尔招聘官网" onClick={collectHaier} disabled={toolbarBusy}>
+                {hasBusy(busy, "source-haier") ? <Loader2 size={18} className="spin" /> : <Factory size={18} />}
               </button>
               <button className="icon-button" title="导入 CSV/XLSX" onClick={() => setUploadOpen(true)} disabled={toolbarBusy}>
                 {hasBusy(busy, "upload") ? <Loader2 size={18} className="spin" /> : <Upload size={18} />}

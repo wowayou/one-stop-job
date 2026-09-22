@@ -366,7 +366,11 @@ def persist_collect_candidates(session: Session, source_label: str, candidates: 
         thread_id=thread.id or 0,
         role="assistant",
         content=summary,
-        metadata_json={"candidates": candidates, "source": source_label, "run_status": "collected"},
+        # metadata_json 是 JSON 列，而 normalize_record 会把 published_at 解析成 date
+        # （海尔 update_time 这类可解析日期就会命中）。date 不能直接 JSON 序列化，
+        # 这里统一编码成 JSON 安全的原语——反正落盘后回读本就是字符串，写入口径与
+        # 读出口径就此一致。commit 时 Job.published_at 会把 ISO 串再还原成 date。
+        metadata_json={"candidates": jsonable_encoder(candidates), "source": source_label, "run_status": "collected"},
     )
     session.add(assistant_message)
     thread.updated_at = utc_now()
