@@ -164,23 +164,29 @@ haier:
   timeout_seconds: 20
   user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
 
-# ==================== 海信招聘官网（jobs.hisense.com）====================
-# 海信招聘门户是北森（Beisen）iTalent SaaS 的纯前端 SPA，岗位走公开 API（无需登录）：
-# POST /api/Jobad/GetJobAdPageList，一页一批，Count 是总数。列表已带职责/要求，无需拓详情页。
-# 只读公开列表，不触碰投递/登录（红线 §3.2/§3.3）；低频、人工触发。海信不公布薪资（Salary 恒空）。
-# 触发：topbar「采集海信招聘官网」按钮，或 POST /api/collect/hisense。
-hisense:
+# ==================== 北森(Beisen)招聘门户通用来源 ====================
+# 很多大厂招聘官网（海信等）都是北森 iTalent SaaS 的纯 SPA，岗位走同一套公开 API（无需登录）：
+# POST {host}/api/Jobad/GetJobAdPageList（需 Content-Type: application/json + X-Requested-With，
+# Category:["1"]=社会招聘，Count 是总数）。列表已带职责/要求，无需拓详情页。只写一份解析，
+# 新接一家只需在 portals 加一行（label/list_url/company_name/detail_url_template）。
+# 只读公开列表，不碰投递/登录（红线 §3.2/§3.3）；低频、人工触发。北森列表通常不公布薪资。
+# 触发：topbar「采集」→「北森门户」，或 POST /api/collect/beisen（一次跑完所有启用门户）。
+beisen:
   enabled: true
-  source_label: "海信招聘"
-  company_name: "海信集团"
-  list_url: "https://jobs.hisense.com/api/Jobad/GetJobAdPageList"
-  detail_url_template: "https://jobs.hisense.com/social/detail?jobAdId={id}"
-  category: "1" # 1 = 社会招聘
+  source_label: "北森门户" # 仅用于采集记录分组/线索标题；入库岗位的 source 用各门户自己的 label
   page_size: 20
-  max_pages: 3
-  rate_limit_seconds: 2
+  max_pages: 3 # 每页 20 条；候选闸门会再收窄，别一次翻太多页给对方压力
+  rate_limit_seconds: 2 # 翻页 / 换门户之间的固定间隔
   timeout_seconds: 20
   user_agent: "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Safari/604.1"
+  portals:
+    # 每个门户：label 即 Job.source；list_url 是该公司的列表接口；category 默认 "1"（社招）。
+    - label: "海信招聘"
+      enabled: true
+      company_name: "海信集团"
+      list_url: "https://jobs.hisense.com/api/Jobad/GetJobAdPageList"
+      detail_url_template: "https://jobs.hisense.com/social/detail?jobAdId={id}"
+      category: "1"
 
 # ==================== Telegram 入口（可选，默认关）====================
 # 手机把岗位链接发给你的 Telegram bot → 后端长轮询拉取 → 抽链落盘 + 评分 → 回执给你自己。

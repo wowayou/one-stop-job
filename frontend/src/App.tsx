@@ -585,16 +585,16 @@ function App() {
     });
   }
 
-  async function collectHisense() {
+  async function collectBeisen() {
     if (hasAnyBusy(busy, [...GLOBAL_BUSY_KEYS])) return;
-    await runBusy("source-hisense", async () => {
-      notify("info", "正在抓取海信招聘官网岗位…");
+    await runBusy("source-beisen", async () => {
+      notify("info", "正在抓取北森门户（海信等）岗位…");
       try {
-        const run = await api<SourceRun>("/api/collect/hisense", { method: "POST" });
-        notifyRun("海信招聘采集", run, "未读取到岗位。海信官网结构可能有变，请在采集记录里查看跳过原因。");
+        const run = await api<SourceRun>("/api/collect/beisen", { method: "POST" });
+        notifyRun("北森门户采集", run, "未读取到岗位。北森接口可能有变，请在采集记录里查看跳过原因。");
         await loadAll();
       } catch (err) {
-        notify("error", errorMessage(err, "海信招聘采集失败"));
+        notify("error", errorMessage(err, "北森门户采集失败"));
       }
     });
   }
@@ -1158,7 +1158,7 @@ function App() {
                   { key: "boss", label: "BOSS 采集", hint: "config.yaml 关键词", icon: RefreshCw, busy: hasBusy(busy, "source-boss"), onClick: runBossCollection },
                   { key: "bebee", label: "beBee 采集", hint: "config.yaml 角色页", icon: Globe, busy: hasBusy(busy, "source-bebee"), onClick: collectBeBee },
                   { key: "haier", label: "海尔招聘官网", icon: Factory, busy: hasBusy(busy, "source-haier"), onClick: collectHaier },
-                  { key: "hisense", label: "海信招聘官网", icon: Landmark, busy: hasBusy(busy, "source-hisense"), onClick: collectHisense },
+                  { key: "beisen", label: "北森门户（海信等）", hint: "config.yaml portals", icon: Landmark, busy: hasBusy(busy, "source-beisen"), onClick: collectBeisen },
                   { key: "import", label: "导入 CSV / XLSX", icon: Upload, busy: hasBusy(busy, "upload"), onClick: () => setUploadOpen(true) },
                   {
                     key: "wechat",

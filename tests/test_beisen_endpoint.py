@@ -1,6 +1,6 @@
-"""海信招聘端点流程（CLAUDE.md §2/§4）：
+"""北森门户通用采集端点流程（CLAUDE.md §2/§4）：
 
-`POST /api/collect/hisense` monkeypatch 掉网络抓取（不联网），断言:
+`POST /api/collect/beisen` monkeypatch 掉网络抓取（不联网），断言:
 - 200 且 status=success；
 - 采集**不新建 Job**，全新岗位只落成 `kind="collect"` 候选（红线：勾选才入库）。
 """
@@ -14,11 +14,11 @@ from pathlib import Path
 
 import httpx
 
-FIXTURE = Path(__file__).parent / "fixtures" / "hisense_joblist.json"
+FIXTURE = Path(__file__).parent / "fixtures" / "beisen_joblist.json"
 
 
 def _reload_app(monkeypatch, tmp_path):
-    monkeypatch.setenv("JOB_ONE_STOP_DATABASE_URL", f"sqlite:///{tmp_path/'hisense.sqlite3'}")
+    monkeypatch.setenv("JOB_ONE_STOP_DATABASE_URL", f"sqlite:///{tmp_path/'beisen.sqlite3'}")
     from backend.app import config
 
     config.get_settings.cache_clear()
@@ -31,13 +31,26 @@ def _reload_app(monkeypatch, tmp_path):
     return main
 
 
-def _setup_hisense_config(monkeypatch):
+def _setup_beisen_config(monkeypatch):
     from backend.app import config
 
-    def fake_hisense_config(self):
-        return {"source_label": "海信招聘", "max_pages": 1, "rate_limit_seconds": 0}
+    def fake_beisen_config(self):
+        return {
+            "source_label": "北森门户",
+            "max_pages": 1,
+            "rate_limit_seconds": 0,
+            "portals": [
+                {
+                    "label": "海信招聘",
+                    "company_name": "海信集团",
+                    "list_url": "https://jobs.hisense.com/api/Jobad/GetJobAdPageList",
+                    "detail_url_template": "https://jobs.hisense.com/social/detail?jobAdId={id}",
+                    "category": "1",
+                }
+            ],
+        }
 
-    monkeypatch.setattr(config.Settings, "hisense_config", property(fake_hisense_config))
+    monkeypatch.setattr(config.Settings, "beisen_config", property(fake_beisen_config))
 
 
 async def _client(app):
@@ -45,18 +58,18 @@ async def _client(app):
         yield client
 
 
-def test_collect_hisense_endpoint_stages_candidates_not_jobs(monkeypatch, tmp_path):
+def test_collect_beisen_endpoint_stages_candidates_not_jobs(monkeypatch, tmp_path):
     main = _reload_app(monkeypatch, tmp_path)
-    _setup_hisense_config(monkeypatch)
+    _setup_beisen_config(monkeypatch)
 
     payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
-    from backend.app.services import hisense
+    from backend.app.services import beisen
 
-    monkeypatch.setattr(hisense, "fetch_job_list", lambda url, page, page_size, cfg=None: payload)
+    monkeypatch.setattr(beisen, "fetch_job_list", lambda url, page, page_size, cfg=None: payload)
 
     async def scenario():
         async for client in _client(main.app):
-            resp = await client.post("/api/collect/hisense")
+            resp = await client.post("/api/collect/beisen")
             assert resp.status_code == 200, resp.text
             body = resp.json()
             assert body["status"] == "success"

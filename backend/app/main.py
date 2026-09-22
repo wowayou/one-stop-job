@@ -503,7 +503,7 @@ app.include_router(updates.router)
 app.include_router(diagnostics.router)
 
 
-CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "haier", "hisense", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach", "updates"}
+CONFIG_TOP_LEVEL_ALLOWLIST = {"opencli", "job_sources", "general", "research", "wechat", "bebee", "haier", "beisen", "collect", "scoring", "followup", "ai", "ingest", "telegram", "schedule", "automation", "reach", "updates"}
 SENSITIVE_CONFIG_KEYS = ("api_key", "apikey", "secret", "password", "token", "authorization")
 
 

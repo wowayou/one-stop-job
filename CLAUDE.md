@@ -39,7 +39,7 @@
 - `external_id` 默认 `sha1(url)`；**一个 url 拆出多个岗位时**(如公众号一文多岗),在采集器里覆写为 `sha1(url|title|company)`,并保留 `url` 为可点击原链。
 
 关键文件:
-- `backend/app/services/collectors.py` — 各来源采集器(`BossOpenCLICollector` / `TabularFileCollector` / `WeChatPasteCollector` / `BeBeeCollector`)
+- `backend/app/services/collectors.py` — 各来源采集器(`BossOpenCLICollector` / `TabularFileCollector` / `WeChatPasteCollector` / `BeBeeCollector` / `HaierCollector` / `BeisenPortalCollector`)
 - `backend/app/services/normalizer.py` — `normalize_record` / `parse_salary` / `parse_city_area` / `stable_external_id`(**改这里要极谨慎,影响所有来源**)
 - `backend/app/services/importer.py` — `upsert_job_records` / `get_or_create_company` / `split_known_records`（只读分流：哪些记录已在岗位池、哪些是全新的）
 - `backend/app/services/collect_filter.py` — 采集结果过滤纯函数，两道闸门都在这里，只被 `collect_ops` 调用：
@@ -159,8 +159,10 @@ Windows 宿主机可用 `run_quality_check.bat`(经 wsl.exe 跑门禁)。**不�
 | `manual` | — | `POST /api/jobs` | 手动单条 |
 | `公众号` | `WeChatPasteCollector` | `POST /api/collect/wechat` | 粘贴元宝回答/链接 → 抓 mp.weixin 正文 → 拆多岗位(正则,LLM 兜底);可选元宝 Playwright 自动化 |
 | `beBee` | `BeBeeCollector` | `POST /api/collect/bebee` | 抓 bebee 角色/列表页 → 解析 JobPosting JSON-LD、Next/RSC jobs、microdata 或可见卡片 |
+| `海尔招聘` | `HaierCollector` | `POST /api/collect/haier` | 抓 maker.haier.net 公开列表 JSON(`searchdata.html?page=N`)→ 解析;年薪(万)→月薪(K)换算,脏数据回退 `salary_label` |
+| `北森门户`(各公司自己的 label,如 `海信招聘`) | `BeisenPortalCollector` | `POST /api/collect/beisen` | 遍历 `beisen.portals` 里各公司;北森(Beisen)iTalent 公开接口 `POST {host}/api/Jobad/GetJobAdPageList`;列表已带职责/要求,不抓详情页;`Job.source` 用各门户 label,一份解析接多家 |
 
-> 外部平台页面会变化。公众号、元宝自动化和 beBee 首次接入新页面时必须先拿真实样例核对；解析器有 fixture 测试和 skipped 降级，但不要盲写选择器。
+> 外部平台页面/接口会变化。公众号、元宝自动化、beBee、海尔与北森门户首次接入新页面/新公司时必须先拿真实样例核对；解析器有 fixture 测试和 skipped 降级，但不要盲写选择器。北森门户是同一套 API，新接一家公司只在 `beisen.portals` 加一行（label/list_url/company_name/detail_url_template）。
 
 ### 统一 ingest 入口与传输层
 

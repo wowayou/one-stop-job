@@ -1,14 +1,15 @@
-"""海信招聘官网（jobs.hisense.com）来源:抓公开岗位列表 JSON,解析成规范化前的 dict。
+"""北森(Beisen)iTalent 招聘门户通用来源:抓公开岗位列表 JSON,解析成规范化前的 dict。
+
+大量企业招聘官网(海信、以及其它用北森 iTalent 的公司)都是同一套 SPA + 同一套公开
+接口:`POST {host}/api/Jobad/GetJobAdPageList`(需 `Content-Type: application/json`
++ `X-Requested-With`,`Category:["1"]`=社会招聘,`Count` 是总数,`Data[]` 是岗位,
+列表已带 `Duty`/`Require`,无需抓详情页)。所以只写一份解析,靠配置里的 `list_url`
++ `company_name` + `detail_url_template` 接入不同公司。
 
 设计要点(见 CLAUDE.md §2):
-- 海信招聘门户是北森(Beisen)iTalent SaaS 的纯前端 SPA,页面 HTML 是空壳,岗位数据全走
-  后端 API。列表接口 `POST /api/Jobad/GetJobAdPageList`(公开、无需登录)一次返回一页,
-  `Count` 是总数,`Data[]` 是岗位。**只读公开列表**,不触碰投递/登录(红线 §3.2/§3.3);
-  低频、按页限速。
-- 列表响应里已带 `Duty`(岗位职责)/`Require`(任职要求),**无需再逐条抓详情页**,保持轻量。
-- 海信不在列表里公布薪资(`Salary` 恒为 null),所以 `salary_text` 通常为空——照实留空,
-  不硬造数字(评分侧薪资信号缺失是来源本身的性质)。
-- `Category:["1"]` = 社会招聘;详情页 url 用岗位的 `Id`(GUID),不是 `JobAdId`(整数)。
+- **只读公开列表**,不触碰投递/登录(红线 §3.2/§3.3);低频、按页限速。
+- 北森列表通常不公布薪资(`Salary` 多为 null),照实留空,不硬造数字。
+- 详情页 url 用岗位的 `Id`(GUID),不是 `JobAdId`(整数)。
 - 纯函数为主便于单测;网络抓取集中在 fetch_job_list,可在测试中 monkeypatch。
 """
 
@@ -19,8 +20,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_LIST_URL = "https://jobs.hisense.com/api/Jobad/GetJobAdPageList"
-DEFAULT_DETAIL_TEMPLATE = "https://jobs.hisense.com/social/detail?jobAdId={id}"
+# 北森门户列表接口的相对路径(拼在各公司 host 后);也可在 portal 配置里用 list_url 整段覆盖。
+DEFAULT_LIST_PATH = "/api/Jobad/GetJobAdPageList"
 DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 "
     "(KHTML, like Gecko) Mobile/15E148 Safari/604.1"
@@ -60,7 +61,7 @@ def fetch_job_list(url: str, page: int, page_size: int, cfg: dict | None = None)
         return resp.json()
 
 
-def detail_url(job_guid: Any, template: str = DEFAULT_DETAIL_TEMPLATE) -> str:
+def detail_url(job_guid: Any, template: str) -> str:
     return template.format(id=job_guid)
 
 
@@ -92,11 +93,12 @@ def _description(record: dict) -> str | None:
 def parse_jobs(payload: dict, cfg: dict | None = None) -> list[dict]:
     """把一页 GetJobAdPageList JSON 解析成规范化前的 dict 列表(纯函数)。
 
+    `cfg` 是**单个门户**的配置(至少含 `detail_url_template`、`company_name`)。
     只认结构合法(`Code==200` 且 `Data` 是列表)的响应;缺 `Id` 或 `JobAdName` 的条目跳过。
     """
     cfg = cfg or {}
-    template = cfg.get("detail_url_template", DEFAULT_DETAIL_TEMPLATE)
-    company_default = str(cfg.get("company_name") or "海信集团").strip() or "海信集团"
+    template = cfg.get("detail_url_template")
+    company_default = str(cfg.get("company_name") or "").strip() or "未知公司"
 
     if not isinstance(payload, dict) or payload.get("Code") != 200:
         return []
@@ -112,13 +114,15 @@ def parse_jobs(payload: dict, cfg: dict | None = None) -> list[dict]:
         title = _clean(record.get("JobAdName"))
         if not guid or not title:
             continue
+        # detail_url_template 缺失时不硬拼 url（external_id 会退到 title+company），但正常配置都应有。
+        url = detail_url(guid, template) if template else None
         # ClassificationTwo 是事业部(如「空调事业部」),放进 skills 作为部门线索。
         jobs.append(
             {
                 "title": title,
                 "company_name": company_default,
-                "url": detail_url(guid, template),
-                "salary_text": _clean(record.get("Salary")),  # 海信列表不公布薪资,通常 None
+                "url": url,
+                "salary_text": _clean(record.get("Salary")),  # 北森列表通常不公布薪资,多为 None
                 "city": _location(record),
                 "experience": _clean(record.get("YearsOfWorking")),
                 "degree": _clean(record.get("Degree")),

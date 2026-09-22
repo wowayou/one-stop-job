@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 import pandas as pd
 
-from . import bebee, haier, hisense, wechat
+from . import bebee, beisen, haier, wechat
 from .normalizer import dataframe_from_csv_text, normalize_dataframe, normalize_record
 
 
@@ -421,59 +421,76 @@ class HaierCollector:
 
 
 @dataclass
-class HisenseCollector:
-    """海信招聘官网采集器:分页 POST 公开列表 JSON → 解析 → 规范化记录。
+class BeisenPortalCollector:
+    """北森(Beisen)门户通用采集器:遍历配置里的多个门户,各自分页抓公开列表 → 解析 → 规范化。
 
+    每个门户带自己的 `label`(即 `Job.source`,如「海信招聘」)与 `company_name`,所以一次运行
+    能覆盖多家用北森 iTalent 的公司,新增一家只在 config.yaml 的 `beisen.portals` 加一行。
     每个岗位有自己的详情 url(基于 GUID),external_id 走默认 sha1(url) 即天然唯一。
     按页限速、上限 max_pages,遵循 §3.3 低频人工触发。列表已带职责/要求,不抓详情页。
     """
 
-    cfg: dict = field(default_factory=dict)  # config.yaml 的 hisense 段
-    source: str = "海信招聘"
+    portals: list[dict] = field(default_factory=list)  # 每项是「共享配置 + 单门户配置」合并后的 dict，含 label
+    cfg: dict = field(default_factory=dict)             # config.yaml 的 beisen 段（共享项）
+    source: str = "北森门户"                             # 仅用于 SourceRun 分组/线索标题；岗位 source 用各门户 label
 
     def __post_init__(self) -> None:
-        self.report: dict = {"pages_total": 0, "pages_ok": 0, "jobs": 0, "skipped": []}
+        self.report: dict = {"portals_total": 0, "portals_ok": 0, "jobs": 0, "skipped": []}
 
     def collect(self) -> list[dict]:
-        list_url = self.cfg.get("list_url", hisense.DEFAULT_LIST_URL)
         page_size = max(1, int(self.cfg.get("page_size", 20) or 20))
         max_pages = max(1, int(self.cfg.get("max_pages", 3) or 1))
         rate = float(self.cfg.get("rate_limit_seconds", 2) or 0)
 
         records: list[dict] = []
         seen_external: set[str] = set()
-        total: int | None = None
 
-        # 北森接口 PageIndex 从 0 开始。
-        for page in range(0, max_pages):
-            self.report["pages_total"] += 1
-            try:
-                if page > 0 and rate:
-                    time.sleep(rate)
-                payload = hisense.fetch_job_list(list_url, page, page_size, self.cfg)
-                jobs = hisense.parse_jobs(payload, self.cfg)
-            except Exception as exc:  # 网络/解析失败 → 跳过该页并记录,不中断整批
-                self.report["skipped"].append({"page": page, "reason": f"抓取/解析失败: {exc}"})
+        for portal in self.portals:
+            self.report["portals_total"] += 1
+            label = str(portal.get("label") or portal.get("source_label") or "北森门户").strip() or "北森门户"
+            list_url = portal.get("list_url")
+            if not list_url:
+                self.report["skipped"].append({"portal": label, "reason": "缺少 list_url，跳过该门户"})
                 continue
 
-            if total is None:
-                total = hisense.total_count(payload)
-
-            self.report["pages_ok"] += 1
-            if not jobs:
-                self.report["skipped"].append({"page": page, "reason": "该页无岗位（可能已翻过末页）"})
-                break
-
-            for raw in jobs:
-                normalized = normalize_record(raw, source=self.source)
-                ext = normalized.get("external_id")
-                if ext in seen_external:
+            total: int | None = None
+            portal_ok = False
+            # 北森接口 PageIndex 从 0 开始。
+            for page in range(0, max_pages):
+                try:
+                    if (records or page > 0) and rate:
+                        time.sleep(rate)
+                    payload = beisen.fetch_job_list(list_url, page, page_size, portal)
+                    jobs = beisen.parse_jobs(payload, portal)
+                except Exception as exc:  # 网络/解析失败 → 跳过该页并记录,不中断整批
+                    self.report["skipped"].append({"portal": label, "page": page, "reason": f"抓取/解析失败: {exc}"})
                     continue
-                seen_external.add(ext)
-                records.append(normalized)
 
-            if total is not None and len(records) >= total:
-                break
+                if total is None:
+                    total = beisen.total_count(payload)
+
+                portal_ok = True
+                if not jobs:
+                    self.report["skipped"].append({"portal": label, "page": page, "reason": "该页无岗位（可能已翻过末页）"})
+                    break
+
+                portal_count = 0
+                for raw in jobs:
+                    normalized = normalize_record(raw, source=label)
+                    ext = normalized.get("external_id")
+                    if ext in seen_external:
+                        continue
+                    seen_external.add(ext)
+                    records.append(normalized)
+                    portal_count += 1
+
+                if total is not None and portal_count == 0 and page > 0:
+                    break
+                if total is not None and len([r for r in records if r.get("source") == label]) >= total:
+                    break
+
+            if portal_ok:
+                self.report["portals_ok"] += 1
 
         self.report["jobs"] = len(records)
         return records

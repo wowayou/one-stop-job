@@ -169,8 +169,8 @@ class Settings:
         return value if isinstance(value, dict) else {}
 
     @property
-    def hisense_config(self) -> dict[str, Any]:
-        value = self.config.get("hisense", {})
+    def beisen_config(self) -> dict[str, Any]:
+        value = self.config.get("beisen", {})
         return value if isinstance(value, dict) else {}
 
     @property

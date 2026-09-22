@@ -18,7 +18,7 @@ from ..deps import SessionDep
 from ..models import SourceRun
 from ..schemas import AutomationSettingsUpdate, WeChatCollectRequest
 from ..services.collect_ops import run_collector, run_source, run_wechat_collection, source_status_payload
-from ..services.collectors import HaierCollector, HisenseCollector
+from ..services.collectors import BeisenPortalCollector, HaierCollector
 from ..services.automation import automation_mode, rescore_all_jobs, rescore_pending_candidates
 from ..services.chat_ingest import recent_collect_candidates
 from ..services.sources import get_source_definition, list_source_definitions
@@ -120,13 +120,22 @@ async def collect_haier(session: SessionDep) -> dict:
     return run_collector(session, source_label, collector, {"source_key": "haier"})
 
 
-@router.post("/api/collect/hisense")
-async def collect_hisense(session: SessionDep) -> dict:
-    """海信招聘官网（北森 SaaS）:分页 POST 公开列表 JSON → 解析 → 走统一初筛入候选。"""
-    cfg = get_settings().hisense_config
-    source_label = str(cfg.get("source_label") or "海信招聘")
-    collector = HisenseCollector(cfg=cfg, source=source_label)
-    return run_collector(session, source_label, collector, {"source_key": "hisense"})
+@router.post("/api/collect/beisen")
+async def collect_beisen(session: SessionDep) -> dict:
+    """北森(Beisen)门户通用采集:遍历 config.yaml beisen.portals 里启用的公司 → 分页 POST
+    公开列表 JSON → 解析 → 走统一初筛入候选（不直接建 Job）。新增一家只需在配置里加一行。"""
+    cfg = get_settings().beisen_config
+    source_label = str(cfg.get("source_label") or "北森门户")
+    shared = {k: v for k, v in cfg.items() if k != "portals"}
+    portals_cfg = cfg.get("portals") if isinstance(cfg.get("portals"), list) else []
+    # 每个门户：共享配置（UA/页大小/限速等）+ 门户自己的 label/list_url/company_name/category。
+    portals = [
+        {**shared, **portal}
+        for portal in portals_cfg
+        if isinstance(portal, dict) and portal.get("enabled", True)
+    ]
+    collector = BeisenPortalCollector(portals=portals, cfg=cfg, source=source_label)
+    return run_collector(session, source_label, collector, {"source_key": "beisen"})
 
 
 @router.post("/api/collect/wechat")
