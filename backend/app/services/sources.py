@@ -100,7 +100,7 @@ def source_health(source: JobSourceDefinition) -> dict[str, Any]:
             return {
                 "configured": False,
                 "status": "host_import_required",
-                "message": "Docker 模式不在服务端调用 OpenCLI；请在宿主机运行 tools 里的采集脚本，再导入 CSV。",
+                "message": "已关闭服务端调用 OpenCLI（JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false）；请在宿主机运行 tools 里的采集脚本，再导入 CSV。",
                 "doctor": {
                     "status": "host_import_required",
                     "configured": False,
@@ -138,7 +138,9 @@ def source_health(source: JobSourceDefinition) -> dict[str, Any]:
 def build_source_collector(source: JobSourceDefinition):
     if source.kind == "opencli_csv":
         if os.getenv("JOB_ONE_STOP_OPENCLI_SERVER_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
-            raise RuntimeError("Docker 模式不在服务端调用 OpenCLI；请在宿主机采集 CSV 后导入。")
+            raise RuntimeError(
+                "已关闭服务端调用 OpenCLI（JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false）；请在宿主机采集 CSV 后导入。"
+            )
         command = _as_list(source.config.get("command"))
         keywords = _as_list(source.config.get("keywords"))
         timeout_seconds = int(source.config.get("timeout_seconds", 120) or 120)

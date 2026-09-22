@@ -36,10 +36,10 @@ flowchart TD
     S[单进程部署 scripts/app.sh · 推荐日常] --> B0[FastAPI /api + frontend/dist :8000]
     A[本地开发 · 改代码调试] --> B[FastAPI /api :8000]
     A --> C[Vite 前端 :5173]
-    D[Docker Compose · 备用 Windows 无 WSL] --> B2[FastAPI /api + frontend/dist :8000]
+    D[桌面安装包 · 不装开发环境] --> B2[内置后端 FastAPI + dist]
     B0 --> DB0[(SQLite ./data/job_one_stop/)]
     B --> DB0
-    B2 --> DB2[(SQLite volume /data/job_one_stop.sqlite3)]
+    B2 --> DB2[(SQLite 桌面版自有数据目录)]
     O[宿主机 OpenCLI] --> T[tools/host_opencli_import.py]
     T --> G[/api/jobs/import]
     G --> B0
@@ -51,10 +51,9 @@ flowchart TD
     J --> B0
     I --> C
     C --> B
-    J --> B2
 ```
 
-> 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，不能同时启动；Docker 用独立 volume，与前两者不互通。
+> 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，不能同时启动；桌面版用它自己的数据目录，与前两者不互通。
 
 ## 去重与来源证据
 

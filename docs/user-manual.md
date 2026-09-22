@@ -18,7 +18,7 @@
 scripts/app.sh start
 ```
 
-浏览器打开 `http://127.0.0.1:8000/`。Windows 无 WSL 时使用 `start_app.bat` 或 Docker 方式，详见 [QUICKSTART.md](../QUICKSTART.md)。
+浏览器打开 `http://127.0.0.1:8000/`。Windows 无 WSL 时装 [Releases](../../../releases) 里的桌面安装包，详见 [QUICKSTART.md](../QUICKSTART.md)。
 
 首次进入会看到“开始使用”检查卡。它会检查个人画像、BOSS 采集、AI 和当前自动驾驶模式。先不要急着打开自动驾驶，先把手动闭环跑通。
 

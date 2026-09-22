@@ -1,7 +1,7 @@
 # 快速开始
 
-> 日常使用优先走单进程部署；改代码和调试时使用本地开发；Docker 作为备用方案。
-> 三种模式默认都用端口 `8000`(本地开发的前端另占 `5173`),**不要同时启动两种模式**。
+> 日常使用优先走单进程部署；改代码和调试时使用本地开发；不想装开发环境就用桌面安装包。
+> 前两种默认都用端口 `8000`(本地开发的前端另占 `5173`)且共用同一个数据库,**不要同时启动**。
 
 ---
 
@@ -37,7 +37,7 @@ scripts/app.sh update  # 代码更新后：装依赖 + 重新构建前端 + 若�
 scripts/app.sh backup  # 备份 SQLite + 聊天附件到 data/backups/<时间戳>/
 ```
 
-运行时文件(pid、日志)在 `data/app/`,与本地开发模式的 `data/dev/` 互不干扰,可各自独立启停,但**两者共用同一个数据库** `./data/job_one_stop/`,且都监听 `8000` 端口,所以不能同时启动。如果 `scripts/app.sh start` 报端口被占用,先确认没有本地开发后端或 Docker 容器在跑。
+运行时文件(pid、日志)在 `data/app/`,与本地开发模式的 `data/dev/` 互不干扰,可各自独立启停,但**两者共用同一个数据库** `./data/job_one_stop/`,且都监听 `8000` 端口,所以不能同时启动。如果 `scripts/app.sh start` 报端口被占用,先确认没有本地开发后端或桌面版内置后端在跑。
 
 首次配置 AI / Telegram 等可选能力,见 [docs/setup-checklist.md](docs/setup-checklist.md)。
 
@@ -114,80 +114,12 @@ WSL/Linux/macOS 也可以用 `scripts/dev_wsl.sh start`(前后端一起起,日�
 
 ---
 
-## 🐳 方式三：Docker（备用方案）
+## 📦 方式三：桌面安装包（不想装任何开发环境）
 
-> 备用场景：Windows 上没有装 WSL,又不想手动装 Python/Node 环境时用一键脚本;或者需要环境完全隔离的部署。日常使用优先方式一。
+前往 [Releases](../../releases) 下载对应平台的安装包（Windows `.msi`/`.exe`、macOS `.dmg`、Linux `.AppImage`）。
+装完直接双击运行，后端内置，不需要 Python / Node / WSL。校验与升级说明见 [README](README.md#方式二桌面应用下载无需任何开发环境)。
 
-### Windows 一键脚本
-
-前置条件：已安装并启动 Docker Desktop。
-
-1. 首次启动或代码更新后：双击 `rebuild_app.bat`。
-2. 以后日常启动：双击 `start_app.bat`。
-3. 健康检查通过后，浏览器会自动打开 `http://127.0.0.1:8000/`。
-4. 查看状态：双击 `status_app.bat`；停止：双击 `stop_app.bat`。
-
-如果浏览器没有自动打开，手动访问 `http://127.0.0.1:8000/`。首次构建需要下载依赖，耗时取决于网络；排障见 [docs/docker-optimization.md](docs/docker-optimization.md)。
-
-### Docker Compose 命令行（Linux/macOS/WSL）
-
-前置条件：Docker Desktop（Windows）或 Docker Engine（Linux）。
-
-首次构建前配置镜像源，避免超时：
-
-```bash
-# 1. 复制配置模板
-cp .env.template .env
-
-# 2. 确认 .env 中已配置（默认已配置阿里云镜像）
-# PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
-# NPM_REGISTRY=https://registry.npmmirror.com
-
-# 3. 构建并启动
-docker compose up -d --build
-```
-
-**如果遇到 `Read timed out` 错误**：编辑 `.env`，尝试切换镜像源：
-
-```bash
-# 方案 1: 清华镜像
-PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
-
-# 方案 2: 官方源（需要稳定国际网络）
-PIP_INDEX_URL=https://pypi.org/simple
-```
-
-然后重新构建：
-
-```bash
-docker compose up -d --build
-```
-
-**详细构建优化**：见 [docs/docker-optimization.md](docs/docker-optimization.md)
-
-**日常启动（秒级）：**
-
-```bash
-docker compose up -d
-```
-
-**访问：** `http://127.0.0.1:8000`
-
-**停止：**
-
-```bash
-docker compose down
-
-# 或 Windows 双击：stop_app.bat
-```
-
-**查看日志：**
-
-```bash
-docker compose logs -f
-```
-
-**FAQ：Docker 与本地数据库不互通吗？** 是的,默认不互通。本地(单进程部署 / 本地开发)使用 `./data/job_one_stop/job_one_stop.sqlite3`,Docker 使用独立 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库,但也意味着 Docker 试用期间录入的数据不会自动出现在单进程/本地开发模式里,反之亦然。迁移方法见 [docs/setup-checklist.md](docs/setup-checklist.md)。
+Windows 上没装 WSL 又不想手搭环境时，走这条路。
 
 ---
 
@@ -250,9 +182,8 @@ ai:
 |------|---------|------|
 | **日常使用** | 单进程部署 | 一条命令、一个进程、无需常驻两个终端 |
 | **日常开发/调试** | 本地开发 | 热更新、方便调试 |
-| **初次试用** | 单进程部署 或 本地开发 | 无需等待 Docker 构建 |
-| **Windows 无 WSL** | Docker（备用） | 一键脚本、无需手装 Python/Node |
-| **环境完全隔离部署** | Docker（备用） | 标准化、易于管理 |
+| **初次试用** | 单进程部署 | 一条命令拉起，不必先搭前端 |
+| **Windows 无 WSL / 不想装环境** | 桌面安装包 | 双击即用，后端内置 |
 
 ---
 
@@ -280,25 +211,18 @@ Set-ExecutionPolicy RemoteSigned -Scope CurrentUser
 npm config set registry https://registry.npmmirror.com
 ```
 
-### Q4: Docker 构建超时
+### Q4: `pip install` 超时
 
 ```bash
-# 检查 Docker 状态
-scripts/docker_doctor.sh
-
-# 使用国内镜像源
-PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple docker compose up -d --build
+# 用国内镜像源（pip 原生读 PIP_INDEX_URL）
+PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple .venv/bin/python -m pip install -r requirements.txt
 ```
 
 ### Q5: 数据库被锁 "database is locked"
 
-不要同时运行多种模式。`scripts/app.sh`(单进程部署)、本地开发(`--reload` 后端 / `scripts/dev_wsl.sh`)和 Docker 三者选其一运行；单进程部署与本地开发还共用同一个 SQLite 文件,即使端口不同也不要同时启动。
+同一个 SQLite 库被两个后端同时占用了。`scripts/app.sh`(单进程部署)、本地开发(`--reload` 后端 / `scripts/dev_wsl.sh`)和桌面版内置后端三者只能同时跑一个；前两者共用同一个 SQLite 文件,即使端口不同也不要同时启动。
 
-### Q6: 本地（单进程部署/本地开发）和 Docker 的数据互通吗？
-
-默认不互通。本地使用 `./data/job_one_stop/job_one_stop.sqlite3`，Docker 使用 volume `job_one_stop_data` 里的 `/data/job_one_stop.sqlite3`。这样可以避免两个后端同时写同一个 SQLite 导致锁库。
-
-### Q7: `No module named uvicorn`
+### Q6: `No module named uvicorn`
 
 说明你正在用系统 Python，而不是项目虚拟环境。使用：
 

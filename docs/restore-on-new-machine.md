@@ -110,4 +110,4 @@ ws.Run "wsl.exe -d <发行版名> -u <用户名> -- <项目绝对路径>/scripts
 | 改了 config.yaml 但行为没变 | 配置在启动时读入；`scripts/app.sh stop` 再 `start`（注意脚本没有 `restart` 子命令） |
 | `cmd.exe` 报 UNC 路径不支持 | 从 WSL 目录调用 cmd.exe 的已知限制；调用方需把 cwd 指到 Windows 侧 |
 | 晨间清单没来 | 依次查：进程在不在、`schedule.digest.enabled`、token/chat id、`/api/context/status` |
-| `database is locked` | 本地开发模式和 Docker 同时在跑，只留一个 |
+| `database is locked` | 单进程模式、本地开发模式、桌面版内置后端里有两个在同时跑，只留一个 |

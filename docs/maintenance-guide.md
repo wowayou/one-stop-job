@@ -9,7 +9,7 @@
 1. 启动系统（口径见 [QUICKSTART.md](../QUICKSTART.md) / [operations.md](operations.md)）。
    - 日常使用（推荐）：`scripts/app.sh start` 单进程部署，访问 `http://127.0.0.1:8000/`。
    - 改代码/调试：本地开发热更新，后端 `.venv/bin/python -m uvicorn ...` + 前端 `npm run dev`，访问 `http://127.0.0.1:5173/`。
-   - 备用：Windows 无 WSL 时用 Docker（双击 `start_app.bat` 或 `docker compose up -d`，:8000）。
+   - 不装开发环境（含 Windows 无 WSL）：装 [Releases](../../../releases) 里的桌面安装包，双击运行。
    - 配置了 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 时，先访问 `/api/context/status`，确认核心白名单文件齐全；状态接口不应出现宿主机绝对路径。
 
 2. 校准个人画像。
@@ -53,19 +53,13 @@
 scripts/quality_gate.sh
 .venv/bin/python -m pytest -q
 cd frontend && npm run build
-docker compose up -d --build
-docker compose ps
+scripts/app.sh start
+scripts/app.sh status
 curl http://127.0.0.1:8000/api/health
-docker compose down
+scripts/app.sh stop
 ```
 
-Windows 对应入口：
-
-- `start_app.bat`：日常启动，复用已有镜像。
-- `rebuild_app.bat`：代码或依赖变化后强制重建。
-- `status_app.bat`：查看容器状态。
-- `stop_app.bat`：停止并移除容器。
-- `run_quality_check.bat`：从 Windows 调 WSL 质量门禁。
+Windows 对应入口：`run_quality_check.bat`（从 Windows 调 WSL 质量门禁）。日常启停走 WSL 里的 `scripts/app.sh`，或直接用桌面安装包。
 
 提交前默认门禁：
 
@@ -73,7 +67,7 @@ Windows 对应入口：
 scripts/quality_gate.sh
 ```
 
-它覆盖后端测试、前端构建、真实 HTTP 系统冒烟和 Alembic 旧库迁移烟测。改过 Dockerfile、Compose 或启动脚本后，再额外跑一次 Docker 重建和健康检查。
+它覆盖后端测试、干净检出复跑、`config.example.yaml` 守卫、前端构建、真实 HTTP 系统冒烟和 Alembic 旧库迁移烟测。改过启动脚本后，再额外跑一次 `scripts/app.sh start` + 健康检查。
 
 ## 变更红线
 
@@ -90,11 +84,11 @@ scripts/quality_gate.sh
 
 ## 故障定位顺序
 
-1. 本地开发先确认后端 `http://127.0.0.1:8000/api/health`、前端 `http://127.0.0.1:5173/` 是否可访问；Docker 模式再看 `docker compose ps`。
+1. 先确认后端 `http://127.0.0.1:8000/api/health` 可访问（本地开发模式还要看前端 `http://127.0.0.1:5173/`）；单进程模式用 `scripts/app.sh status` 看守护进程和健康检查。
 2. 再看“系统配置”和“最近采集”，确认来源是否启用、是否有 skipped reason。
 3. BOSS / 智联失败时，优先检查宿主机 OpenCLI 是否在 PATH、浏览器登录态是否过期。
 4. 公众号 / beBee 返回 0 岗位时，先保留跳过原因；如果是页面结构变化，补 HTML fixture 或 Network JSON 后再改解析器。
-5. 数据异常时先备份 Docker volume，再做迁移或清理。
+5. 数据异常时先 `scripts/app.sh backup`（或「设置 → 诊断 → 一键备份」），再做迁移或清理。
 
 ## 推荐下一步维护
 

@@ -778,7 +778,7 @@ def _frontend_diagnostics() -> dict[str, Any]:
     return _check(
         "frontend_build",
         "warning",
-        "未找到 frontend/dist/index.html。Docker 生产镜像应包含构建产物；开发模式可忽略。",
+        "未找到 frontend/dist/index.html。单进程模式需要它（scripts/app.sh 会构建）；本地开发模式用 Vite 提供前端，可忽略。",
         path=str(FRONTEND_DIST),
     )
 

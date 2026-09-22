@@ -1,6 +1,6 @@
 # 机主配置待办清单
 
-> 部署方式已从 Docker 切换为**单进程部署模式**(`scripts/app.sh`);Docker 保留作为备用方案(见 [QUICKSTART.md](../QUICKSTART.md) 方式三)。本清单只列「你要补的配置项」和「怎么验证跑起来了」,详细的真机联调步骤见 [docs/p0-device-checklist.md](p0-device-checklist.md)。
+> 部署方式是**单进程部署模式**(`scripts/app.sh`);不装开发环境就用桌面安装包(见 [QUICKSTART.md](../QUICKSTART.md) 方式三)。本清单只列「你要补的配置项」和「怎么验证跑起来了」,详细的真机联调步骤见 [docs/p0-device-checklist.md](p0-device-checklist.md)。
 
 ## 你要补的
 
@@ -60,23 +60,22 @@ scripts/app.sh backup  # 备份 SQLite + 聊天附件到 data/backups/
 
 配置了 `JOB_ONE_STOP_CONTEXT_REPO_PATH` 后,聊天里确认入库的候选岗位卡上会多一个「写入看板」按钮:点击前先看到将要写入的那一行预览,点击后才把这一行追加到个人看板的「收集箱」列,不点不写一字节。
 
-## Docker 试用数据怎么办
+## 旧 Docker 卷里的数据怎么取出来
 
-Docker 模式的数据存在独立 volume `job_one_stop_data` 里,与本地(单进程部署 / 本地开发模式使用的 `./data/job_one_stop/`)**不互通**。
-
-- 如果 Docker 试用期间没有录入过真实数据(岗位、聊天记录等),可以直接忽略,改用单进程部署即可。
-- 如果录入过想保留,可以从容器里把 sqlite 文件拷贝出来,再手动导入到本地路径。示例(容器名按 `docker-compose.yml` 里的 `container_name: one-stop-job`):
+Docker 部署方式已于 2026-09-05 移除。**删掉配置文件不会删卷**——`docker volume rm` 才会,所以历史数据仍留在原处。
+只有当年真的用 Docker 录入过岗位/聊天记录时才需要这一节;没用过直接跳过。
 
 ```bash
-# 容器还在跑时,直接拷贝出来
-docker cp one-stop-job:/data/job_one_stop.sqlite3 ./data/job_one_stop/job_one_stop.sqlite3
-
-# 或者容器已经停了,用一次性容器挂载 volume 读出来。
-# 注意:compose 会给 volume 加项目名前缀(通常是 one-stop-job_job_one_stop_data),
-# 先用 docker volume ls 确认实际名称,再替换下面的 <volume名>:
+# 1. 确认卷还在（compose 会加项目名前缀）
 docker volume ls | grep job_one_stop
-docker run --rm -v <volume名>:/data -v "$PWD/data/job_one_stop":/out \
-  alpine cp /data/job_one_stop.sqlite3 /out/job_one_stop.sqlite3
+
+# 2. 先备份本地现有库——两个数据库不会自动合并,直接覆盖会丢现有数据
+cp ./data/job_one_stop/job_one_stop.sqlite3 ./data/job_one_stop/job_one_stop.sqlite3.bak
+
+# 3. 用一次性容器把库读出来
+docker run --rm -v one-stop-job_job_one_stop_data:/data -v "$PWD/data/job_one_stop":/out \
+  alpine cp /data/job_one_stop.sqlite3 /out/from-docker.sqlite3
 ```
 
-拷贝前建议先备份本地已有的 `./data/job_one_stop/job_one_stop.sqlite3`,两个数据库不会自动合并,直接覆盖会丢已有本地数据。
+取出的是完整的 sqlite 文件。要用它替换现有库就停掉后端再改名;想保留两边就只从里面挑数据。
+确认不再需要之后 `docker volume rm one-stop-job_job_one_stop_data` 回收空间(**不可逆**)。

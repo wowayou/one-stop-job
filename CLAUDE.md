@@ -107,10 +107,15 @@
 ## 4. 测试与质量门槛
 
 - 框架:`pytest`。当前环境中 `fastapi.testclient.TestClient`/AnyIO 线程池会卡住,后端流程测试改用 `httpx.AsyncClient(ASGITransport)` + 重载 app/db/config + `monkeypatch.setenv("JOB_ONE_STOP_DATABASE_URL", tmp sqlite)` 做隔离。
+- **测试自带配置,不碰机主的 `.env` / `config.yaml`。** 这两个文件都被 gitignore,是本机独有的东西;测试一旦依赖它们,行为就取决于「谁的机器」。判据是**干净检出(无个人 `.env`、无个人 `config.yaml`)能跑完全套**,由 `quality_gate.sh` 的 "Clean Checkout Tests" 段每次强制验证——这类回归在开发机上永远看不见。中和清单的唯一实现是 `scripts/lib/testing_config.py`(pytest 基线与三条冒烟脚本共用,`scripts/lib/testing_env.sh` 是它的 bash 入口),基线取已入库的 `config.example.yaml`。`tests/conftest.py` 的四个 autouse 夹具锁住这套隔离,`tests/test_isolation.py` 是它们的绊线:
+  - `isolate_local_settings`:把 `config.load_dotenv` 换成 no-op(**只 `delenv` 无效**——`get_settings()` 每次重新 load_dotenv,删掉的变量立刻被填回),并铺好基线配置 + 假密钥 + tmp 数据目录。注意 `ai.enabled` 刻意保持为真:`chat_ingest` 的 `ai_enabled = bool(ai_cfg.get("enabled")) and is_ai_available()` 左半边为假会让 ingest 抽取整条链路短路,23 个用例挂在 400。
+  - `no_outbound_network`:非回环目标的 `getaddrinfo` / `connect` 直接抛错。**拦在名字解析而不只是连接**——域名在解析阶段就失败,只拦 connect 的话表现为「慢」而非「错」,最难归因。
+  - `no_unstubbed_model_calls`:在 `ai._chat`(模型调用唯一出口)上抛错,等价于「provider 全失败」,调用方走既有规则/模板降级。被测对象就是 `_chat` 的用例加 `@pytest.mark.exercises_ai_chat` 豁免。
+  - `block_context_repo_writes`:兜住写入真实个人上下文仓库(曾实测污染本人看板 9 行)。
 - **测试不得联网**:抓取函数(`wechat.fetch_article` / `bebee.fetch_listing` 等)在测试里用 `monkeypatch` 桩掉;解析用 `tests/fixtures/` 下的样例 HTML。
 - 每个新来源至少覆盖:链接/字段抽取、一文多岗拆分、`external_id` 唯一性、抓取失败的 skip 记录。
-- 提交前跑 `scripts/quality_gate.sh` 必须全绿；它包含后端测试、前端构建、真实 HTTP 系统冒烟和 Alembic 旧库迁移烟测。
-- 系统冒烟使用 `scripts/system_smoke.sh`，只写临时 SQLite，不读取真实 `data/job_one_stop` 数据。
+- 提交前跑 `scripts/quality_gate.sh` 必须全绿；它包含后端测试、干净检出复跑、前端构建、真实 HTTP 系统冒烟和 Alembic 旧库迁移烟测。
+- 系统冒烟使用 `scripts/system_smoke.sh`，只写临时 SQLite，不读取真实 `data/job_one_stop` 数据。**三条冒烟/压测脚本(`system_smoke` / `load_smoke` / `chat_stress`)一律经 `testing_env_setup` 取配置与环境变量**,不要在脚本里自己 `cp config.yaml` 再关几段——漏项的代价是抢线上 bot 的 getUpdates、压掉机主当天那次晨间采集(红线 §3.3 每日一次、失败不重试)、以及真的调模型烧钱。
 - 注释/命名/语言风格**沿用周边代码**(后端中文注释、4 空格;前端 TS 风格)。
 
 ---
@@ -137,7 +142,9 @@ scripts/quality_gate.sh                                 # 完整质量门禁
 .venv/bin/python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000   # 后端
 cd frontend && npm install && npm run dev               # 前端 http://127.0.0.1:5173
 ```
-Windows 宿主机可用 `start_app.bat`(Docker 模式)或 `run_quality_check.bat`。**不要混用宿主机与 WSL 的环境**:venv 必须在运行所在的系统里创建。`opencli`(BOSS 采集)是 Windows 工具;公众号 / beBee 等纯 Python 来源在 WSL 即可运行。
+Windows 宿主机可用 `run_quality_check.bat`(经 wsl.exe 跑门禁)。**不要混用宿主机与 WSL 的环境**:venv 必须在运行所在的系统里创建。`opencli`(BOSS 采集)是 Windows 工具;公众号 / beBee 等纯 Python 来源在 WSL 即可运行。
+
+**部署方式只有两条,不要再加第三条**:单进程 `scripts/app.sh`(日常)与 Tauri 桌面安装包(不装开发环境的人),本地开发模式 `scripts/dev_wsl.sh` 只服务于改代码。Docker 曾作为第三条存在,2026-09-05 已整体移除——它的 compose 把库放在 `/data` 卷而 `general.data_dir` 指向无卷的 `/app/data/job_one_stop`,附件与备份重建即丢;而本机 SQLite 单用户应用从容器化里得不到抵得上这份维护面的收益。
 
 日常使用(非改代码)优先单进程部署模式:`scripts/app.sh start`——构建一次 `frontend/dist` 后由**看门狗子进程**(`setsid` 独立会话)循环拉起 `uvicorn`(:8000,前端由后端挂载);uvicorn 崩溃时看门狗自动退避重启(5→10→…→60s 封顶,活过 5 分钟则重置),`do_stop` 删哨兵文件 `data/app/run.watchdog` 通知看门狗干净退出。`stop`/`status`/`logs`/`update` 见脚本;与上面的开发模式共用 `./data/job_one_stop/` 数据库,两者不要同时启动。pid 文件(`data/app/backend.pid`)指向看门狗进程本身,不是 uvicorn——`is_running` 检查的是守护是否在。
 

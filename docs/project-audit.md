@@ -18,15 +18,15 @@
 | 类型 | 文件 | 状态 |
 |---|---|---|
 | 本地运行 | `README.md` / `QUICKSTART.md` / `scripts/dev_wsl.sh` | 本地开发优先，后端 `http://127.0.0.1:8000/`，前端 `http://127.0.0.1:5173/` |
-| Docker 运行 | `docker-compose.yml` / `start_app.bat` / `rebuild_app.bat` / `status_app.bat` / `stop_app.bat` | Windows 一键运行和部署入口，前后端统一 `http://127.0.0.1:8000/` |
+| 单进程部署 | `scripts/app.sh` | 日常使用入口，看门狗拉起 uvicorn，前后端统一 `http://127.0.0.1:8000/` |
+| 桌面安装包 | `src-tauri/` / `.github/workflows/release.yml` | 不装开发环境的入口，后端内置，CI 打包发布 |
 | 宿主机采集 | `tools/host_collect_boss.bat` / `tools/host_collect_zhilian.bat` / `tools/host_opencli_import.py` | BOSS/智联在宿主机运行 OpenCLI，CSV 自动导入主服务 |
 | WSL 开发运行器 | `scripts/dev_wsl.sh` | 管理本地后端、前端、PID 和日志 |
-| 部署自检 | `run_deploy_check.bat` / `scripts/deploy_check.sh` | 不依赖 `.venv`/`node_modules`，检查配置、Compose 和运行中服务探针 |
-| 质量门禁 | `run_quality_check.bat` / `scripts/quality_gate.sh` | 提交前必跑 |
+| 质量门禁 | `run_quality_check.bat` / `scripts/quality_gate.sh` | 提交前必跑；含干净检出复跑与 `config.example.yaml` 守卫 |
 | 系统冒烟 | `scripts/system_smoke.sh` | 启动真实后端，用临时 SQLite 跑业务闭环 |
 | 压力冒烟 | `scripts/load_smoke.sh` | 临时 SQLite，覆盖批量导入、并发评分和冲刺包耗时预算 |
 | 聊天压测 | `scripts/chat_stress.sh` | 临时 SQLite，覆盖长线程退化、并发写、边界输入和追问锚点正确性 |
-| 运维交接 | `docs/operations.md` | 数据位置、备份、Windows/WSL Docker 和新人接手路径 |
+| 运维交接 | `docs/operations.md` | 运行方式、数据位置、备份和新人接手路径 |
 
 ## 删除与清理
 
@@ -66,7 +66,7 @@
 | 今日冲刺包 | 已闭环 | 补评分、生成准备、创建跟进任务、输出 Markdown |
 | AI 状态 | 已闭环 | 只展示配置状态，不返回密钥或 Base URL 明文 |
 | 系统配置 | 已闭环 | AI 示例弹窗、来源配置、评分权重合计提示；后端拒绝非法权重和敏感字段写入；坏 YAML 会在配置页和诊断接口显示且可保存修复 |
-| 启停脚本 | 已闭环 | Docker Compose 后台启动、强制重建、状态查看、停止；失败时自动 5 秒关闭，不再无限等待按键 |
+| 启停脚本 | 已闭环 | `scripts/app.sh` 的 start/stop/status/logs/update/backup；看门狗子进程崩溃自动退避重启，哨兵文件通知干净退出 |
 | 部署诊断 | 已闭环 | `/api/health` 轻量探活，`/api/ready` 和 `/api/diagnostics/deployment` 输出数据库、配置、构建、来源和云端运行参数检查 |
 | 使用指南 | 已闭环 | 首次进入自动展示一次使用指南弹窗，可一键启动聚光灯引导（高亮顶栏/导航/指标并浮出说明气泡）；顶栏信息按钮随时重开引导；维护文档沉淀在 `docs/maintenance-guide.md` |
 | 前端健壮性 | 已闭环 | 顶层 `ErrorBoundary` 兜底渲染异常不白屏；`loadAll` 用 `allSettled`，单个接口失败只跳过对应区块并提示，其余仍可用；复制统一走 `copyToClipboard`（`navigator.clipboard` 失败回退 `execCommand`） |

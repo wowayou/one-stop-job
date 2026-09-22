@@ -4,7 +4,7 @@
 # =============================================
 
 # ==================== OpenCLI 配置 ====================
-# Docker 模式下，主服务不直接调用 OpenCLI。
+# 设了 JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false 时，主服务不直接调用 OpenCLI。
 # BOSS / 智联建议在宿主机运行 tools/host_collect_*.bat 或 tools/host_collect_opencli.sh，
 # 生成 CSV 后自动导入到 http://127.0.0.1:8000/api/jobs/import。
 opencli:

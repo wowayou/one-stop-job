@@ -1054,7 +1054,7 @@ DASHSCOPE_API_KEY=sk-...
               </p>
               <p>
                 部署方式：日常用单进程模式（<code>scripts/app.sh</code>），Key/配置改动即时生效或 <code>scripts/app.sh update</code>{" "}
-                后生效；Docker 是备用方案，那种部署下改 <code>.env</code> 才需要重启/重建容器。
+                后生效；桌面版同理，改完在应用内即时生效。
               </p>
             </div>
           </div>

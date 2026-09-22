@@ -12,6 +12,12 @@ import pytest
 from backend.app.services import ai as ai_module
 
 
+# 本模块的被测对象就是 `_chat` / `_providers` 本身，因此整体豁免 conftest 的
+# `no_unstubbed_model_calls`（它默认把 `_chat` 换成抛错的桩）。不联网靠的是各用例
+# 自己把 `openai.OpenAI` 换成桩，外加 conftest 的 `no_outbound_network` 兜底。
+pytestmark = pytest.mark.exercises_ai_chat
+
+
 @pytest.fixture(autouse=True)
 def _reset_settings_cache():
     """测试内会把 get_settings 缓存指向临时 config，结束后必须清掉，避免泄漏给后续测试。"""

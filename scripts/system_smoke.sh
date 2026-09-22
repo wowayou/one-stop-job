@@ -33,43 +33,17 @@ PY
 )"
 
 db_path="$tmp_dir/system-smoke.sqlite3"
-config_path="$tmp_dir/config.yaml"
 backend_log="$tmp_dir/backend.log"
 base_url="http://$HOST:$PORT"
-cp "$ROOT_DIR/config.yaml" "$config_path"
-# 拷贝真实 config.yaml 之后，必须把「会对外动作 / 会碰真实数据目录」的段全部关掉。
-# 只设 JOB_ONE_STOP_DATABASE_URL 是不够的：
-#   - telegram.enabled 留着 -> 冒烟进程会起长轮询，和线上实例抢同一个 bot 的 getUpdates,
-#     线上那个连吃 409 Conflict(实测一次门禁跑出 3 条)。
-#   - schedule.digest 留着 + general.data_dir 指向真实目录 -> 冒烟会读写真实的
-#     daily_digest_state.json,甚至在当天还没发过时**真的**发一次日清单并触发晨间采集,
-#     还把 last_collected 标成今天,把机主真正那次采集压掉(红线 §3.3 频率上限每日一次)。
-# 区域白名单一并中和：冒烟样例岗位都在「示例市」，真实白名单是别的城市；
-# 过滤逻辑由 tests/test_collect_triage.py 用自带配置覆盖。
-"$PYTHON" - "$config_path" "$tmp_dir" <<'PY'
-import sys
-
-import yaml
-
-path, tmp_dir = sys.argv[1], sys.argv[2]
-with open(path, encoding="utf-8") as fh:
-    cfg = yaml.safe_load(fh) or {}
-cfg.setdefault("collect", {}).setdefault("area_filter", {})["enabled"] = False
-# 出站与定时能力一律关闭：冒烟只测系统本身，不许联系任何外部对象、不许动真实状态文件。
-cfg.setdefault("telegram", {})["enabled"] = False
-cfg.setdefault("schedule", {}).setdefault("digest", {})["enabled"] = False
-cfg["schedule"]["digest"]["collect_first"] = False
-cfg.setdefault("automation", {})["mode"] = "manual"
-cfg.setdefault("updates", {})["enabled"] = False
-# 数据目录也隔离：digest 状态文件、聊天附件都不该落进真实 data/job_one_stop。
-cfg.setdefault("general", {})["data_dir"] = tmp_dir + "/data"
-with open(path, "w", encoding="utf-8") as fh:
-    yaml.safe_dump(cfg, fh, allow_unicode=True)
-PY
+# 配置中和 + 环境隔离都在这一层（见 scripts/lib/testing_config.py 的 docstring）：
+# 关掉 telegram / schedule.digest / automation / updates / ai.providers，
+# 把 general.data_dir 指向临时目录，并清空密钥与个人上下文仓库路径。
+source "$ROOT_DIR/scripts/lib/testing_env.sh"
+testing_env_setup "$ROOT_DIR" "$PYTHON" "$tmp_dir" "$db_path"
 
 (
   cd "$ROOT_DIR"
-  OPENAI_API_KEY="" OPENAI_BASE_URL="" JOB_ONE_STOP_CONFIG="$config_path" JOB_ONE_STOP_DATABASE_URL="sqlite:///$db_path" "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
+  "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
   echo "$!" >"$tmp_dir/backend.pid"
 )
 backend_pid="$(cat "$tmp_dir/backend.pid")"

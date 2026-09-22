@@ -46,28 +46,24 @@ PY
 
 db_path="$tmp_dir/chat-stress.sqlite3"
 inprocess_db_path="$tmp_dir/chat-stress-inprocess.sqlite3"
-config_path="$tmp_dir/config.yaml"
 backend_log="$tmp_dir/backend.log"
 base_url="http://$HOST:$PORT"
 
-# 临时 config：关掉 AI（压测绝不联网，CLAUDE.md §4）、关掉 Telegram 轮询、把附件目录挪进临时目录。
-"$PYTHON" - "$ROOT_DIR/config.yaml" "$config_path" "$tmp_dir/data" <<'PY'
-import sys
-
-import yaml
-
-src, dst, data_dir = sys.argv[1], sys.argv[2], sys.argv[3]
-config = yaml.safe_load(open(src, encoding="utf-8")) or {}
-config.setdefault("ai", {})["enabled"] = False
-config["ai"].pop("providers", None)
-config.setdefault("telegram", {})["enabled"] = False
-config.setdefault("general", {})["data_dir"] = data_dir
-yaml.safe_dump(config, open(dst, "w", encoding="utf-8"), allow_unicode=True)
-PY
+# 配置中和 + 环境隔离（见 scripts/lib/testing_config.py 的 docstring）。
+# 此前这里只关了 ai / telegram 并挪了 data_dir，schedule.digest 与 automation 原样留着：
+# 状态文件虽已隔离（新文件里没有 last_collected），但 collect_first=true 遇到当前时间
+# 已过 08:20 就会真的触发一次晨间采集（BOSS opencli 子进程）。
+#
+# AI 现在不再靠 `ai.enabled=false` 关，而是靠「删掉 ai.providers + 清空 OPENAI_API_KEY」
+# ——`is_ai_available()` 读不到任何 key 就为假，`ai_enabled` 随之为假，压测照旧跑规则模式。
+# 换这个口径是为了和 pytest 基线共用同一份中和清单（那边需要 ai.enabled 为真）。
+source "$ROOT_DIR/scripts/lib/testing_env.sh"
+testing_env_setup "$ROOT_DIR" "$PYTHON" "$tmp_dir" "$db_path"
+config_path="$TESTING_CONFIG_PATH"
 
 (
   cd "$ROOT_DIR"
-  OPENAI_API_KEY="" OPENAI_BASE_URL="" JOB_ONE_STOP_CONFIG="$config_path" JOB_ONE_STOP_DATABASE_URL="sqlite:///$db_path" "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
+  "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
   echo "$!" >"$tmp_dir/backend.pid"
 )
 backend_pid="$(cat "$tmp_dir/backend.pid")"
@@ -298,8 +294,7 @@ echo "== 进程内压测（Telegram 专属热路径 + 锚点正确性）=="
 # 这一段走不了 HTTP：回执反查只在 Telegram 轮询里调用；多候选也需要直接合成
 # （规则模式下没有 LLM，HTTP 路径拆不出多个候选）。
 cd "$ROOT_DIR"
-OPENAI_API_KEY="" OPENAI_BASE_URL="" \
-JOB_ONE_STOP_CONFIG="$config_path" \
+# 隔离环境变量已由 testing_env_setup 导出；这里只把库换成进程内那一个。
 JOB_ONE_STOP_DATABASE_URL="sqlite:///$inprocess_db_path" \
 PYTHONPATH="$ROOT_DIR" "$PYTHON" - <<'PY'
 from __future__ import annotations

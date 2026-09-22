@@ -481,7 +481,7 @@ function App() {
     if (sourceInfo?.status === "host_import_required") {
       const scriptName = sourceInfo.config.host_collection?.script ?? (sourceKey === "zhilian" ? "tools\\host_collect_zhilian.bat" : "tools\\host_collect_boss.bat");
       notify("warning", `${sourceInfo.label} 需要在宿主机采集后导入。`, [
-        `保持 start_app.bat 启动的服务运行，然后双击 ${scriptName}。`,
+        `保持本服务运行，然后在宿主机双击 ${scriptName}。`,
         "主服务会接收生成的 CSV；如 PATH 找不到 OpenCLI，可在脚本后追加 --opencli <path>。"
       ]);
       return;

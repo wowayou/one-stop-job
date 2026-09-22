@@ -36,14 +36,13 @@ one-stop-job/
 │   ├── host_collect_zhilian.bat    # Windows 智联采集
 │   └── host_collect_opencli.sh     # Linux/macOS 采集
 ├── scripts/             # 运维脚本
+│   ├── app.sh                # 单进程部署（start/stop/status/logs/update/backup）
 │   ├── quality_gate.sh       # 质量门禁
-│   ├── deploy_check.sh       # 部署检查
-│   ├── docker_doctor.sh      # Docker 诊断
+│   ├── lib/                  # 测试/冒烟共用的配置中和与环境隔离
 │   └── system_smoke.sh       # 系统冒烟测试
 ├── docs/                # 文档
 │   ├── maintenance-guide.md      # 日常使用指南
 │   ├── operations.md             # 运维手册
-│   ├── docker-optimization.md    # Docker 优化
 │   ├── data-flow.md              # 数据流架构
 │   ├── scoring-audit.md          # 当前评分规则审计
 │   └── testing-system.md         # 测试体系
@@ -53,8 +52,7 @@ one-stop-job/
 ├── .env                 # 环境变量（密钥）
 ├── requirements.txt     # Python 依赖（开发+测试）
 ├── requirements-runtime.txt  # Python 运行时依赖
-├── Dockerfile           # Docker 镜像定义
-├── docker-compose.yml   # Docker 编排
+├── src-tauri/           # 桌面版（Tauri + 内置后端）
 ├── README.md            # 项目主文档
 ├── QUICKSTART.md        # 快速开始指南
 └── CLAUDE.md            # 项目架构标准（AI 指南）
@@ -155,7 +153,7 @@ one-stop-job/
 | 入口 | 说明 |
 |------|------|
 | `README.md` | 项目介绍、功能概览 |
-| `QUICKSTART.md` | 快速开始（本地/Docker/Windows/Linux） |
+| `QUICKSTART.md` | 快速开始（单进程部署 / 桌面版 / 本地开发） |
 | `docs/maintenance-guide.md` | 日常使用流程 |
 | 系统「使用指南」弹窗 | 首次打开自动展示 |
 
@@ -172,9 +170,8 @@ one-stop-job/
 
 | 入口 | 说明 |
 |------|------|
-| `docs/operations.md` | 运行部署（单进程/本地开发/Docker）、数据备份、运行排障 |
-| `docs/docker-optimization.md` | 构建优化、故障排查 |
-| `scripts/deploy_check.sh` | 部署前自检 |
+| `docs/operations.md` | 运行部署（单进程/本地开发/桌面版）、数据备份、运行排障 |
+| `scripts/app.sh` | 单进程部署的启停、日志、更新、备份 |
 | `scripts/quality_gate.sh` | 质量门禁 |
 
 ---
@@ -219,7 +216,7 @@ scoring:
 | 文件 | 用途 |
 |------|------|
 | `requirements.txt` | **本地开发**：包含测试、代码检查等工具 |
-| `requirements-runtime.txt` | **运行时依赖集合**：被 `requirements.txt` 引用，Dockerfile 也直接使用 |
+| `requirements-runtime.txt` | **运行时依赖集合**：被 `requirements.txt` 引用，桌面版发布流水线也直接使用 |
 | `requirements-automation.txt` | **可选**：Playwright 等重依赖 |
 | `frontend/package.json` | 前端依赖（React、Vite、TypeScript） |
 
@@ -267,7 +264,6 @@ scoring:
    - 只列真实机器上必须用手验的项：跨平台安装、升级保数据、点击类交互、出站边界
 8. 在 GitHub 上把草稿 Release 转为正式发布
    - **只有正式 Release 会被应用内升级检查识别**（draft / pre-release 一律跳过）
-9. 部署时运行 `scripts/deploy_check.sh`
 
 ---
 
@@ -281,7 +277,6 @@ README.md ──────────┬──> QUICKSTART.md（快速开始�
                     └──> docs/
                          ├── maintenance-guide.md（日常使用）
                          ├── operations.md（运维手册）
-                         ├── docker-optimization.md（Docker 构建排障）
                          ├── data-flow.md（数据流）
                          ├── testing-system.md（测试体系）
                          ├── handoff.md（项目交接）
@@ -297,4 +292,4 @@ README.md ──────────┬──> QUICKSTART.md（快速开始�
 - **快速开始** → [QUICKSTART.md](../QUICKSTART.md)
 - **日常使用** → [docs/maintenance-guide.md](maintenance-guide.md)
 - **开发扩展** → [CLAUDE.md](../CLAUDE.md)
-- **故障排查** → 应用内 **设置 → 诊断**（版本/进程/.env/config.yaml/AI/网络 + 备份与脱敏日志）；再看 [docs/operations.md](operations.md) + [docs/docker-optimization.md](docker-optimization.md)
+- **故障排查** → 应用内 **设置 → 诊断**（版本/进程/.env/config.yaml/AI/网络 + 备份与脱敏日志）；再看 [docs/operations.md](operations.md)

@@ -2292,14 +2292,22 @@ def test_env_absolute_path_error_mentions_os(monkeypatch):
 # ==================== 配置回环与 chat id 容错 ====================
 
 
-def test_config_roundtrip_keeps_telegram_section(monkeypatch, tmp_path):
-    """GET /api/config → PUT 回环必须成功：config.yaml 自带 telegram 段，
-    白名单漏掉它会让 Web 设置保存与系统冒烟同时 400。"""
+def test_config_roundtrip_keeps_every_documented_section(monkeypatch, tmp_path):
+    """GET /api/config → PUT 回环必须成功且不丢段。
+
+    守的不变量：`CONFIG_TOP_LEVEL_ALLOWLIST` 不能漏掉任何**已文档化的**配置段——
+    漏一个就会让 Web 设置保存与系统冒烟同时 400（telegram 段就真踩过一次）。
+
+    基线取已入库的 `config.example.yaml` 而非机主的 `config.yaml`：后者被 gitignore，
+    干净检出里根本没有（此前这里 `shutil.copy` 它，缺文件直接 FileNotFoundError）。
+    模板同样带齐所有段，守的不变量一点没弱，还顺带盯住「新增配置段忘了加白名单」——
+    模板里写了、白名单里没有，这里就红。
+    """
     import shutil
     from pathlib import Path
 
     cfg = tmp_path / "config.yaml"
-    shutil.copy(Path(__file__).resolve().parents[1] / "config.yaml", cfg)
+    shutil.copy(Path(__file__).resolve().parents[1] / "config.example.yaml", cfg)
     monkeypatch.setenv("JOB_ONE_STOP_CONFIG", str(cfg))
     _db, main = _fresh_modules(monkeypatch, tmp_path, "config-roundtrip.sqlite3")
 
@@ -2307,14 +2315,12 @@ def test_config_roundtrip_keeps_telegram_section(monkeypatch, tmp_path):
         async for client in _client(main.app):
             got = (await client.get("/api/config")).json()
             assert "telegram" in got["config"]
-            before = got["config"]["telegram"]
-            resp = await client.put("/api/config", json={"config": got["config"]})
+            before = got["config"]
+            resp = await client.put("/api/config", json={"config": before})
             assert resp.status_code == 200, resp.text
-            # 断言 telegram 段**原样回来**，而不是某个写死的取值：本用例复制的是仓库
-            # 真实 config.yaml，`enabled` 是本机开关（本人开了 Telegram 就是 true），
-            # 拿它当期望值会让"改了自己的配置"表现成"测试挂了"。要守的不变量是
-            # 白名单没漏掉 telegram、回环不丢字段。
-            assert resp.json()["config"]["telegram"] == before
+            # 逐段原样回来，而不是挑某个写死的取值断言：模板里的开关值将来会变，
+            # 拿它当期望值会让"更新了模板"表现成"测试挂了"。
+            assert resp.json()["config"] == before
 
     asyncio.run(scenario())
 

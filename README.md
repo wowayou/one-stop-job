@@ -50,18 +50,7 @@ scripts/app.sh start
 
 日常操作：`scripts/app.sh status` / `logs` / `stop` / `update`。详见 [QUICKSTART.md](QUICKSTART.md)。
 
-### 方式二：Docker
-
-```bash
-git clone https://github.com/你的用户名/one-stop-job.git
-cd one-stop-job
-cp .env.template .env   # 按需填入 API Key
-docker compose up -d --build
-```
-
-访问 http://127.0.0.1:8000/
-
-### 方式三：桌面应用下载（无需任何开发环境）
+### 方式二：桌面应用下载（无需任何开发环境）
 
 前往 [Releases](../../releases) 页面，下载对应平台的安装包：
 - **Windows**: 下载 .msi 或 .exe，双击安装
@@ -83,7 +72,7 @@ docker compose up -d --build
 >
 > 桌面应用基于 [Tauri](https://tauri.app/) 构建，源码在 `src-tauri/`，由 [CI](.github/workflows/release.yml) 自动打包发布。
 
-### 方式四：日常使用（已装好依赖后）
+### 方式三：日常使用（已装好依赖后）
 
 ```bash
 scripts/app.sh start    # 启动（单进程，同时提供页面与 API）
@@ -93,7 +82,7 @@ scripts/app.sh logs     # 日志
 scripts/app.sh backup   # 数据备份
 ```
 
-> **Windows 用户**：双击 `start_app.bat`，或使用 WSL。
+> **Windows 用户**：装 [Releases](../../releases) 里的桌面安装包（方式二），或在 WSL 里用上面这些命令。
 
 <details>
 <summary><b>详细说明（含本地开发热更新模式）</b></summary>
@@ -106,7 +95,7 @@ scripts/app.sh backup   # 数据备份
 
 | 文档 | 说明 |
 |------|------|
-| [QUICKSTART.md](QUICKSTART.md) | 快速开始指南（本地 / Docker / Windows / Linux） |
+| [QUICKSTART.md](QUICKSTART.md) | 快速开始指南（单进程部署 / 桌面版 / 本地开发） |
 | [CLAUDE.md](CLAUDE.md) | 项目架构标准（AI 与人类共同遵守） |
 | [docs/maintenance-guide.md](docs/maintenance-guide.md) | 日常使用流程、维护入口、故障定位 |
 | [docs/user-manual.md](docs/user-manual.md) | 产品操作手册：首次使用、手动采集、自动驾驶、候选确认和故障处理 |
@@ -245,9 +234,6 @@ scripts/quality_gate.sh
 
 # 单独运行后端测试
 .venv/bin/python -m pytest -q
-
-# 部署前自检
-scripts/deploy_check.sh
 ```
 
 ## 📊 求职冲刺流程
@@ -266,16 +252,9 @@ scripts/deploy_check.sh
 | 前端 | React · Vite · TypeScript |
 | AI | OpenAI 兼容协议（可选） |
 | 采集 | httpx · BeautifulSoup · OpenCLI |
-| 部署 | Docker Compose / 单进程 shell 脚本 |
+| 部署 | 单进程 shell 脚本（`scripts/app.sh`）/ Tauri 桌面安装包 |
 
 ## 🔧 常见问题
-
-<details>
-<summary><b>Docker 构建太慢？</b></summary>
-
-推荐使用本地开发模式（5-10 秒启动）。如需 Docker，在 `.env` 配置镜像源。详见 [docs/docker-optimization.md](docs/docker-optimization.md)。
-
-</details>
 
 <details>
 <summary><b>No module named uvicorn？</b></summary>
@@ -287,7 +266,7 @@ scripts/deploy_check.sh
 <details>
 <summary><b>database is locked？</b></summary>
 
-不要同时运行本地开发和 Docker。选择一种方式运行。
+同一个 SQLite 库被两个后端同时占用了。单进程模式（`scripts/app.sh`）、本地开发模式（`scripts/dev_wsl.sh`）和桌面版内置后端只能同时跑一个。
 
 </details>
 

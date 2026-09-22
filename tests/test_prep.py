@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from backend.app.models import Company, Job, UserProfile
 from backend.app.services import ai
 from backend.app.services.prep import build_interview_prep
@@ -34,9 +36,9 @@ def _minimal_ai_config(monkeypatch, tmp_path):
     """把 `ai.enabled` 打开、且**不配 providers**，让 `is_ai_available()` 走
     `OPENAI_API_KEY` 环境变量这条路。
 
-    不隔离的话会继承开发机真实 config.yaml 的 `ai.providers`——按 `services/ai.py::_providers`
-    的语义，一旦配了 providers 就不再回退 `OPENAI_*` 环境变量，于是本文件里"设了 key 就该
-    调模型"的用例全部拿到 None（曾导致 2 个用例失败）。
+    按 `services/ai.py::_providers` 的语义，一旦配了 `ai.providers` 就不再回退 `OPENAI_*`
+    环境变量，本文件里"设了 key 就该调模型"的用例会全部拿到 None。conftest 的基线配置已经
+    不带 providers，这里显式再写一遍是为了让用例的前提自带在用例里，不依赖基线的细节。
     """
     from backend.app import config
 
@@ -62,6 +64,9 @@ def test_tailor_returns_none_when_ai_unavailable(monkeypatch, tmp_path):
     assert ai.tailor_interview_prep_llm({"title": "独立站运营"}, base) is None
 
 
+# 下面四个用例桩的是 `ai._client`（client 工厂），`_chat` 的重试/解析逻辑仍是被测路径，
+# 因此豁免 conftest 的 `no_unstubbed_model_calls`。不联网靠 `_FakeClient`。
+@pytest.mark.exercises_ai_chat
 def test_tailor_merges_full_ai_output(monkeypatch, tmp_path):
     _minimal_ai_config(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -72,6 +77,7 @@ def test_tailor_merges_full_ai_output(monkeypatch, tmp_path):
     assert out == full
 
 
+@pytest.mark.exercises_ai_chat
 def test_tailor_falls_back_per_missing_or_empty_key(monkeypatch, tmp_path):
     _minimal_ai_config(monkeypatch, tmp_path)
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
@@ -86,12 +92,14 @@ def test_tailor_falls_back_per_missing_or_empty_key(monkeypatch, tmp_path):
     assert out["star_stories"] == "BASE-star_stories"  # 缺失 → 回退模板
 
 
+@pytest.mark.exercises_ai_chat
 def test_tailor_returns_none_on_bad_json(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.setattr(ai, "_client", lambda: _FakeClient("抱歉我无法以 JSON 回答"))
     assert ai.tailor_interview_prep_llm({}, {key: "x" for key in PREP_KEYS}) is None
 
 
+@pytest.mark.exercises_ai_chat
 def test_tailor_returns_none_on_client_error(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     # 多 provider 容错引入了退避重试；桩掉 sleep，避免这个「全失败」用例真等退避秒数。

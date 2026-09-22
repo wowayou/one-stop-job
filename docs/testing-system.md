@@ -24,12 +24,12 @@ run_quality_check.bat
 - 系统 HTTP 冒烟：`scripts/system_smoke.sh`
 - 旧库迁移烟测：临时旧版 SQLite `jobs` 表升级到 Alembic head，并验证 `job_source_links` 与 `canonical_key` 回填。
 
-Docker 构建不强制纳入一键门禁，因为本地/CI 可能没有 Docker 或没有网络构建镜像。每次改 Dockerfile、compose 或 bat 启停逻辑后，额外手动跑：
+桌面版打包不纳入一键门禁，因为本地不一定有 Rust/Tauri 工具链；它由 `.github/workflows/release.yml` 在打标签时执行。改过 `scripts/app.sh` 启停逻辑后，额外手动跑：
 
 ```bash
-docker compose up -d --build
+scripts/app.sh start
 curl http://127.0.0.1:8000/api/health
-docker compose down
+scripts/app.sh stop
 ```
 
 本地压力冒烟不纳入默认门禁，避免拉长每次提交耗时。需要评估导入、列表、并发评分和冲刺包性能时运行：
@@ -139,7 +139,7 @@ scripts/system_smoke.sh
 
 | 模块 | 自动测试 | 系统冒烟 | 手动检查 |
 |---|---|---|---|
-| 启动/停止 | `bash -n scripts/dev_wsl.sh` | Uvicorn 临时启动和健康检查 | `start_app.bat` / `status_app.bat` / `stop_app.bat`，并确认 `http://127.0.0.1:8000/` 随容器启停 |
+| 启动/停止 | `bash -n scripts/dev_wsl.sh` | Uvicorn 临时启动和健康检查 | `scripts/app.sh start` / `status` / `stop`，并确认 `http://127.0.0.1:8000/` 随之起停 |
 | 岗位池 | `test_api.py`、`test_importer.py` | 新增、导入、去重、来源筛选、状态回退、批量更新 | 搜索、筛选、页码跳转、批量状态、抽屉打开/关闭 |
 | 公司调研 | `test_api.py` | 公司更新、证据新增、公司详情 | 公司分页、从公司打开岗位 |
 | 匹配评分 | `test_scoring.py`、`test_api.py` | 画像更新、评分生成 | 排序队列、硬阻断展示、个人画像同高滚动 |
@@ -202,7 +202,7 @@ CONCURRENCY=12
 
 每次大改交互后，用真实浏览器检查：
 
-1. `start_app.bat` 启动，`status_app.bat` 显示 app 容器 running；代码更新后用 `rebuild_app.bat` 验证强制重建。
+1. `scripts/app.sh start` 启动，`scripts/app.sh status` 显示守护进程在跑且健康检查通过；拉取更新后用 `scripts/app.sh update` 验证重建与重启。
 2. 打开 `http://127.0.0.1:8000/`。
 3. 岗位池：搜索、来源筛选、状态筛选、10 条分页、页码跳转、表头固定、批量状态/收藏、打开岗位。
 4. 岗位抽屉：状态可逆切换、收藏、跟进、评分、准备、点击空白关闭。
@@ -211,8 +211,8 @@ CONCURRENCY=12
 7. 面试准备：准备队列在面板内滚动，右侧草稿不被拉到页面底部。
 8. 跟进任务：新增、改标题、改截止日期、完成、重开、删除、打开关联岗位。
 9. 顶部指标卡：岗位总数 / 待调研 / 高潜岗位 / 最高分 / 草稿能跳到对应视图。
-10. `stop_app.bat` 后 `status_app.bat` 不再显示运行容器，`http://127.0.0.1:8000/` 不应继续访问到旧前端。
-11. 系统配置：来源卡显示 BOSS / beBee / 智联模板状态；Docker 模式下 BOSS/智联提示宿主机采集导入，智联默认禁用。
+10. `scripts/app.sh stop` 后 `status` 不再显示运行进程，`http://127.0.0.1:8000/` 不应继续访问到旧前端。
+11. 系统配置：来源卡显示 BOSS / beBee / 智联模板状态；`JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false` 时 BOSS/智联提示宿主机采集导入，智联默认禁用。
 12. 使用指南：首次进入自动展示一次；关闭后顶栏信息按钮仍可重新打开。
 13. 宿主机采集只做人工低频验证，不并发跑多个平台；BOSS/智联登录态过期时先在浏览器重新登录。
 
@@ -220,7 +220,7 @@ CONCURRENCY=12
 
 AI 可以保持未配置，本节先验证本地规则与交互：
 
-1. 打开 `http://127.0.0.1:5173/`（本地开发）或 `http://127.0.0.1:8000/`（Docker），进入“聊天”。确认聊天页不再显示采集/导入工具栏，主要空间留给消息。
+1. 打开 `http://127.0.0.1:5173/`（本地开发）或 `http://127.0.0.1:8000/`（单进程部署），进入“聊天”。确认聊天页不再显示采集/导入工具栏，主要空间留给消息。
 2. 新建通用聊天，发送“这个机会值不值得继续了解？”。点击发送后，自己的消息应立即出现并显示“已发送”，随后出现规则建议。
 3. 点击标题旁的铅笔，改名并保存。刷新页面后，新名称应保留，并同步显示在左侧会话列表。
 4. 在“可发送草稿”点击“复制”。按钮应立即变为“已复制”；粘贴到记事本核对正文。拒绝浏览器剪贴板权限时应显示“复制失败”。
@@ -230,7 +230,7 @@ AI 可以保持未配置，本节先验证本地规则与交互：
 8. 新建岗位专属聊天，确认左侧只复用同一岗位会话，“查看岗位”能打开对应岗位详情。
 9. 把窗口缩到约 620px 宽，确认会话列表转到消息区上方，标题、输入框、发送按钮没有横向溢出。
 
-本地数据库在首次成功启动后才创建，默认位置为 `data/job_one_stop/job_one_stop.sqlite3`。备份命令应在后端完成首次启动后执行；Docker 数据则在 `job_one_stop_data` volume 中，不在这个路径。
+本地数据库在首次成功启动后才创建，默认位置为 `data/job_one_stop/job_one_stop.sqlite3`。备份命令应在后端完成首次启动后执行；桌面版用它自己的数据目录，不在这个路径。
 
 ## 后续可扩展
 

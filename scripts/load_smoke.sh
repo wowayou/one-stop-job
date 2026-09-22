@@ -35,14 +35,18 @@ PY
 )"
 
 db_path="$tmp_dir/load-smoke.sqlite3"
-config_path="$tmp_dir/config.yaml"
 backend_log="$tmp_dir/backend.log"
 base_url="http://$HOST:$PORT"
-cp "$ROOT_DIR/config.yaml" "$config_path"
+# 配置中和 + 环境隔离（见 scripts/lib/testing_config.py 的 docstring）。
+# 这里此前只清空 OPENAI_*、照抄真实 config.yaml，代价是三件事同时发生：
+# 起 Telegram 长轮询抢线上 bot 的 getUpdates；读写真实 daily_digest_state.json 并
+# 可能压掉机主当天那次晨间采集；`/api/sprint/brief` 经 ai.providers 真的调模型。
+source "$ROOT_DIR/scripts/lib/testing_env.sh"
+testing_env_setup "$ROOT_DIR" "$PYTHON" "$tmp_dir" "$db_path"
 
 (
   cd "$ROOT_DIR"
-  OPENAI_API_KEY="" OPENAI_BASE_URL="" JOB_ONE_STOP_CONFIG="$config_path" JOB_ONE_STOP_DATABASE_URL="sqlite:///$db_path" "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
+  "$PYTHON" -m uvicorn backend.app.main:app --host "$HOST" --port "$PORT" >"$backend_log" 2>&1 &
   echo "$!" >"$tmp_dir/backend.pid"
 )
 backend_pid="$(cat "$tmp_dir/backend.pid")"

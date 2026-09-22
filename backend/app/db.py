@@ -66,7 +66,8 @@ def init_db() -> None:
             last_exc = exc
             time.sleep(0.5 * (attempt + 1))
     raise RuntimeError(
-        "SQLite 数据库仍被占用。请先运行 stop_app.bat，或关闭其它正在使用同一 data/job_one_stop.sqlite3 的后端进程。"
+        "SQLite 数据库仍被占用。请先运行 scripts/app.sh stop，或关闭其它正在使用同一 data/job_one_stop.sqlite3 的后端进程"
+        "（单进程模式、本地开发模式和桌面版内置后端三者只能同时跑一个）。"
     ) from last_exc
 
 

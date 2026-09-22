@@ -101,7 +101,7 @@ check_port_free_or_owned() {
   fi
 
   echo "端口 $port 已被 pid $listener_pid 占用,不是本脚本(scripts/app.sh)管理的进程。" >&2
-  echo "可能是本地开发模式后端(scripts/dev_wsl.sh)或 Docker(docker compose)在运行,请先停掉再启动单进程模式。" >&2
+  echo "可能是本地开发模式后端(scripts/dev_wsl.sh)或桌面版内置后端在运行,请先停掉再启动单进程模式。" >&2
   exit 1
 }
 

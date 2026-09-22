@@ -22,13 +22,14 @@
 
 - **日常使用（非改代码）：单进程部署 `scripts/app.sh start`**——构建一次 `frontend/dist` 后只跑一个 uvicorn 进程（:8000，前端由后端静态托管）。`status`/`logs`/`stop`/`update` 见脚本。
 - **改代码/调试：本地开发热更新**——后端 Uvicorn `:8000` + 前端 Vite `:5173`。
-- **备用：Docker Compose**——仅 Windows 无 WSL 一键运行（`start_app.bat` 等调用 Docker Compose）。
-- 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，**不能同时启动**；Docker 用独立 volume `job_one_stop_data`，与前两者不互通。
-- `config.yaml` 是**本地 gitignored 文件**，由 `config.example.yaml` 生成（`app.sh` 首启与 Dockerfile 都会 ensure）；密钥只进 `.env`。AI Provider/Key 走「设置 → AI」弹窗管理，Key 只写 `.env`，单进程部署同进程内即时生效。
+- **不装开发环境（含 Windows 无 WSL）：桌面安装包**——[Releases](../../../releases) 下载，后端内置，由 CI 打包。
+- 单进程部署与本地开发共用 `./data/job_one_stop/` 数据库、同监听 :8000，**不能同时启动**；桌面版用它自己的数据目录，与前两者不互通。
+- `config.yaml` 是**本地 gitignored 文件**，由 `config.example.yaml` 生成（`app.sh` 首启会 ensure）；密钥只进 `.env`。AI Provider/Key 走「设置 → AI」弹窗管理，Key 只写 `.env`，单进程部署同进程内即时生效。
+- Docker 曾是第三档运行方式，2026-09-05 已整体移除（compose 的卷映射会丢附件与备份，且本机 SQLite 单用户应用从容器化里收益不足）。不要再加回来。
 
 BOSS / 智联已改为宿主机采集导入：
 
-- Docker 模式下 `JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false`，服务端不调用 OpenCLI。
+- `JOB_ONE_STOP_OPENCLI_SERVER_ENABLED=false` 时服务端不调用 OpenCLI。
 - `tools/host_collect_boss.bat` / `tools/host_collect_zhilian.bat` 在宿主机运行 OpenCLI。
 - `tools/host_opencli_import.py` 从 `/api/sources` 读取命令，执行后把 CSV 转 UTF-8 并 POST 到 `/api/jobs/import`。
 - 脚本有临时锁，避免重复双击或并发跑多个平台。
@@ -36,9 +37,10 @@ BOSS / 智联已改为宿主机采集导入：
 ## 关键文件
 
 - `README.md` / `QUICKSTART.md`：本地优先的运行入口。
-- `Dockerfile` / `docker-compose.yml`：Docker 部署入口。
-- `requirements-runtime.txt`：运行时依赖集合（Dockerfile 和本地开发共用）；`requirements.txt` 在此基础上追加本地测试依赖。
-- `scripts/docker_app.ps1`：Windows bat 的 Docker Compose helper，处理普通路径和 WSL UNC 路径。
+- `scripts/app.sh`：单进程部署入口（看门狗 + start/stop/status/logs/update/backup）。
+- `src-tauri/` + `.github/workflows/release.yml`：桌面版与发布流水线。
+- `requirements-runtime.txt`：运行时依赖集合（发布流水线和本地开发共用）；`requirements.txt` 在此基础上追加本地测试依赖。
+- `scripts/lib/testing_config.py` + `scripts/lib/testing_env.sh`：测试/冒烟配置中和的唯一实现，pytest 基线与三条冒烟脚本共用。
 - `backend/app/main.py`：FastAPI 路由、采集生命周期、评分/准备/冲刺包接口、前端静态托管。
 - `backend/app/services/sources.py`：通用来源状态；容器模式下 OpenCLI 来源返回 `host_import_required`。
 - `tools/host_opencli_import.py`：宿主机 OpenCLI 采集并导入。
@@ -46,7 +48,7 @@ BOSS / 智联已改为宿主机采集导入：
 - `scripts/quality_gate.sh`：质量门禁。
 - `scripts/system_smoke.sh`：隔离数据库的真实 HTTP 系统冒烟。
 - `docs/testing-system.md`：测试分层、门禁和手动冒烟清单。
-- `docs/operations.md`：运行、数据位置、备份、Windows/WSL Docker 和接手路径。
+- `docs/operations.md`：运行方式、数据位置、备份和接手路径。
 - `docs/maintenance-guide.md`：日常使用闭环、维护入口、故障定位和变更红线。
 - `docs/data-flow.md` / `docs/scoring-audit.md`：数据流图、评分排序审计。
 - `docs/project-audit.md`：项目结构、入口、冗余清理和风险收敛记录。
@@ -84,14 +86,9 @@ cd frontend && npm run dev
 
 访问 `http://127.0.0.1:5173/`。
 
-备用（Docker）：
+不装开发环境时装 [Releases](../../../releases) 里的桌面安装包（后端内置，:8000）。
 
-```bash
-docker compose up -d --build   # 访问 :8000
-docker compose down
-```
-
-单进程部署与本地开发共用同一份 SQLite、同端口，不要同时启动；也不要让 Docker 容器和它们混用同一份数据。
+单进程部署与本地开发共用同一份 SQLite、同端口，不要同时启动；桌面版内置后端也不要和它们同时跑。
 
 ## 维护红线
 
@@ -116,9 +113,9 @@ docker compose down
    - 现状：保持轻量实现。
    - 下一步：如需要深链，再引入 `react-router-dom` 或手写 `history.pushState`。
 
-3. Docker 镜像构建没有纳入自动门禁。
-   - 现状：`quality_gate.sh` 不要求本机有 Docker 或网络。
-   - 下一步：改 Dockerfile/compose 后手动跑 `docker compose up -d --build` 和 `docker compose down`。
+3. 桌面版打包没有纳入自动门禁。
+   - 现状：`quality_gate.sh` 不要求本机有 Rust/Tauri 工具链；打包由 `.github/workflows/release.yml` 在打标签时执行。
+   - 下一步：改 `src-tauri/` 或版本号后，先跑 `.venv/bin/python scripts/sync_version.py` 与 `pytest tests/test_version_sync.py`，再看 CI 产物。
 
 ## 给下一位 AI / 维护者的指令
 
@@ -134,7 +131,7 @@ docker compose down
 - 新岗位来源必须走 Collector -> normalizer -> importer。
 - 抓取/解析失败必须记录 skipped reason。
 - 密钥只放 .env，不能进 config.yaml 或前端。
-- 默认运行口径：日常用单进程部署 scripts/app.sh，改代码用本地开发热更新，Docker 仅 Windows 无 WSL 备用；BOSS/智联走宿主机采集导入。
+- 默认运行口径：日常用单进程部署 scripts/app.sh，改代码用本地开发热更新，不装开发环境用桌面安装包；BOSS/智联走宿主机采集导入。Docker 已移除，不要加回来。
 - 外部个人仓库读只走 ContextRepository 白名单；写只有「写入看板」经 ContextWriter 插入一行，AST 绊线锁定，不得新增写入路径。
 
 测试要求：
