@@ -406,15 +406,18 @@ function App() {
     setResearch([]);
     setJobEvents([]);
     // 公司 / 评分 / 准备并发拉取：减少串行往返，单个失败不拖垮其余区块。
-    const [companyResult, scoresResult, prepResult, eventsResult] = await Promise.allSettled([
+    const [companyResult, scoresResult, prepResult, eventsResult, detailResult] = await Promise.allSettled([
       job.company_id
         ? api<Company & { research_items: ResearchItem[] }>(`/api/companies/${job.company_id}`)
         : Promise.resolve(null),
       api<FitScore[]>(`/api/jobs/${job.id}/score`),
       api<InterviewPrep | null>(`/api/jobs/${job.id}/prep`),
-      api<ApplicationEvent[]>(`/api/jobs/${job.id}/events`)
+      api<ApplicationEvent[]>(`/api/jobs/${job.id}/events`),
+      api<Job>(`/api/jobs/${job.id}`)
     ]);
     if (requestId !== openJobRequestRef.current) return;
+    // 详情比列表多带 snapshot_changes（快照变更历史），拿到就替换掉列表快照。
+    if (detailResult.status === "fulfilled" && detailResult.value) setSelectedJob(detailResult.value);
     if (companyResult.status === "fulfilled" && companyResult.value) {
       setSelectedCompany(companyResult.value);
       setResearch(companyResult.value.research_items ?? []);
@@ -1020,7 +1023,7 @@ function App() {
     <div className={`app-shell${sidebarCollapsed ? " sidebar-collapsed" : ""}`}>
       <aside className="sidebar" aria-label="主导航">
         <div className="brand">
-          <div className="brand-mark" title="job-one-stop · 本地求职助手" aria-label="job-one-stop · 本地求职助手">J1</div>
+          <div className="brand-mark" title="job-one-stop · 本地求职助手" aria-label="job-one-stop · 本地求职助手"><img src="/app-icon.png" alt="" /></div>
           <button
             type="button"
             className="sidebar-toggle"
@@ -1064,6 +1067,45 @@ function App() {
           <Info size={17} />
           <span className="nav-label">使用指南</span>
         </button>
+        <div className="run-strip automation-panel" data-tour="automation" aria-label="自动驾驶控制">
+          <div className="automation-panel-row">
+            <span>自动驾驶</span>
+            <div className="segmented">
+              <button className={automation?.mode !== "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("manual")}>关</button>
+              <button className={automation?.mode === "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("autopilot")}>开</button>
+            </div>
+          </div>
+          <div className="automation-panel-row">
+            <span>求职面</span>
+            <div className="segmented">
+              {(["core", "adjacent", "exploratory"] as const).map((level) => (
+                <button
+                  key={level}
+                  className={(automation?.reach_level ?? "core") === level ? "active" : ""}
+                  disabled={toolbarBusy}
+                  onClick={() => updateAutomation(automation?.mode ?? "manual", level)}
+                >
+                  {level === "core" ? "核心" : level === "adjacent" ? "相邻" : "探索"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="automation-panel-stats">
+            <span>发现 <strong>{automation?.latest_counts.found ?? 0}</strong></span>
+            <span>硬拦截 <strong>{automation?.latest_counts.hard_blocked ?? 0}</strong></span>
+            <span>待确认 <strong>{automation?.latest_counts.pending ?? 0}</strong></span>
+          </div>
+          <div className="automation-panel-actions">
+            <button className="small-action" onClick={runAutomationScan} disabled={toolbarBusy}>
+              {hasBusy(busy, "automation-scan") ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+              立即扫描
+            </button>
+            <button className="danger-action" onClick={() => updateAutomation("manual")} disabled={toolbarBusy || automation?.mode !== "autopilot"}>
+              <Square size={13} />
+              停止
+            </button>
+          </div>
+        </div>
         <div className="run-strip">
           <span>{latestRun ? `最近采集 · ${latestRun.source}` : "最近采集"}</span>
           <strong>{latestRun?.status ?? "未运行"}</strong>
@@ -1113,7 +1155,7 @@ function App() {
             {appVersion ? `v${appVersion}` : "读取中"} · {appVersion ? "后端已连接" : "后端未就绪"}
           </strong>
           <small>
-            {`自动驾驶 ${automation?.mode === "autopilot" ? "开" : "关"} · 更新检查 ${updateCheckLabel(updateInfo)}`}
+            {`更新检查 ${updateCheckLabel(updateInfo)}`}
           </small>
         </button>
         {updateInfo?.status === "update_available" && (
@@ -1136,16 +1178,8 @@ function App() {
 
       <main className="workspace">
         <header className="topbar">
-          <div>
-            <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
-            <p>
-              {activeNav === "chat"
-                ? "把拿不准的事丢进来,先按规则判断再继续管理岗位。"
-                : "岗位发现、公司证据、匹配评分、准备材料都留在本机。"}
-            </p>
-          </div>
-          {activeNav !== "chat" && (
-            <div className="toolbar-actions">
+          <h1>{navItems.find((item) => item.id === activeNav)?.label}</h1>
+          <div className="toolbar-actions">
               <button className="icon-button" title="打开使用指南" onClick={openUsageGuide}>
                 <Info size={18} />
               </button>
@@ -1188,48 +1222,7 @@ function App() {
                 新增岗位
               </button>
             </div>
-          )}
         </header>
-
-        <div className="automation-topbar" data-tour="automation" aria-label="自动驾驶控制">
-          <div className="automation-topbar-mode">
-            <span>自动驾驶</span>
-            <div className="segmented">
-              <button className={automation?.mode !== "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("manual")}>关</button>
-              <button className={automation?.mode === "autopilot" ? "active" : ""} disabled={toolbarBusy} onClick={() => updateAutomation("autopilot")}>开</button>
-            </div>
-          </div>
-          <div className="automation-topbar-mode">
-            <span>求职面</span>
-            <div className="segmented">
-              {(["core", "adjacent", "exploratory"] as const).map((level) => (
-                <button
-                  key={level}
-                  className={(automation?.reach_level ?? "core") === level ? "active" : ""}
-                  disabled={toolbarBusy}
-                  onClick={() => updateAutomation(automation?.mode ?? "manual", level)}
-                >
-                  {level === "core" ? "核心" : level === "adjacent" ? "相邻" : "探索"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="automation-topbar-stats">
-            <span>发现 <strong>{automation?.latest_counts.found ?? 0}</strong></span>
-            <span>硬拦截 <strong>{automation?.latest_counts.hard_blocked ?? 0}</strong></span>
-            <span>待确认 <strong>{automation?.latest_counts.pending ?? 0}</strong></span>
-          </div>
-          <div className="automation-topbar-actions">
-            <button className="small-action" onClick={runAutomationScan} disabled={toolbarBusy}>
-              {hasBusy(busy, "automation-scan") ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
-              立即扫描
-            </button>
-            <button className="danger-action" onClick={() => updateAutomation("manual")} disabled={toolbarBusy || automation?.mode !== "autopilot"}>
-              <Square size={13} />
-              停止自动化
-            </button>
-          </div>
-        </div>
 
         {notice && <NoticeBanner notice={notice} onClose={() => setNotice(null)} />}
 
