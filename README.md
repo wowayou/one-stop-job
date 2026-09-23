@@ -279,6 +279,14 @@ scripts/quality_gate.sh
 3. 测试不得联网，使用 fixtures
 4. 提交前确保质量门禁全绿
 
+## ❤️ 支持创作者
+
+如果 job-one-stop 帮到了你，可以自愿支持一下作者的创作：
+
+👉 [在 eigentime.org 支持](https://eigentime.org/support?from=one-stop-job)
+
+支持完全出于自愿，不对应任何额外功能，也不影响免费使用。应用本身不接入任何支付、不收集赞助信息，链接只在系统浏览器里打开。
+
 ## 📄 许可
 
 MIT

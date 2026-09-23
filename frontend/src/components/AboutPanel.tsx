@@ -1,7 +1,7 @@
-import { AlertCircle, CheckCircle2, Download, ExternalLink, Info, Loader2, RefreshCw, WifiOff } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, ExternalLink, Heart, Info, Loader2, RefreshCw, WifiOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api, errorMessage, openExternal } from "../api";
-import type { NoticeKind, UpdateCheckResult } from "../types";
+import type { AiUsageSummary, NoticeKind, UpdateCheckResult } from "../types";
 
 /** 设置 → 关于：当前版本、手动检查更新、状态与下载入口。
  *
@@ -13,6 +13,19 @@ import type { NoticeKind, UpdateCheckResult } from "../types";
  * 这里只渲染后端给的结果；`status` 的五种取值各有独立文案，尤其 `offline` 绝不能显示成
  * 「已是最新」。
  */
+
+// 自愿赞助入口：统一指向 eigentime.org/support（而不是直接指向收款平台），方便以后换/增平台只改那一处。
+// from=one-stop-job：已在 /support 的 allowlist 里单独登记本项目，用专属值便于归因（未入列会被归为 other）。
+// 本地优先：不接任何支付/埋点/后端，仅用系统浏览器打开外部页。
+const SUPPORT_URL = "https://eigentime.org/support?from=one-stop-job";
+
+const USAGE_PURPOSE_LABELS: Record<string, string> = {
+  extract: "材料抽取",
+  prep: "面试准备",
+  decision: "决策分析",
+  probe: "连接测试",
+  other: "其他"
+};
 
 const STATUS_META: Record<UpdateCheckResult["status"], { label: string; tone: "ok" | "info" | "warn" | "fail" }> = {
   update_available: { label: "有新版本", tone: "info" },
@@ -48,6 +61,7 @@ export function AboutPanel({ onNotify }: { onNotify: (kind: NoticeKind, message:
   const [checking, setChecking] = useState(false);
   const [notesOpen, setNotesOpen] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [usage, setUsage] = useState<AiUsageSummary | null>(null);
 
   async function check(force: boolean) {
     setChecking(true);
@@ -74,6 +88,20 @@ export function AboutPanel({ onNotify }: { onNotify: (kind: NoticeKind, message:
       })
       .catch((err) => {
         if (active) setFailure(errorMessage(err, "检查更新失败"));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    api<AiUsageSummary>("/api/ai/usage")
+      .then((data) => {
+        if (active) setUsage(data);
+      })
+      .catch(() => {
+        /* 用量只是参考信息，拿不到就不显示，不打扰。 */
       });
     return () => {
       active = false;
@@ -189,6 +217,63 @@ export function AboutPanel({ onNotify }: { onNotify: (kind: NoticeKind, message:
           不携带任何本地数据；在 <code>config.yaml</code> 的 <code>updates.enabled</code> 置 false 即完全关闭。
         </p>
       </fieldset>
+
+      <fieldset className="about-card">
+        <legend>支持创作者</legend>
+        <p className="about-note">
+          job-one-stop 由个人开发者 Eigentime 维护——平时也记录 AI、SEO、建站与工具实践，
+          并做一些自己在用的免费 / 开源小项目。如果它帮到了你，可以自愿支持一下。
+          支持完全出于自愿，不对应任何额外功能，也不影响免费使用。
+        </p>
+        <div className="about-actions">
+          <button type="button" className="primary-action" onClick={() => open(SUPPORT_URL, "支持页")}>
+            <Heart size={15} />
+            支持创作者
+          </button>
+        </div>
+        <p className="about-note muted">
+          链接用系统浏览器打开 <code>eigentime.org/support</code>，赞助在外部页面完成；
+          应用本身不接入任何支付、不收集赞助信息。
+        </p>
+      </fieldset>
+
+      {usage && usage.calls > 0 && (
+        <fieldset className="about-card">
+          <legend>AI 用量</legend>
+          <div className="about-version-row">
+            <div>
+              <span>累计调用</span>
+              <strong>{usage.calls} 次</strong>
+            </div>
+            <div>
+              <span>输入 tokens</span>
+              <strong>{usage.prompt_tokens.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>输出 tokens</span>
+              <strong>{usage.completion_tokens.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>合计 tokens</span>
+              <strong>{usage.total_tokens.toLocaleString()}</strong>
+            </div>
+          </div>
+          {usage.by_purpose.length > 0 && (
+            <ul className="snapshot-change-list">
+              {usage.by_purpose.map((row) => (
+                <li key={row.purpose}>
+                  <span className="snapshot-change-item">
+                    {USAGE_PURPOSE_LABELS[row.purpose] ?? row.purpose}：{row.calls} 次 · {row.total_tokens.toLocaleString()} tokens
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="about-note muted">
+            只在本机统计 token 计数，不存密钥、不存请求/响应内容。具体计费以各 provider 账单为准。
+          </p>
+        </fieldset>
+      )}
     </div>
   );
 }
