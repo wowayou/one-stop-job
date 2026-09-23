@@ -19,6 +19,7 @@ from ..models import (
     ApplicationEvent,
     FitScore,
     Job,
+    JobSnapshotChange,
     JobSourceLink,
     UserProfile,
 )
@@ -80,10 +81,28 @@ def query_jobs(
     return jobs, source_links
 
 
+def snapshot_changes(session: Session, job_id: int, limit: int = 20) -> list[dict]:
+    """岗位快照变更历史（最新在前），供岗位抽屉展示时间线。只读。"""
+    if not job_id:
+        return []
+    rows = session.exec(
+        select(JobSnapshotChange)
+        .where(JobSnapshotChange.job_id == job_id)
+        .order_by(JobSnapshotChange.changed_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {"changed_at": row.changed_at.isoformat() if row.changed_at else None, "changes": row.changes or []}
+        for row in rows
+    ]
+
+
 def job_response(session: Session, job: Job) -> dict:
     latest = latest_score_map(session, [job.id or 0]).get(job.id or 0)
     links = source_links_map(session, [job.id or 0]).get(job.id or 0, [])
-    return job_payload(job, latest, links)
+    payload = job_payload(job, latest, links)
+    payload["snapshot_changes"] = snapshot_changes(session, job.id or 0)
+    return payload
 
 
 def get_profile(session: Session) -> UserProfile:

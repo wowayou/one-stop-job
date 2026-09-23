@@ -13,8 +13,19 @@ import logging
 import os
 import re
 import time
+from typing import Callable
 
 logger = logging.getLogger(__name__)
+
+# LLM 用量记录钩子：让 ai.py 保持 DB-free（纯函数、测试会桩掉 _chat）。由 main.py 在启动时注入
+# 一个写库回调；默认 None = 不记（单元测试/无注入时行为与以前逐字相同）。回调内部必须自己吃异常，
+# 记账失败绝不能影响一次真正的模型调用。
+_usage_recorder: "Callable[[dict], None] | None" = None
+
+
+def set_usage_recorder(recorder: "Callable[[dict], None] | None") -> None:
+    global _usage_recorder
+    _usage_recorder = recorder
 
 _MAX_CHARS = 12000
 
@@ -186,7 +197,7 @@ def _split_chunks(text: str, max_chars: int) -> list[str]:
     return chunks
 
 
-def _chat(system: str, user, *, trace: dict | None = None) -> str:
+def _chat(system: str, user, *, trace: dict | None = None, purpose: str = "other") -> str:
     """按 `_providers()` 顺序尝试调用；单个 provider 失败按退避重试有限次数后换下一个。
 
     全部 provider 都失败时抛出最后一个异常，交由调用方既有的 try/except 走规则/模板
@@ -233,6 +244,7 @@ def _chat(system: str, user, *, trace: dict | None = None) -> str:
                             "switched": index > 1,
                         }
                     )
+                _record_usage(resp, provider.get("label"), model, purpose)
                 return resp.choices[0].message.content or ""
             except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常以便重试/切换
                 last_exc = exc
@@ -244,8 +256,30 @@ def _chat(system: str, user, *, trace: dict | None = None) -> str:
     raise last_exc
 
 
+def _record_usage(resp, provider_label, model: str, purpose: str) -> None:
+    """把一次成功调用的 token 用量交给注入的记录回调。没注入就什么都不做；
+    绝不向上抛异常——记账是旁路，不能拖垓一次真正的模型调用。"""
+    recorder = _usage_recorder
+    if recorder is None:
+        return
+    try:
+        usage = getattr(resp, "usage", None)
+        recorder(
+            {
+                "provider_label": provider_label,
+                "model": model,
+                "purpose": purpose,
+                "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                "completion_tokens": getattr(usage, "completion_tokens", None),
+                "total_tokens": getattr(usage, "total_tokens", None),
+            }
+        )
+    except Exception:  # noqa: BLE001 - 记账旁路不能影响主流程
+        logger.debug("LLM 用量记录写入失败（已忽略）", exc_info=True)
+
+
 def _call(body_text: str) -> str:
-    return _chat(_SYSTEM, _USER_TMPL.format(body=body_text))
+    return _chat(_SYSTEM, _USER_TMPL.format(body=body_text), purpose="extract")
 
 
 def _parse_jobs(content: str) -> list[dict]:
@@ -388,7 +422,7 @@ def extract_jobs_freeform(
     else:
         user_content = user_text
 
-    content = _chat(_FREEFORM_SYSTEM, user_content)
+    content = _chat(_FREEFORM_SYSTEM, user_content, purpose="extract")
 
     out: list[dict] = []
     for job in _parse_jobs(content):
@@ -495,7 +529,7 @@ def tailor_interview_prep_llm(context: dict[str, str], base: dict[str, str]) -> 
             dealbreakers=context.get("dealbreakers", ""),
             base_json=json.dumps(base, ensure_ascii=False),
         )
-        content = _chat(_TAILOR_SYSTEM, user)
+        content = _chat(_TAILOR_SYSTEM, user, purpose="prep")
     except Exception:
         logger.warning("AI 面试材料定制失败，回退模板", exc_info=True)
         return None
@@ -604,7 +638,7 @@ def analyze_decision_chat_llm(
                 {"type": "text", "text": user},
                 {"type": "image_url", "image_url": {"url": image_data_url, "detail": "low"}},
             ]
-        content = _chat(_DECISION_SYSTEM, user_content)
+        content = _chat(_DECISION_SYSTEM, user_content, purpose="decision")
     except Exception:
         logger.warning("AI 决策聊天失败，回退规则分析", exc_info=True)
         return None
@@ -654,7 +688,7 @@ def probe_ai_connection() -> dict:
     started = time.monotonic()
     trace: dict = {}
     try:
-        _chat(_PROBE_SYSTEM, _PROBE_USER, trace=trace)
+        _chat(_PROBE_SYSTEM, _PROBE_USER, trace=trace, purpose="probe")
     except Exception as exc:  # noqa: BLE001 - 需要归类所有 SDK 异常
         logger.warning("AI 连接自检失败", exc_info=True)
         code = _status_code(exc)

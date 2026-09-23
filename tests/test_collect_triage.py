@@ -19,6 +19,7 @@ from backend.app.services.collect_filter import (
     apply_area_filter,
     apply_score_gate,
     area_allowed,
+    location_tokens,
     normalize_area,
 )
 from backend.app.services.collect_ops import collect_run_summary, run_collector
@@ -105,6 +106,28 @@ def test_area_allowed_treats_city_echo_as_unknown_area():
     record = {"city": "青岛", "area": "青岛"}
     assert area_allowed(record, _AREAS) == (True, "")
     assert area_allowed(record, {**_AREAS, "keep_unknown_area": False}) == (False, "unknown")
+
+
+def test_area_allowed_matches_province_prefixed_city():
+    """海尔/北森等门户把整串「山东省-青岛市」塞进 city，裸串归一化后是「山东省-青岛」，
+    不能和白名单里的「青岛」精确相等——曾经把 60 条青岛岗位全当「城市不符」挡掉。
+    按「省-市-区」拆段比对后，带省份前缀的青岛岗位能命中，外城市仍正确挡掉。
+    """
+    # 带省份前缀的青岛岗位（海尔实际回传格式）：区解析不出 → 未知 → 默认放行。
+    assert area_allowed({"city": "山东省-青岛市", "area": "山东省-青岛市"}, _AREAS) == (True, "")
+    # 外城市（带不带省份前缀）仍正确挡掉。
+    assert area_allowed({"city": "山东省-济南市", "area": "山东省-济南市"}, _AREAS) == (False, "city")
+    assert area_allowed({"city": "上海市", "area": "上海市"}, _AREAS) == (False, "city")
+    # 带区级的分级串：青岛段命中就放行（区未单独拆出，走未知分支）。
+    assert area_allowed({"city": "山东省-青岛市-即墨区", "area": "山东省-青岛市-即墨区"}, _AREAS) == (True, "")
+
+
+def test_location_tokens_splits_administrative_hierarchy():
+    assert location_tokens("山东省-青岛市") == {"山东省", "青岛"}
+    assert location_tokens("青岛") == {"青岛"}
+    assert location_tokens("青岛市") == {"青岛"}
+    assert location_tokens("") == set()
+    assert location_tokens(None) == set()
 
 
 def test_apply_area_filter_reports_counts_and_samples():
@@ -409,3 +432,28 @@ def test_digest_excludes_hard_blocked_pending_candidates(collect_settings):
 
         rows = pending_candidate_rows(session)
         assert [row["title"] for row in rows] == [candidates[1]["title"]]
+
+
+# ==================== 岗位快照变更历史（借鉴 geekgeekrun 的 *ChangeLog） ====================
+
+
+def test_upsert_logs_snapshot_change_on_salary_update():
+    """重采时 upsert 只刷新快照会静默覆盖，丢了「薪资降了」这类信号；此处锁定变更被记录。"""
+    from backend.app.models import JobSnapshotChange
+
+    session = _session()
+    upsert_job_records(session, [_record("英文内容运营", salary="8-12K")])
+    # 首次入库不算变更。
+    assert session.exec(select(JobSnapshotChange)).all() == []
+
+    upsert_job_records(session, [_record("英文内容运营", salary="12-18K")])
+    rows = session.exec(select(JobSnapshotChange)).all()
+    assert len(rows) == 1
+    fields = {change["field"] for change in rows[0].changes}
+    assert "salary_text" in fields and "salary_min_k" in fields
+    salary_change = next(c for c in rows[0].changes if c["field"] == "salary_text")
+    assert salary_change["old"] == "8-12K" and salary_change["new"] == "12-18K"
+
+    # 相同内容再次 upsert → 不新增变更（避免噪音）。
+    upsert_job_records(session, [_record("英文内容运营", salary="12-18K")])
+    assert len(session.exec(select(JobSnapshotChange)).all()) == 1

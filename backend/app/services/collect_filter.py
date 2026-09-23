@@ -21,10 +21,15 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # 「市南」「市南区」「青岛市」要能互相认出来：比对前把这些行政区后缀削掉。
 _AREA_SUFFIXES = ("新区", "区", "县", "市", "镇", "街道")
+
+# 分级地名的分隔符：海尔/北森等门户来源把整串「山东省-青岛市」塞进 city，
+# 用「省-市-区」层级拼接。按这些分隔符拆段，才能把城市从省份前缀里认出来。
+_LOCATION_SEP = re.compile(r"[-\uff0d\u00b7/|,\uff0c\u3001\s]+")
 
 
 def normalize_area(value: Any) -> str:
@@ -40,6 +45,22 @@ def normalize_area(value: Any) -> str:
         if len(text) > len(suffix) and text.endswith(suffix):
             return text[: -len(suffix)]
     return text
+
+
+def location_tokens(value: Any) -> set[str]:
+    """把「省-市-区」这类分级地名拆成逐段归一化后的 token 集合。
+
+    海尔/北森等门户来源把整串「山东省-青岛市」塞进 city，裸串归一化后是「山东省-青岛」，
+    和白名单里的「青岛」精确相等匹配不上（连青岛的岗位都被误判成「城市不符」）。按分隔符
+    拆段、逐段归一化，只要有一段命中白名单城市即放行。source-agnostic：裸城市名（「青岛」）
+    只拆出单段，行为与拆分前完全一致，不影响 BOSS 等已有来源。
+    """
+    tokens: set[str] = set()
+    for segment in _LOCATION_SEP.split(str(value or "")):
+        norm = normalize_area(segment)
+        if norm:
+            tokens.add(norm)
+    return tokens
 
 
 def record_area(record: dict) -> str:
@@ -68,8 +89,10 @@ def area_allowed(record: dict, cfg: dict) -> tuple[bool, str]:
     areas = [normalize_area(item) for item in cfg.get("areas") or [] if str(item or "").strip()]
 
     if cities:
-        city = normalize_area(record.get("city"))
-        if city and city not in cities:
+        # 按「省-市-区」拆段比对，而不是整串精确相等：这样「山东省-青岛市」能靠「青岛」段命中，
+        # 而「山东省-济南市」不含「青岛」段仍正确挡掉。没有城市信息（token 为空）时不在此挡。
+        tokens = location_tokens(record.get("city"))
+        if tokens and tokens.isdisjoint(cities):
             return False, "city"
 
     if not areas:

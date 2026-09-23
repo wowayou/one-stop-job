@@ -8,7 +8,41 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy import tuple_
 from sqlmodel import Session, select
 
-from ..models import Company, Job, JobSourceLink
+from ..models import Company, Job, JobSnapshotChange, JobSourceLink
+
+
+# 重采时监控这组关键字段的变化，写进 JobSnapshotChange（只记结构化/短字段，不拉 description
+# 这种长文本，否则空白/排版微改会制造假变更）。
+_WATCHED_SNAPSHOT_FIELDS = (
+    "title",
+    "salary_text",
+    "salary_min_k",
+    "salary_max_k",
+    "salary_avg_k",
+    "annual_salary_w",
+    "city",
+    "area",
+    "experience",
+    "degree",
+    "recruitment_status",
+)
+
+
+def _diff_watched_fields(existing: Job, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """对比旧 Job 与即将写入的 payload，返回变化的关键字段 [{field, old, new}]。
+
+    只在 new 非空且与 old 不同时记一条——与 upsert “value 为 None 不覆盖旧值”的口径一致，
+    避免把“本次没采到该字段”误记成“字段被清空”。
+    """
+    changes: list[dict[str, Any]] = []
+    for field in _WATCHED_SNAPSHOT_FIELDS:
+        new = payload.get(field)
+        if new is None:
+            continue
+        old = getattr(existing, field, None)
+        if new != old:
+            changes.append({"field": field, "old": old, "new": new})
+    return changes
 
 
 def get_or_create_company(session: Session, name: str) -> Company:
@@ -174,6 +208,7 @@ def _upsert_job_record(session: Session, record: dict[str, Any], now: datetime, 
         "updated_at": now,
     }
     if existing:
+        snapshot_changes = _diff_watched_fields(existing, payload)
         keep_fields = {"id", "status", "favorite", "created_at"}
         if match_reason == "canonical_key":
             keep_fields.update({"source", "external_id", "url", "collected_at"})
@@ -182,6 +217,8 @@ def _upsert_job_record(session: Session, record: dict[str, Any], now: datetime, 
                 setattr(existing, key, value)
         session.add(existing)
         session.flush()
+        if snapshot_changes:
+            session.add(JobSnapshotChange(job_id=existing.id, changed_at=now, changes=snapshot_changes))
         _upsert_source_link(session, existing, record, now, lookup)
         return existing, False
 

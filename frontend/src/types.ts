@@ -56,6 +56,22 @@ export type Job = {
   deleted_at?: string | null;
   latest_score?: FitScore | null;
   source_links?: JobSourceLink[];
+  snapshot_changes?: SnapshotChange[];
+};
+
+/** 岗位快照变更历史一条：重采时关键字段变化（薪资/标题/城市等）被记录下来。 */
+export type SnapshotChange = {
+  changed_at: string | null;
+  changes: { field: string; old: unknown; new: unknown }[];
+};
+
+/** AI 累计用量汇总（LLM token 计数）。 */
+export type AiUsageSummary = {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  by_purpose: { purpose: string; calls: number; total_tokens: number }[];
 };
 
 export type ManualJob = {

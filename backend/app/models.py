@@ -84,6 +84,41 @@ class JobSourceLink(SQLModel, table=True):
     last_seen_at: datetime = Field(default_factory=utc_now, index=True)
 
 
+class JobSnapshotChange(SQLModel, table=True):
+    """岗位快照变更历史：重采时 upsert 只刷新快照、静默覆盖，丢了“薪资降了 / JD 改了”这些信号。
+
+    这里只记录一组结构化、短的关键字段变化（見 importer._WATCHED_SNAPSHOT_FIELDS），不拉 description 这种长文本
+    （空白/排版微改会制造假变更）。`changes` 是一个 `[{field, old, new}]` 列表，供岗位抽屉展示时间线。
+    只读、source-agnostic；不影响任何对外动作。
+    """
+
+    __tablename__ = "job_snapshot_changes"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    job_id: int = Field(foreign_key="jobs.id", index=True)
+    changed_at: datetime = Field(default_factory=utc_now, index=True)
+    changes: list = Field(default_factory=list, sa_column=Column(JSON))
+
+
+class LlmUsageRecord(SQLModel, table=True):
+    """LLM 调用用量记录（借鉴 geekgeekrun 的 LlmModelUsageRecord）：每次成功的模型调用记一行，
+    让机主知道 AI 功能到底花了多少（契合“测试连接会真的发一次极低额请求”的透明度取向）。
+
+    只在本地记 token 计数，不存 API key、不存请求/响应内容。purpose 区分是哪条链路（抽取/面试准备/决策/探测）。
+    """
+
+    __tablename__ = "llm_usage_records"
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    created_at: datetime = Field(default_factory=utc_now, index=True)
+    provider_label: Optional[str] = None
+    model: Optional[str] = Field(default=None, index=True)
+    purpose: str = Field(default="other", index=True)
+    prompt_tokens: Optional[int] = None
+    completion_tokens: Optional[int] = None
+    total_tokens: Optional[int] = None
+
+
 class SourceRun(SQLModel, table=True):
     __tablename__ = "source_runs"
 

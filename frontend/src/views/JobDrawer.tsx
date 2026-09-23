@@ -19,6 +19,31 @@ const recruitmentStatusLabels: Record<string, string> = {
   unknown: "未知"
 };
 
+const snapshotFieldLabels: Record<string, string> = {
+  title: "标题",
+  salary_text: "薪资",
+  salary_min_k: "薪资下限(K)",
+  salary_max_k: "薪资上限(K)",
+  salary_avg_k: "薪资均值(K)",
+  annual_salary_w: "年薪(万)",
+  city: "城市",
+  area: "区域",
+  experience: "经验",
+  degree: "学历",
+  recruitment_status: "招聘状态"
+};
+
+function formatSnapshotValue(value: unknown): string {
+  if (value === null || value === undefined || value === "") return "—";
+  return String(value);
+}
+
+function formatSnapshotTime(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString();
+}
+
 export function JobDrawer({
   job,
   company,
@@ -188,6 +213,30 @@ export function JobDrawer({
         </dl>
         <p className="long-text">{job.description || job.skills || "暂无 JD 详情"}</p>
       </section>
+
+      {job.snapshot_changes && job.snapshot_changes.length > 0 && (
+        <section className="drawer-section">
+          <h3>快照变更</h3>
+          <small className="muted">重采时检测到的关键字段变化（最新在前）。</small>
+          <ul className="snapshot-change-list">
+            {job.snapshot_changes.map((entry, index) => (
+              <li key={index}>
+                <span className="snapshot-change-time">{formatSnapshotTime(entry.changed_at)}</span>
+                <div className="snapshot-change-items">
+                  {entry.changes.map((change, changeIndex) => (
+                    <span className="snapshot-change-item" key={changeIndex}>
+                      {snapshotFieldLabels[change.field] ?? change.field}：
+                      <del>{formatSnapshotValue(change.old)}</del>
+                      {" → "}
+                      <ins>{formatSnapshotValue(change.new)}</ins>
+                    </span>
+                  ))}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       <section className="drawer-section">
         <div className="section-title">

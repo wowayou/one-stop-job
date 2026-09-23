@@ -267,7 +267,7 @@ def test_extract_jobs_freeform_includes_prior_candidates_in_prompt(monkeypatch):
 
     captured: dict = {}
 
-    def fake_chat(system, user):
+    def fake_chat(system, user, **kwargs):
         captured["system"] = system
         captured["user"] = user
         return (
@@ -301,7 +301,7 @@ def test_extract_jobs_freeform_without_prior_candidates_matches_current_behavior
 
     captured: dict = {}
 
-    def fake_chat(system, user):
+    def fake_chat(system, user, **kwargs):
         captured["user"] = user
         return '{"jobs":[]}'
 

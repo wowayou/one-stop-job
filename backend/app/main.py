@@ -460,6 +460,10 @@ async def _daily_digest_loop() -> None:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    # 注入 LLM 用量记录回调（ai.py 保持 DB-free，写库由这里提供）。
+    from .services.ai import set_usage_recorder
+    from .services.llm_usage import record_llm_usage
+    set_usage_recorder(record_llm_usage)
     tasks: list[asyncio.Task] = []
     if settings.telegram_config.get("enabled"):
         tasks.append(asyncio.create_task(_telegram_poll_loop()))
@@ -970,6 +974,15 @@ async def ai_status() -> dict:
         "base_url_configured": active["base_url_configured"],
         "provider_keys": _provider_key_status(ai_cfg),
     }
+
+
+@app.get("/api/ai/usage")
+async def ai_usage() -> dict:
+    """AI 累计用量汇总（只读）：让机主知道 AI 功能到底花了多少 token。不含任何密钥/内容。"""
+    from .services.llm_usage import usage_summary
+
+    with Session(engine) as session:
+        return usage_summary(session)
 
 
 @app.post("/api/ai/test")
